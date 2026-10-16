@@ -13,9 +13,28 @@ pub struct User {
 }
 
 /// Find-or-create by `sub`, refreshing email/name from the latest token so a
-/// renamed account shows its current details. The update is conditional, so
-/// the common case (nothing changed, seen recently) writes nothing.
+/// renamed account shows its current details.
+///
+/// This runs on every authenticated request, so the common case — a known
+/// user whose details haven't changed and who was seen recently — is a single
+/// indexed read. Only otherwise does it fall through to the (row-locking)
+/// upsert, whose update is itself conditional.
 pub async fn upsert_by_sub(pool: &PgPool, sub: &str, email: &str, name: &str) -> Result<User> {
+    let fresh: Option<User> = sqlx::query_as::<_, User>(
+        "SELECT id, sub, email, name FROM users
+         WHERE sub = $1 AND email = $2 AND name = $3
+           AND last_seen_at > now() - interval '5 minutes'",
+    )
+    .bind(sub)
+    .bind(email)
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    .context("loading user")?;
+    if let Some(user) = fresh {
+        return Ok(user);
+    }
+
     let updated = sqlx::query_as::<_, User>(
         "INSERT INTO users (sub, email, name) VALUES ($1, $2, $3)
          ON CONFLICT (sub) DO UPDATE
