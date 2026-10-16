@@ -1,0 +1,20 @@
+{
+  "name": "parcel",
+  "version": "0.1.0",
+  "description": "Publish HTML pages, reports, dashboards and prototypes to private, sandboxed Parcel URLs with the parcel CLI, and read or revise existing parcels.",
+  "author": {
+    "name": "Charlie Knudsen",
+    "url": "https://github.com/charliek"
+  },
+  "homepage": "https://github.com/charliek/parcel",
+  "repository": "https://github.com/charliek/parcel",
+  "license": "MIT",
+  "keywords": [
+    "parcel",
+    "skills",
+    "artifacts",
+    "html",
+    "publish",
+    "share"
+  ]
+}

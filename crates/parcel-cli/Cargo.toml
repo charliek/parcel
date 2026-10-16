@@ -12,5 +12,53 @@ repository.workspace = true
 name = "parcel"
 path = "src/main.rs"
 
+# Debian packaging (cargo-deb), the strix pattern. The Debian package is named
+# `parcel` (not the crate name) and installs the binary at /usr/bin/parcel.
+# `revision = ""` drops cargo-deb's default `-1` so the artifact is
+# `parcel_<version>_<arch>.deb`, matching the apt-charliek glob. The binary is
+# self-contained (rustls, no OpenSSL), so `$auto` resolves to libc only.
+[package.metadata.deb]
+name = "parcel"
+maintainer = "Charlie Knudsen <charlie.knudsen@gmail.com>"
+copyright = "2026, Charlie Knudsen <charlie.knudsen@gmail.com>"
+depends = "$auto"
+section = "utils"
+priority = "optional"
+revision = ""
+extended-description = """\
+parcel publishes HTML pages (plus supporting files) to a Parcel server and \
+returns a private URL that renders them in a sandbox. It also lists, reads, \
+updates and deletes parcels, and installs the bundled agent skill for Claude \
+Code, craze and opencode."""
+
 [dependencies]
 parcel-types = { workspace = true }
+anyhow = "1"
+clap = { version = "4.6", features = ["derive", "env"] }
+directories = "6"
+gethostname = "1"
+open = "5"
+# Blocking client. reqwest runs a private tokio runtime on a background thread
+# for this; nothing else in the CLI is async. Both root stores: webpki for a
+# predictable baseline, native so a local mkcert CA (parcel.local.stridelabs.ai)
+# and corporate roots are trusted too.
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "multipart",
+    "rustls-tls-webpki-roots",
+    "rustls-tls-native-roots",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Pretty-prints the API's JSON without reordering keys (`--json`), which
+# serde_json::Value would do unless `preserve_order` were enabled workspace-wide.
+serde-transcode = "1"
+time = "0.3"
+toml = "1"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }
+wiremock = "0.6"

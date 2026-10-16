@@ -1,0 +1,364 @@
+name: Release CLI
+
+# Builds and ships the `parcel` CLI (crates/parcel-cli) on a version tag: GitHub
+# Release tarballs for brew, .debs for apt-charliek, and the Homebrew formula.
+# The strix pattern (a Rust CLI already shipped this way); see RELEASING.md.
+# The server's container image ships through its own deploy workflow.
+
+on:
+  push:
+    # Semver tags only. Date tags (vYYYY.MM.DD) are server-image releases
+    # (release.yml) and are excluded here.
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - '!v2[0-9][0-9][0-9].*'
+
+permissions:
+  contents: read
+
+# Serialize re-runs against the same tag — better to wait than to abort
+# half-uploaded artifacts.
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  # ─── assert the tag matches [workspace.package].version and plugin.json ───
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Assert tag matches Cargo.toml and the plugin manifest
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          tag_ver="${tag#v}"
+          base_ver="${tag_ver%%-*}"   # strip any -rc1/-beta suffix
+          manifest_ver="$(awk '
+            /^\[/ { in_section = ($0 == "[workspace.package]") }
+            in_section && /^version[[:space:]]*=/ {
+              sub(/^version[[:space:]]*=[[:space:]]*"/, ""); sub(/".*$/, ""); print; exit
+            }
+          ' Cargo.toml)"
+          plugin_ver="$(jq -r '.version' .claude-plugin/plugin.json)"
+          echo "tag=${tag} (full ${tag_ver}, base ${base_ver})  workspace version=${manifest_ver}  plugin version=${plugin_ver}"
+          # Either spelling is accepted: update-version.sh writes the tag's
+          # version verbatim, so v1.2.3-rc.1 puts "1.2.3-rc.1" in the manifest,
+          # while a genuine mismatch (v0.0.2 against 0.0.1) still fails.
+          if [ "${manifest_ver}" != "${tag_ver}" ] && [ "${manifest_ver}" != "${base_ver}" ]; then
+            echo "::error::tag ${tag} does not match Cargo.toml [workspace.package].version ${manifest_ver}. The release skill should bump the manifest before tagging — re-run /release-workflows:release if this looks wrong."
+            exit 1
+          fi
+          if [ "${plugin_ver}" != "${tag_ver}" ] && [ "${plugin_ver}" != "${base_ver}" ]; then
+            echo "::error::tag ${tag} does not match .claude-plugin/plugin.json version ${plugin_ver}. scripts/release/update-version.sh bumps it with Cargo.toml — re-run /release-workflows:release if this looks wrong."
+            exit 1
+          fi
+
+  # ─── refuse to publish a release whose code didn't pass CI ───
+  ci-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Require ci-success green on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 45 minutes. Releases aren't time-sensitive; better to wait than to
+          # fail on a slow runner.
+          deadline=$(( SECONDS + 2700 ))
+          while :; do
+            latest="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?check_name=ci-success" \
+              --jq '.check_runs | sort_by(.started_at) | last')"
+            status="$(echo "${latest}" | jq -r '.status // "missing"')"
+            conclusion="$(echo "${latest}" | jq -r '.conclusion // ""')"
+            echo "ci-success @ ${GITHUB_SHA}: status=${status} conclusion=${conclusion}"
+            if [ "${status}" = "completed" ]; then
+              [ "${conclusion}" = "success" ] && { echo "CI green — releasing."; exit 0; }
+              echo "::error::ci-success concluded '${conclusion}' for ${GITHUB_SHA} — not releasing."
+              exit 1
+            fi
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "::error::timed out waiting for ci-success on ${GITHUB_SHA} (status=${status}). Push the commit to main and let CI finish before tagging."
+              exit 1
+            fi
+            sleep 20
+          done
+
+  # ─── extract the CHANGELOG section and create the GitHub Release ───
+  create-release:
+    needs: [version-check, ci-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Create (or reuse) the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          pre=""
+          case "${tag}" in *-*) pre="--prerelease";; esac
+          notes=""
+          if [ -f CHANGELOG.md ]; then
+            notes="$(awk -v tag="${tag}" '
+              $1=="##" && $2==tag {flag=1; next}
+              /^## v/ {if(flag) exit}
+              flag {print}
+            ' CHANGELOG.md || true)"
+          fi
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists — reusing."
+            exit 0
+          fi
+          if [ -n "${notes}" ]; then
+            printf '%s\n' "${notes}" | gh release create "${tag}" --title "${tag}" --notes-file - ${pre}
+          else
+            gh release create "${tag}" --title "${tag}" --generate-notes ${pre}
+          fi
+
+  # ─── build each target on a native runner; upload tarballs + .debs ───
+  build:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Both macOS targets build on the Apple-Silicon runner: the CLI is
+          # pure Rust (rustls, no OpenSSL), so x86_64 cross-compiles cleanly
+          # and we avoid the retired macos-13 Intel runner.
+          - { runner: macos-latest,     os: darwin, arch: amd64, target: x86_64-apple-darwin }
+          - { runner: macos-latest,     os: darwin, arch: arm64, target: aarch64-apple-darwin }
+          - { runner: ubuntu-24.04,     os: linux,  arch: amd64, target: x86_64-unknown-linux-gnu,  deb: true }
+          - { runner: ubuntu-24.04-arm, os: linux,  arch: arm64, target: aarch64-unknown-linux-gnu, deb: true }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain (channel from rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      # Only the CLI package: the server's dependencies are resolved from the
+      # shared Cargo.lock but never compiled here.
+      - name: Build release binary
+        run: cargo build --locked --release -p parcel-cli --target ${{ matrix.target }}
+
+      - name: Smoke-test the binary
+        if: ${{ matrix.os == 'linux' || matrix.arch == 'arm64' }}
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/parcel"
+          "${bin}" --version
+          "${bin}" skill show | head -3
+
+      - name: Package tarball
+        run: tar -C "target/${{ matrix.target }}/release" -czf "parcel_${{ matrix.os }}_${{ matrix.arch }}.tar.gz" parcel
+
+      - name: Install cargo-deb
+        if: ${{ matrix.deb }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+
+      # [package.metadata.deb] in crates/parcel-cli/Cargo.toml names the
+      # package `parcel` and drops the revision, so this produces
+      # target/<triple>/debian/parcel_<version>_<arch>.deb.
+      - name: Build .deb
+        if: ${{ matrix.deb }}
+        run: cargo deb -p parcel-cli --no-build --target ${{ matrix.target }}
+
+      - name: Upload assets to the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=( "parcel_${{ matrix.os }}_${{ matrix.arch }}.tar.gz" )
+          for d in "target/${{ matrix.target }}/debian/"parcel_*.deb; do
+            assets+=( "$d" )
+          done
+          gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+
+  # ─── flip the Release out of draft + mark it as `latest` ───
+  # `gh release create` occasionally stores a release as a tag-less draft when
+  # the just-pushed tag isn't yet visible to the Release API; asset uploads then
+  # attach to the draft and the public `releases/download/<tag>/...` URLs 404,
+  # which would break the homebrew job's hashing. Flipping the release out of
+  # draft rewrites the asset URLs. Idempotent. (cc-plugins#12, from strix v0.0.2.)
+  finalize-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the Release (flip draft → latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # No checkout in this job, so `gh` can't infer the repo; pass it.
+          gh release edit "${tag}" --draft=false --latest -R "${GITHUB_REPOSITORY}"
+          echo "::notice::Release ${tag} published (not draft, marked latest)."
+
+  # ─── render + push Formula/parcel.rb to charliek/homebrew-tap ───
+  # Uses a release-bot App token scoped to homebrew-tap (no PAT). The formula's
+  # sha256s depend on built bytes, so this is a post-build CI step, not part of
+  # update-version.sh. `needs: finalize-release` so the public asset URLs are
+  # reachable before we curl them.
+  homebrew:
+    needs: finalize-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Skip if the release-bot App is not configured
+        id: guard
+        env:
+          CLIENT_ID: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+        run: |
+          if [ -z "${CLIENT_ID}" ]; then
+            echo "::warning::RELEASE_BOT_CLIENT_ID not set — skipping Homebrew formula update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint a homebrew-tap token
+        if: steps.guard.outputs.skip == 'false'
+        id: tap
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
+          owner: charliek
+          repositories: homebrew-tap
+
+      - name: Render and push the formula
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ steps.tap.outputs.token }}
+          TAP_TOKEN: ${{ steps.tap.outputs.token }}
+          BOT_SLUG: ${{ steps.tap.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          ver="${tag#v}"
+
+          # Pull the four release tarballs and hash them. The repo is public,
+          # so the assets download over plain HTTPS — the tap token in GH_TOKEN
+          # is scoped to homebrew-tap, not this repo. Retry on 404: the public
+          # URL has a short CDN propagation lag after the release is published.
+          dl="$(mktemp -d)"
+          for triple in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+            url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/parcel_${triple}.tar.gz"
+            out="${dl}/parcel_${triple}.tar.gz"
+            for attempt in 1 2 3 4 5; do
+              if curl -fsSL -o "${out}" "${url}"; then break; fi
+              if [ "${attempt}" = 5 ]; then
+                echo "::error::Failed to download ${url} after 5 attempts (last status from curl above)."
+                exit 1
+              fi
+              echo "::warning::Download attempt ${attempt} failed for ${url}; retrying in 10s."
+              sleep 10
+            done
+          done
+          sha() { shasum -a 256 "${dl}/parcel_$1.tar.gz" | awk '{print $1}'; }
+
+          rendered="$(mktemp)"
+          sed -e "s|@VERSION@|${ver}|g" \
+              -e "s|@TAG@|${tag}|g" \
+              -e "s|@SHA_DARWIN_AMD64@|$(sha darwin_amd64)|g" \
+              -e "s|@SHA_DARWIN_ARM64@|$(sha darwin_arm64)|g" \
+              -e "s|@SHA_LINUX_AMD64@|$(sha linux_amd64)|g" \
+              -e "s|@SHA_LINUX_ARM64@|$(sha linux_arm64)|g" \
+              scripts/release/parcel.rb.tmpl > "${rendered}"
+
+          work="$(mktemp -d)"
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/charliek/homebrew-tap.git" "${work}"
+          mkdir -p "${work}/Formula"
+          cp "${rendered}" "${work}/Formula/parcel.rb"
+
+          cd "${work}"
+          # Bot committer identity per the actions/create-github-app-token
+          # recipe: app-slug from the action output + the bot's numeric id from
+          # the public /users endpoint (installation tokens can't call /user).
+          bot_id="$(gh api "/users/${BOT_SLUG}[bot]" --jq '.id')"
+          git config user.name "${BOT_SLUG}[bot]"
+          git config user.email "${bot_id}+${BOT_SLUG}[bot]@users.noreply.github.com"
+          git add Formula/parcel.rb
+          if git diff --cached --quiet; then
+            echo "Formula/parcel.rb unchanged — nothing to push."
+          else
+            git commit -m "parcel: ${tag}"
+            git push origin HEAD:main
+            echo "::notice::Pushed Formula/parcel.rb ${tag} to charliek/homebrew-tap."
+          fi
+
+  # ─── notify charliek/apt-charliek to republish its package index ───
+  # Uses a release-bot App token scoped to apt-charliek (no PAT). The
+  # repository_dispatch endpoint needs Contents:write, which the App has.
+  apt-dispatch:
+    needs: finalize-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide whether to dispatch
+        id: guard
+        env:
+          CLIENT_ID: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          case "${tag}" in
+            *-*)
+              echo "::notice::${tag} is a prerelease — skipping apt-charliek dispatch."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          if [ -z "${CLIENT_ID}" ]; then
+            echo "::warning::RELEASE_BOT_CLIENT_ID not set — skipping dispatch. apt-charliek can self-heal on its next scheduled re-scan."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint an apt-charliek token
+        if: steps.guard.outputs.skip == 'false'
+        id: apt
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
+          owner: charliek
+          repositories: apt-charliek
+
+      - name: Dispatch apt-charliek publish
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ steps.apt.outputs.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh api repos/charliek/apt-charliek/dispatches --method POST \
+            -f event_type=publish \
+            -F "client_payload[package]=parcel" \
+            -F "client_payload[tag]=${tag}"
+          echo "::notice::Dispatched apt-charliek publish for parcel ${tag}."

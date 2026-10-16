@@ -1,0 +1,15 @@
+{
+  "name": "parcel",
+  "description": "Parcel skill: publish HTML artifacts to private, sandboxed URLs with the parcel CLI.",
+  "owner": {
+    "name": "Charlie Knudsen",
+    "url": "https://github.com/charliek"
+  },
+  "plugins": [
+    {
+      "name": "parcel",
+      "source": "./",
+      "description": "Publish HTML pages, reports, dashboards and prototypes to private Parcel URLs, and read or revise existing parcels."
+    }
+  ]
+}
