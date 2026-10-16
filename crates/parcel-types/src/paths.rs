@@ -68,7 +68,12 @@ mod tests {
 
     #[test]
     fn accepts_normal_paths() {
-        for p in ["index.html", "assets/app.js", "a/b/c/d.png", "My File (1).html"] {
+        for p in [
+            "index.html",
+            "assets/app.js",
+            "a/b/c/d.png",
+            "My File (1).html",
+        ] {
             assert_eq!(validate_path(p), Ok(()), "{p}");
         }
     }

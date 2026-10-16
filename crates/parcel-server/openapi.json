@@ -1,0 +1,1928 @@
+{
+  "components": {
+    "schemas": {
+      "ApiToken": {
+        "description": "An API token as listed (never includes the secret).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_via": {
+            "description": "`web` (minted on the Tokens page) or `device` (CLI login).",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "description": "Non-secret display prefix, e.g. `pcl_a1b2c3d4`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "created_via",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "AuthInfo": {
+        "description": "slauth settings the SPA needs to start an OAuth flow.",
+        "properties": {
+          "audience": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "mode": {
+            "description": "`slauth` or `dev`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "issuer",
+          "client_id",
+          "audience"
+        ],
+        "type": "object"
+      },
+      "CreateTokenRequest": {
+        "additionalProperties": false,
+        "description": "`POST /api/v1/tokens`.",
+        "properties": {
+          "expires_in_days": {
+            "description": "Days until expiry; omit for a token that never expires.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "CreatedToken": {
+        "description": "A freshly minted token. `secret` is shown exactly once.",
+        "properties": {
+          "secret": {
+            "type": "string"
+          },
+          "token": {
+            "$ref": "#/components/schemas/ApiToken"
+          }
+        },
+        "required": [
+          "token",
+          "secret"
+        ],
+        "type": "object"
+      },
+      "DeviceInfo": {
+        "description": "`GET /api/v1/cli/device/{user_code}` — what the approval page shows.",
+        "properties": {
+          "client_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "user_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_code",
+          "client_name",
+          "created_at",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "DevicePollRequest": {
+        "additionalProperties": false,
+        "description": "`POST /api/v1/cli/device/token`.",
+        "properties": {
+          "device_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_code"
+        ],
+        "type": "object"
+      },
+      "DevicePollResponse": {
+        "properties": {
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/DeviceStatus"
+          },
+          "token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "DeviceStartRequest": {
+        "additionalProperties": false,
+        "description": "`POST /api/v1/cli/device` — start a CLI device login.",
+        "properties": {
+          "client_name": {
+            "description": "Shown on the approval page, e.g. `parcel CLI on laptop`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "DeviceStartResponse": {
+        "properties": {
+          "device_code": {
+            "description": "Secret the CLI polls with. Never shown to the user.",
+            "type": "string"
+          },
+          "expires_in": {
+            "description": "Seconds until the codes expire.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "interval": {
+            "description": "Minimum seconds between polls.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "user_code": {
+            "description": "Short code the user confirms in the browser, e.g. `BCDF-GHJK`.",
+            "type": "string"
+          },
+          "verification_uri": {
+            "type": "string"
+          },
+          "verification_uri_complete": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_code",
+          "user_code",
+          "verification_uri",
+          "verification_uri_complete",
+          "expires_in",
+          "interval"
+        ],
+        "type": "object"
+      },
+      "DeviceStatus": {
+        "enum": [
+          "pending",
+          "slow_down",
+          "approved",
+          "denied",
+          "expired"
+        ],
+        "type": "string"
+      },
+      "ErrorBody": {
+        "description": "The error envelope every non-2xx JSON response uses\n(`stridelabs_http::AppError`'s wire contract).",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "properties": {
+          "message": {
+            "description": "Human-readable, safe to show.",
+            "type": "string"
+          },
+          "type": {
+            "description": "The HTTP status reason phrase, e.g. `Bad Request`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "type"
+        ],
+        "type": "object"
+      },
+      "FileEntry": {
+        "description": "One file inside a version.",
+        "properties": {
+          "content_type": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "description": "Lowercase hex SHA-256 of the file's bytes.",
+            "type": "string"
+          },
+          "size_bytes": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size_bytes",
+          "content_type",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "Limits": {
+        "description": "Storage and size limits enforced on publishes.",
+        "properties": {
+          "max_entry_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_file_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_files_per_upload": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "max_files_per_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "max_upload_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_version_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "user_quota_bytes": {
+            "description": "Total bytes across all of a user's versions; 0 means unlimited.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_entry_bytes",
+          "max_file_bytes",
+          "max_upload_bytes",
+          "max_files_per_upload",
+          "max_files_per_version",
+          "max_version_bytes",
+          "user_quota_bytes"
+        ],
+        "type": "object"
+      },
+      "Me": {
+        "description": "`GET /api/v1/me`.",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "name": {
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "usage",
+          "limits"
+        ],
+        "type": "object"
+      },
+      "NewVersionUpload": {
+        "description": "Multipart body of `POST /api/v1/parcels/{id}/versions` (documentation only).",
+        "properties": {
+          "file": {
+            "description": "One part per file; each part's filename is its published path.",
+            "items": {
+              "format": "binary",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "metadata": {
+            "description": "JSON-encoded `NewVersionMetadata`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "type": "object"
+      },
+      "ParcelDetail": {
+        "description": "A parcel with its history and current files.",
+        "properties": {
+          "files": {
+            "description": "Files of the current version.",
+            "items": {
+              "$ref": "#/components/schemas/FileEntry"
+            },
+            "type": "array"
+          },
+          "is_owner": {
+            "description": "Whether the caller owns this parcel (and so may change it).",
+            "type": "boolean"
+          },
+          "parcel": {
+            "$ref": "#/components/schemas/ParcelSummary"
+          },
+          "versions": {
+            "description": "Newest first.",
+            "items": {
+              "$ref": "#/components/schemas/VersionSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "parcel",
+          "is_owner",
+          "versions",
+          "files"
+        ],
+        "type": "object"
+      },
+      "ParcelList": {
+        "description": "`GET /api/v1/parcels`.",
+        "properties": {
+          "parcels": {
+            "items": {
+              "$ref": "#/components/schemas/ParcelSummary"
+            },
+            "type": "array"
+          },
+          "total": {
+            "description": "Total number of matching parcels (for pagination).",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "parcels",
+          "total"
+        ],
+        "type": "object"
+      },
+      "ParcelSummary": {
+        "description": "A parcel as it appears in lists.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "current_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          },
+          "entry": {
+            "description": "Path of the current version's entry page.",
+            "type": "string"
+          },
+          "file_count": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "total_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "url": {
+            "description": "The viewer URL in the web app (`https://…/p/<id>`).",
+            "type": "string"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/Visibility"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "visibility",
+          "current_version",
+          "entry",
+          "file_count",
+          "total_bytes",
+          "created_at",
+          "updated_at",
+          "url"
+        ],
+        "type": "object"
+      },
+      "PublishResult": {
+        "description": "Returned by both create and new-version publishes.",
+        "properties": {
+          "parcel": {
+            "$ref": "#/components/schemas/ParcelSummary"
+          },
+          "version": {
+            "$ref": "#/components/schemas/VersionDetail"
+          }
+        },
+        "required": [
+          "parcel",
+          "version"
+        ],
+        "type": "object"
+      },
+      "PublishUpload": {
+        "description": "Multipart body of `POST /api/v1/parcels` (documentation only).",
+        "properties": {
+          "file": {
+            "description": "One part per file; each part's filename is its published path.",
+            "items": {
+              "format": "binary",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "metadata": {
+            "description": "JSON-encoded `CreateParcelMetadata`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "type": "object"
+      },
+      "ServerInfo": {
+        "description": "`GET /api/v1/info` — unauthenticated server description.",
+        "properties": {
+          "allowed_extensions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "app_origin": {
+            "type": "string"
+          },
+          "auth": {
+            "$ref": "#/components/schemas/AuthInfo"
+          },
+          "content_origin": {
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "app_origin",
+          "content_origin",
+          "auth",
+          "limits",
+          "allowed_extensions"
+        ],
+        "type": "object"
+      },
+      "TokenList": {
+        "description": "`GET /api/v1/tokens`.",
+        "properties": {
+          "tokens": {
+            "items": {
+              "$ref": "#/components/schemas/ApiToken"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "tokens"
+        ],
+        "type": "object"
+      },
+      "UpdateParcelRequest": {
+        "additionalProperties": false,
+        "description": "`PATCH /api/v1/parcels/{id}` — metadata only; files change through versions.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "visibility": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Visibility"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Usage": {
+        "description": "What a user is currently storing.",
+        "properties": {
+          "parcel_count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "stored_bytes": {
+            "description": "Sum of every version's `total_bytes` (what the quota counts).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "version_count": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "parcel_count",
+          "version_count",
+          "stored_bytes"
+        ],
+        "type": "object"
+      },
+      "VersionDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VersionSummary"
+          },
+          {
+            "properties": {
+              "files": {
+                "items": {
+                  "$ref": "#/components/schemas/FileEntry"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "files"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "A version with its file list."
+      },
+      "VersionList": {
+        "description": "`GET /api/v1/parcels/{id}/versions`.",
+        "properties": {
+          "versions": {
+            "description": "Newest first.",
+            "items": {
+              "$ref": "#/components/schemas/VersionSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "versions"
+        ],
+        "type": "object"
+      },
+      "VersionSummary": {
+        "description": "One immutable version of a parcel.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "entry": {
+            "type": "string"
+          },
+          "file_count": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "label": {
+            "description": "Optional short note recorded with the publish (\"Draft to legal\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "version": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "entry",
+          "file_count",
+          "total_bytes",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ViewGrant": {
+        "description": "`GET /api/v1/parcels/{id}/view` — what the viewer iframe loads.",
+        "properties": {
+          "content_url": {
+            "description": "Signed, expiring URL on the sandboxed content origin.",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "is_owner": {
+            "type": "boolean"
+          },
+          "parcel": {
+            "$ref": "#/components/schemas/ParcelSummary"
+          },
+          "version": {
+            "$ref": "#/components/schemas/VersionSummary"
+          }
+        },
+        "required": [
+          "parcel",
+          "version",
+          "is_owner",
+          "content_url",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "Visibility": {
+        "description": "Who can open a parcel.",
+        "enum": [
+          "private",
+          "public"
+        ],
+        "type": "string"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "description": "A slauth access token (JWT, audience `parcel`) or a `pcl_` API token.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "contact": {
+      "email": "charlie.knudsen@gmail.com",
+      "name": "Charlie Knudsen",
+      "url": "https://github.com/charliek/parcel"
+    },
+    "description": "Publish HTML pages (with optional supporting files) to private, sandboxed URLs, manage their versions and visibility, and read them back. Authenticate with a slauth access token (the web app) or a `pcl_` API token (the CLI and agents). Health probes, the sandboxed content origin (`/v/{token}/…`) and the web app itself are deliberately not part of this document.",
+    "license": {
+      "identifier": "MIT",
+      "name": "MIT"
+    },
+    "title": "Parcel API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/cli/device": {
+      "post": {
+        "description": "Start a CLI login. Show `user_code` to the user and send them to `verification_uri_complete`, then poll `/cli/device/token`.",
+        "operationId": "device_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStartResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "device"
+        ]
+      }
+    },
+    "/api/v1/cli/device/token": {
+      "post": {
+        "description": "Poll a CLI login. Returns `pending` (or `slow_down`) until the user decides; `approved` carries the new API token exactly once.",
+        "operationId": "device_poll",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePollRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicePollResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "device"
+        ]
+      }
+    },
+    "/api/v1/cli/device/{user_code}": {
+      "get": {
+        "description": "Describe a pending CLI login for the approval page.",
+        "operationId": "device_describe",
+        "parameters": [
+          {
+            "description": "The code shown in the terminal",
+            "in": "path",
+            "name": "user_code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceInfo"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "device"
+        ]
+      }
+    },
+    "/api/v1/cli/device/{user_code}/approve": {
+      "post": {
+        "description": "Approve a pending CLI login as the signed-in user.",
+        "operationId": "device_approve",
+        "parameters": [
+          {
+            "description": "The code shown in the terminal",
+            "in": "path",
+            "name": "user_code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Approved"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "device"
+        ]
+      }
+    },
+    "/api/v1/cli/device/{user_code}/deny": {
+      "post": {
+        "description": "Deny a pending CLI login.",
+        "operationId": "device_deny",
+        "parameters": [
+          {
+            "description": "The code shown in the terminal",
+            "in": "path",
+            "name": "user_code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Denied"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "device"
+        ]
+      }
+    },
+    "/api/v1/info": {
+      "get": {
+        "description": "Unauthenticated description of this server: origins, the slauth settings the web app signs in with, limits, and allowed file extensions.",
+        "operationId": "get_info",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerInfo"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "description": "The signed-in user, what they are storing, and the limits that apply.",
+        "operationId": "get_me",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/api/v1/parcels": {
+      "get": {
+        "description": "List the caller's parcels, most recently updated first.",
+        "operationId": "list_parcels",
+        "parameters": [
+          {
+            "description": "Case-insensitive match on title, description or id.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (1–200, default 50).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Rows to skip (default 0).",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelList"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "parcels"
+        ]
+      },
+      "post": {
+        "description": "Create a parcel from a multipart upload. Send an optional `metadata` part (JSON, `CreateParcelMetadata`) and one `file` part per file whose filename is the published path (e.g. `index.html`, `assets/app.js`).",
+        "operationId": "create_parcel",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishUpload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishResult"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A size, count or quota limit was exceeded"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "parcels"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}": {
+      "delete": {
+        "description": "Delete a parcel and all its versions. Its URL stops working immediately.",
+        "operationId": "delete_parcel",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "parcels"
+        ]
+      },
+      "get": {
+        "description": "A parcel with its version history and current files. Public parcels are readable without credentials; private ones only by their owner.",
+        "operationId": "get_parcel",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelDetail"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "parcels"
+        ]
+      },
+      "patch": {
+        "description": "Change a parcel's title, description or visibility. Files change only through new versions.",
+        "operationId": "update_parcel",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateParcelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelSummary"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "parcels"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}/versions": {
+      "get": {
+        "description": "Every version of a parcel, newest first.",
+        "operationId": "list_versions",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionList"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "versions"
+        ]
+      },
+      "post": {
+        "description": "Publish a new version (the URL stays the same). In `merge` mode (default) uploaded files are added or replaced, others are kept, and `remove` drops paths; in `replace` mode the version is exactly the uploaded files. `base_version` makes the publish fail with 409 if someone else published first.",
+        "operationId": "create_version",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/NewVersionUpload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishResult"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`base_version` is no longer current"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "versions"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}/versions/{version}": {
+      "get": {
+        "description": "One version and its files. `version` is a number or `latest`.",
+        "operationId": "get_version",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Version number or `latest`",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionDetail"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "versions"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}/versions/{version}/files/{path}": {
+      "get": {
+        "description": "Raw bytes of one file, as an attachment. This is how the CLI and agents read a parcel's source; browsers view parcels through the sandboxed content origin instead.",
+        "operationId": "get_file",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Version number or `latest`",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Published path, e.g. `index.html` or `assets/app.js`",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "items": {
+                    "format": "int32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "File bytes"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "versions"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}/versions/{version}/restore": {
+      "post": {
+        "description": "Publish a new version whose files are a copy of an earlier one.",
+        "operationId": "restore_version",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Version to restore",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishResult"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "versions"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}/view": {
+      "get": {
+        "description": "A short-lived signed URL on the sandboxed content origin for one version's entry page — what the viewer iframe loads.",
+        "operationId": "view_parcel",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Version to view (default: current).",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewGrant"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "parcels"
+        ]
+      }
+    },
+    "/api/v1/tokens": {
+      "get": {
+        "description": "The caller's active API tokens (secrets are never returned).",
+        "operationId": "list_tokens",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenList"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "tokens"
+        ]
+      },
+      "post": {
+        "description": "Mint an API token. The `secret` is returned exactly once.",
+        "operationId": "create_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedToken"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "tokens"
+        ]
+      }
+    },
+    "/api/v1/tokens/current": {
+      "delete": {
+        "description": "Revoke the API token this request is authenticated with (`parcel logout`).",
+        "operationId": "revoke_current_token",
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request was not made with an API token"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "tokens"
+        ]
+      }
+    },
+    "/api/v1/tokens/{id}": {
+      "delete": {
+        "description": "Revoke one of the caller's tokens.",
+        "operationId": "revoke_token",
+        "parameters": [
+          {
+            "description": "Token id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "tokens"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "This server, relative to wherever it is deployed.",
+      "url": "/"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Server description and the signed-in user.",
+      "name": "account"
+    },
+    {
+      "description": "Create, list, read, change and delete parcels.",
+      "name": "parcels"
+    },
+    {
+      "description": "A parcel's immutable versions and their files.",
+      "name": "versions"
+    },
+    {
+      "description": "API tokens for the CLI and agents.",
+      "name": "tokens"
+    },
+    {
+      "description": "The CLI's device login flow.",
+      "name": "device"
+    }
+  ]
+}

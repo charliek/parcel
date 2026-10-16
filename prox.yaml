@@ -1,0 +1,31 @@
+# Local dev under prox: https://parcel.local.stridelabs.ai (Vite) with the API
+# proxied to the backend, the sandboxed content origin on
+# https://parcelcontent.local.stridelabs.ai, and the backend directly on
+# https://parcelapi.local.stridelabs.ai. slauth's own prox.yaml registers
+# auth/authapi/kratos on the same shared :443 proxy.
+api:
+  port: 5563
+env_file: .env
+dependencies:
+  postgres:
+    check:
+      tcp: "localhost:5439"
+    start: docker compose up -d postgres
+processes:
+  backend:
+    cmd: mise exec -- cargo run -p parcel-server -- serve
+    depends_on: [postgres]
+  frontend: cd frontend && bun run dev --port 5178
+proxy:
+  enabled: true
+  https_port: 443
+  domain: local.stridelabs.ai
+  capture:
+    enabled: true
+    max_body_size: 1MB
+services:
+  parcel: 5178
+  parcelapi: 8106
+  parcelcontent: 8106
+certs:
+  auto_generate: true
