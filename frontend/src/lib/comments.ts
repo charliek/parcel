@@ -4,7 +4,14 @@
  */
 
 import { copyAnchor, type FramePin } from './frame-protocol';
-import type { Comment, CommentAnchor, CommentAuthor, CommentList, CommentVia } from './types';
+import type {
+  Comment,
+  CommentAnchor,
+  CommentAuthor,
+  CommentList,
+  CommentVia,
+  NewComment,
+} from './types';
 
 /** Longest comment or reply body, in characters (`comments::MAX_COMMENT_CHARS`). */
 export const MAX_COMMENT_CHARS = 4000;
@@ -62,6 +69,27 @@ export function wasEdited(created: string, updated: string): boolean {
   const a = Date.parse(created);
   const b = Date.parse(updated);
   return Number.isFinite(a) && Number.isFinite(b) && b > a;
+}
+
+/** A spot picked on the page, with the version the frame showed when it was picked. */
+export interface CommentDraft {
+  anchor: CommentAnchor;
+  version: number;
+}
+
+/**
+ * The request for a new thread. An anchored comment goes on the version
+ * its spot was picked on, whatever the frame shows by the time it is sent;
+ * a general one on the version in view.
+ */
+export function newThread(
+  body: string,
+  draft: CommentDraft | null,
+  shownVersion: number,
+): NewComment {
+  return draft
+    ? { body: body.trim(), version: draft.version, anchor: draft.anchor }
+    : { body: body.trim(), version: shownVersion };
 }
 
 /** Short labels next to an author's name. */

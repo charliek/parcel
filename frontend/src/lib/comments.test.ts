@@ -6,6 +6,7 @@ import {
   findThread,
   isValidBody,
   MAX_COMMENT_CHARS,
+  newThread,
   pinsForPage,
   removeComment,
   replyPermissions,
@@ -211,5 +212,22 @@ describe('wasEdited', () => {
     expect(wasEdited('2026-10-16T10:00:00Z', '2026-10-16T10:00:00Z')).toBe(false);
     expect(wasEdited('2026-10-16T10:00:00Z', '2026-10-16T10:05:00Z')).toBe(true);
     expect(wasEdited('nope', '2026-10-16T10:05:00Z')).toBe(false);
+  });
+});
+
+describe('newThread', () => {
+  const anchor = { path: 'index.html', selector: 'h1', text: 'Title' };
+
+  it('posts an anchored comment on the version its spot was picked on', () => {
+    // Picked on v1; the frame has since moved to v2.
+    expect(newThread('  Fix this  ', { anchor, version: 1 }, 2)).toEqual({
+      body: 'Fix this',
+      version: 1,
+      anchor,
+    });
+  });
+
+  it('posts a general comment on the version in view', () => {
+    expect(newThread('Looks good', null, 2)).toEqual({ body: 'Looks good', version: 2 });
   });
 });

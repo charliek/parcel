@@ -50,6 +50,14 @@ impl CommentAnchor {
                 ));
             }
         }
+        for (name, value) in [("selector", &self.selector), ("text", &self.text)] {
+            if value
+                .as_deref()
+                .is_some_and(|v| v.chars().any(char::is_control))
+            {
+                return Err(format!("anchor.{name} must not contain control characters"));
+            }
+        }
         if self
             .text
             .as_ref()
@@ -68,11 +76,19 @@ impl CommentAnchor {
     }
 }
 
-/// Validate a comment or reply body; returns it trimmed.
+/// Validate a comment or reply body; returns it trimmed. Line breaks and
+/// tabs are fine; other control characters are refused, since bodies are
+/// printed raw in terminals (`parcel comments list`).
 pub fn validate_body(body: &str) -> Result<&str, String> {
     let body = body.trim();
     if body.is_empty() || body.chars().count() > MAX_COMMENT_CHARS {
         return Err(format!("comment must be 1–{MAX_COMMENT_CHARS} characters"));
+    }
+    if body
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err("comment must not contain control characters".into());
     }
     Ok(body)
 }
@@ -254,6 +270,9 @@ mod tests {
         let mut bad = anchor();
         bad.selector = Some(" ".into());
         assert!(bad.validate().is_err());
+        let mut bad = anchor();
+        bad.text = Some("x\u{1b}[2J".into());
+        assert!(bad.validate().unwrap_err().contains("anchor.text"));
     }
 
     #[test]
@@ -261,6 +280,9 @@ mod tests {
         assert_eq!(validate_body("  hi \n").unwrap(), "hi");
         assert!(validate_body("   ").is_err());
         assert!(validate_body(&"x".repeat(MAX_COMMENT_CHARS + 1)).is_err());
+        assert_eq!(validate_body("a\r\n\tb").unwrap(), "a\r\n\tb");
+        assert!(validate_body("evil \u{1b}]52;c;AAAA\u{7}").is_err());
+        assert!(validate_body("c1 \u{9b}2J").is_err());
     }
 
     #[test]

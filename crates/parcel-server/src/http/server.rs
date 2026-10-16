@@ -181,13 +181,16 @@ fn is_content_host(req: &Request<Body>, content_authority: &str) -> bool {
 /// Content URLs carry a capability token as their second segment; keep it
 /// out of logs.
 fn redacted_path(path: &str) -> String {
-    match path.strip_prefix("/v/") {
-        Some(rest) => match rest.split_once('/') {
-            Some((_, tail)) => format!("/v/<token>/{tail}"),
-            None => "/v/<token>".to_string(),
-        },
-        None => path.to_string(),
+    // Content files (`/v/`) and page data (`/d/`) both carry a capability.
+    for prefix in ["/v/", "/d/"] {
+        if let Some(rest) = path.strip_prefix(prefix) {
+            return match rest.split_once('/') {
+                Some((_, tail)) => format!("{prefix}<token>/{tail}"),
+                None => format!("{prefix}<token>"),
+            };
+        }
     }
+    path.to_string()
 }
 
 /// Bind, migrate, start GC, and serve until a shutdown signal arrives.
@@ -230,6 +233,8 @@ mod tests {
             "/v/<token>/index.html"
         );
         assert_eq!(redacted_path("/v/abc"), "/v/<token>");
+        assert_eq!(redacted_path("/d/abc.def/votes/a"), "/d/<token>/votes/a");
+        assert_eq!(redacted_path("/d/abc.def"), "/d/<token>");
         assert_eq!(redacted_path("/api/v1/me"), "/api/v1/me");
     }
 

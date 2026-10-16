@@ -1,13 +1,14 @@
 //! Comment threads on a parcel.
 //!
-//! Every change bumps `parcels.comments_rev` in the same statement or
-//! transaction, which is what the viewer polls (`/activity`) to notice that
-//! comments changed without refetching them.
+//! Every change bumps `parcels.comments_rev` in the same transaction, which
+//! is what the viewer polls (`/activity`) to notice that comments changed
+//! without refetching them. The bump comes first, so each change locks the
+//! parcel row before any comment row.
 
 use anyhow::{Context, Result};
 use parcel_types::{CommentAnchor, CommentStatus, CommentVia};
 use sqlx::types::Json;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -197,23 +198,32 @@ pub async fn insert(pool: &PgPool, c: &NewCommentRow<'_>) -> Result<Result<i32, 
     Ok(Ok(c.reply_to.unwrap_or(number)))
 }
 
-/// Bumping the parcel's revision rides along in a data-modifying CTE, so the
-/// change and the bump are one atomic statement.
-const BUMP: &str =
-    "WITH bump AS (UPDATE parcels SET comments_rev = comments_rev + 1 WHERE id = $1)";
+/// Begin a comment change: bump the parcel's revision first, which takes
+/// its row lock before any comment row is touched. Inserts do the same, so
+/// every comment change locks in one order (parcel, then comments).
+async fn begin_change(pool: &PgPool, parcel_id: &str) -> Result<Transaction<'static, Postgres>> {
+    let mut tx = pool.begin().await.context("beginning comment change")?;
+    sqlx::query("UPDATE parcels SET comments_rev = comments_rev + 1 WHERE id = $1")
+        .bind(parcel_id)
+        .execute(&mut *tx)
+        .await
+        .context("bumping comments revision")?;
+    Ok(tx)
+}
 
 pub async fn update_body(pool: &PgPool, parcel_id: &str, number: i32, body: &str) -> Result<()> {
-    sqlx::query(&format!(
-        "{BUMP} UPDATE comments SET body = $3, updated_at = now()
-         WHERE parcel_id = $1 AND number = $2"
-    ))
+    let mut tx = begin_change(pool, parcel_id).await?;
+    sqlx::query(
+        "UPDATE comments SET body = $3, updated_at = now()
+         WHERE parcel_id = $1 AND number = $2",
+    )
     .bind(parcel_id)
     .bind(number)
     .bind(body)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .context("editing comment")?;
-    Ok(())
+    tx.commit().await.context("committing comment edit")
 }
 
 /// Resolve or reopen a thread. Leaves `resolved_at` alone when it already
@@ -225,33 +235,33 @@ pub async fn set_resolved(
     resolved: bool,
     by: Uuid,
 ) -> Result<()> {
-    sqlx::query(&format!(
-        "{BUMP} UPDATE comments
+    let mut tx = begin_change(pool, parcel_id).await?;
+    sqlx::query(
+        "UPDATE comments
          SET resolved_at = CASE WHEN $3 THEN COALESCE(resolved_at, now()) END,
              resolved_by = CASE WHEN $3 THEN COALESCE(resolved_by, $4) END
-         WHERE parcel_id = $1 AND number = $2 AND parent_number IS NULL"
-    ))
+         WHERE parcel_id = $1 AND number = $2 AND parent_number IS NULL",
+    )
     .bind(parcel_id)
     .bind(number)
     .bind(resolved)
     .bind(by)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .context("resolving comment")?;
-    Ok(())
+    tx.commit().await.context("committing comment resolution")
 }
 
 /// Delete a comment (a thread takes its replies with it).
 pub async fn delete(pool: &PgPool, parcel_id: &str, number: i32) -> Result<()> {
-    sqlx::query(&format!(
-        "{BUMP} DELETE FROM comments WHERE parcel_id = $1 AND number = $2"
-    ))
-    .bind(parcel_id)
-    .bind(number)
-    .execute(pool)
-    .await
-    .context("deleting comment")?;
-    Ok(())
+    let mut tx = begin_change(pool, parcel_id).await?;
+    sqlx::query("DELETE FROM comments WHERE parcel_id = $1 AND number = $2")
+        .bind(parcel_id)
+        .bind(number)
+        .execute(&mut *tx)
+        .await
+        .context("deleting comment")?;
+    tx.commit().await.context("committing comment delete")
 }
 
 /// `(current_version, updated_at, comments_rev, open threads)` for the

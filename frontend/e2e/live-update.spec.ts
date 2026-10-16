@@ -115,3 +115,85 @@ test('a half-written comment holds off the reload', async ({ page, request }) =>
   await expect(frame.getByRole('heading', { name: v2 })).toBeVisible({ timeout: POLL_TIMEOUT });
   await expect(banner).toHaveCount(0);
 });
+
+const VIEW_REQUEST = /\/api\/v1\/parcels\/[a-z2-9]{12}\/view(\?|$)/;
+
+test('a comment started while the reload is in flight keeps the frame', async ({
+  page,
+  request,
+}) => {
+  const v1 = uniq('race-v1');
+  const v2 = uniq('race-v2');
+  parcelId = await createParcelViaApi(request, { title: uniq('e2e-race'), marker: v1 });
+
+  await page.goto(`/p/${parcelId}`);
+  const frame = parcelFrame(page);
+  await expect(frame.getByRole('heading', { name: v1 })).toBeVisible();
+
+  // Slow down the reload's grant request so there's time to start a comment.
+  await page.route(VIEW_REQUEST, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    await route.continue();
+  });
+  const requested = page.waitForRequest(VIEW_REQUEST, { timeout: POLL_TIMEOUT });
+  const answered = page.waitForResponse(VIEW_REQUEST, { timeout: POLL_TIMEOUT });
+  await publishVersionViaApi(request, parcelId, htmlPage(v2));
+  await requested; // auto-reload decided while nothing was being written
+
+  await page
+    .getByRole('banner')
+    .getByRole('button', { name: /^Comment/ })
+    .click();
+  await frame.locator('#marker').click();
+  const panel = page.getByRole('complementary', { name: 'Comments' });
+  await panel.getByRole('textbox', { name: 'Comment on this spot' }).fill('Written mid-reload');
+
+  await answered;
+  await page.waitForTimeout(500);
+  // The grant arrived, but the frame wasn't swapped under the draft.
+  await expect(frame.getByRole('heading', { name: v1 })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'v2 is available' })).toBeVisible();
+
+  await page.unroute(VIEW_REQUEST);
+  await panel.getByRole('button', { name: 'Comment', exact: true }).click();
+  await expect(panel.getByRole('article', { name: /^Comment #1 by / })).toBeVisible();
+  const body = await (await request.get(`/api/v1/parcels/${parcelId}/comments`)).json();
+  expect(body.comments[0]).toMatchObject({ version: 1, anchor: { text: v1 } });
+
+  // With nothing left in progress, auto-reload catches up.
+  await expect(frame.getByRole('heading', { name: v2 })).toBeVisible({ timeout: POLL_TIMEOUT });
+});
+
+test('a picked spot keeps its version when the frame reloads', async ({ page, request }) => {
+  const v1 = uniq('spot-v1');
+  const v2 = uniq('spot-v2');
+  parcelId = await createParcelViaApi(request, { title: uniq('e2e-spot'), marker: v1 });
+
+  await page.goto(`/p/${parcelId}`);
+  const frame = parcelFrame(page);
+  await expect(frame.getByRole('heading', { name: v1 })).toBeVisible();
+  await page
+    .getByRole('banner')
+    .getByRole('button', { name: /^Comment/ })
+    .click();
+  await frame.locator('#marker').click();
+  const panel = page.getByRole('complementary', { name: 'Comments' });
+  const composer = panel.getByRole('textbox', { name: 'Comment on this spot' });
+  await composer.fill('About the old heading');
+
+  await publishVersionViaApi(request, parcelId, htmlPage(v2));
+  const banner = page.getByRole('status').filter({ hasText: 'v2 is available' });
+  await expect(banner).toBeVisible({ timeout: POLL_TIMEOUT });
+  // The user reloads anyway; the draft stays, and stays on v1.
+  await banner.getByRole('button', { name: 'Reload' }).click();
+  await expect(frame.getByRole('heading', { name: v2 })).toBeVisible();
+  await expect(composer).toHaveValue('About the old heading');
+  await expect(panel.getByText(`Commenting on “${v1}” (v1)`)).toBeVisible();
+
+  await panel.getByRole('button', { name: 'Comment', exact: true }).click();
+  const thread = panel.getByRole('article', { name: /^Comment #1 by / });
+  await expect(thread).toBeVisible();
+  await expect(thread.getByText('v1', { exact: true })).toBeVisible(); // written on another version
+  const body = await (await request.get(`/api/v1/parcels/${parcelId}/comments`)).json();
+  expect(body.comments[0]).toMatchObject({ version: 1, anchor: { path: 'index.html', text: v1 } });
+});

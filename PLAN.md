@@ -300,6 +300,29 @@ upserts, device-redeem atomicity, `parcel pull` symlink handling, token leaks
 in errors/logs, cache revocation); all are fixed with regression tests where
 testable.
 
+### v0.2 (comments, live updates, page data)
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` | 156 passed |
+| `pytest tests/functional` (comments, data, helper injection, CLI flows) | 20 passed |
+| `bun test` / Playwright e2e on the production build | 135 / 27 passed (incl. live update, comment mode, frame-bridge spoofing, the reload-vs-draft race, page data) |
+| Browser walkthrough (playwright-cli): a dashboard reading `parcel.data` updates live from `parcel data update`; comment pinned in comment mode; `parcel comments list` shows the anchor; a v2 publish reloads the open viewer and the pin re-finds its element; `parcel comments resolve --reply` shows up in the viewer; phone width | works |
+| Helper in real Chromium: storage stand-ins, `parcel.data`, `<base href>` pages, pages that wrap `fetch`, injection past comments/quoted attributes; `/d/<token>` redacted in logs | works |
+
+A Codex review of v0.2 found 6 issues, all fixed: data calls resolved
+against a page's `<base>` (capability leak) and went through a page-wrapped
+`fetch`; `/d/` capabilities were not redacted in logs (nor in the documented
+Cloud Run log exclusion); delete-vs-write lock order could deadlock (every
+data/comment change now locks the parcel row first); injection could land
+inside a comment or quoted attribute; control characters in comments reached
+terminals via `parcel comments list` (now refused by the server and escaped
+by the CLI); a slow auto-reload could swap the frame under a comment draft
+(now decided when the grant arrives, and drafts keep their version). Earlier,
+the frame bridge was hardened so a document navigated into the viewer's
+iframe can't pose as the parcel (token-verified `ready`, `bye` on unload,
+external links open in a new tab).
+
 Deviations from the original brief, by design:
 - CLI auth is a device flow + app-local `pcl_` tokens rather than slauth PATs or
   a loopback OAuth client (see "Auth"). Accepting slauth PATs too is on the roadmap.

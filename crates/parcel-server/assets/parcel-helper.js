@@ -31,6 +31,10 @@
   if (window.__parcelHelper) return;
   window.__parcelHelper = true;
 
+  // Taken before any page script runs, so a page library that wraps fetch
+  // (error trackers, analytics) never sees a data request's capability URL.
+  const nativeFetch = window.fetch.bind(window);
+
   // Replaced by the server with the app origin, as a JSON string.
   const APP_ORIGIN = "__PARCEL_APP_ORIGIN__";
 
@@ -158,7 +162,10 @@
 
   // -------------------------------------------------------------------- data
 
-  const dataBase = token ? `/d/${token}` : null;
+  // Absolute, on the content host: a page's <base href> must not send the
+  // capability anywhere else. (`location` reflects the URL even though the
+  // sandboxed document's origin is opaque.)
+  const dataBase = token ? `${location.protocol}//${location.host}/d/${token}` : null;
   const enc = (name) => encodeURIComponent(String(name));
 
   function dataError(message, status) {
@@ -174,7 +181,7 @@
       init.headers = { 'content-type': 'application/json' };
       init.body = JSON.stringify(body);
     }
-    const res = await fetch(dataBase + suffix, init);
+    const res = await nativeFetch(dataBase + suffix, init);
     if (res.status === 204) return null;
     let json = null;
     try {
@@ -318,7 +325,14 @@
   let lastReport = '';
   const found = new Map();
 
-  const norm = (s) => String(s || '').slice(0, 2000).replace(/\s+/g, ' ').trim();
+  // Whitespace collapsed and control characters dropped (the server refuses
+  // them in anchors).
+  const norm = (s) =>
+    String(s || '')
+      .slice(0, 2000)
+      .replace(/\s+/g, ' ')
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+      .trim();
   const textOf = (el) => norm(el.textContent).slice(0, 200);
   const clamp = (n) => Math.min(1, Math.max(0, n));
   const round = (n) => Math.round(n * 1000) / 1000;

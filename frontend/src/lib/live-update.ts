@@ -42,6 +42,38 @@ export function decideLiveUpdate(input: LiveUpdateInput): LiveUpdateDecision {
   return 'reload';
 }
 
+export interface FreshGrantInput {
+  /** The version the frame shows now (not when the request started). */
+  shown: number;
+  /** The version of the grant that just arrived. */
+  fresh: number;
+  pinned: boolean;
+  composing: boolean;
+  autoReload: boolean;
+  /** The user asked for it (the banner's Reload), rather than auto-reload. */
+  manual: boolean;
+}
+
+/**
+ * Whether to swap the frame to a grant fetched for a reload, decided when
+ * the grant arrives: the user may have started a comment, turned
+ * auto-reload off or moved to a pinned version while it was in flight, and
+ * a decision made before the request must not be applied after it.
+ */
+export function shouldApplyFreshGrant(input: FreshGrantInput): boolean {
+  if (input.pinned || input.fresh <= input.shown) return false;
+  if (input.manual) return true;
+  return (
+    decideLiveUpdate({
+      shown: input.shown,
+      latest: input.fresh,
+      pinned: input.pinned,
+      composing: input.composing,
+      autoReload: input.autoReload,
+    }) === 'reload'
+  );
+}
+
 /** The stored preference: on unless explicitly turned off. */
 export function parseAutoReload(stored: string | null): boolean {
   return stored !== '0';

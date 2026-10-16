@@ -1,8 +1,9 @@
 //! Parcel data: keyed JSON items in named collections, per parcel.
 //!
-//! Writes lock the parcel row (by bumping `parcels.data_rev`) before
-//! checking the parcel's data limit, so two concurrent writes can't both
-//! squeeze under it.
+//! Every change locks the parcel row first (by bumping `parcels.data_rev`,
+//! or `FOR UPDATE`), then item rows: one lock order, so concurrent changes
+//! queue instead of deadlocking, and two writes can't both squeeze under the
+//! parcel's data limit.
 
 use anyhow::{Context, Result};
 use parcel_types::DATA_ITEM_OVERHEAD;
@@ -194,6 +195,16 @@ pub async fn delete(
     key: Option<&str>,
 ) -> Result<u64> {
     let mut tx = pool.begin().await.context("beginning data delete")?;
+    // Parcel row first, as in `write`: one lock order, so a delete and a
+    // write can't deadlock.
+    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM parcels WHERE id = $1 FOR UPDATE")
+        .bind(parcel_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("locking parcel for data delete")?;
+    if exists.is_none() {
+        return Ok(0);
+    }
     let deleted = sqlx::query(
         "DELETE FROM parcel_data
          WHERE parcel_id = $1 AND collection = $2 AND ($3::text IS NULL OR key = $3)",

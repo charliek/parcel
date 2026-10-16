@@ -16,7 +16,15 @@ import {
   Share2,
   Sparkles,
 } from 'lucide-react';
-import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { SignInButton } from '@/components/auth/SignInButton';
@@ -56,15 +64,15 @@ import { useSilentReauth } from '@/hooks/useSilentReauth';
 import { api, downloadFile } from '@/lib/api';
 import { hasSignedInHint } from '@/lib/auth';
 import { viewerAccess } from '@/lib/auth/policy';
-import { pinsForPage } from '@/lib/comments';
+import { type CommentDraft, newThread, pinsForPage } from '@/lib/comments';
 import { isExpiringSoon } from '@/lib/format';
 import { contentToken, toPage } from '@/lib/frame-protocol';
 import { errorMessage, errorStatus } from '@/lib/http';
 import { isValidParcelId, parseVersionParam } from '@/lib/ids';
-import { decideLiveUpdate, parseAutoReload } from '@/lib/live-update';
+import { decideLiveUpdate, parseAutoReload, shouldApplyFreshGrant } from '@/lib/live-update';
 import { silentReauthTried } from '@/lib/oauth';
 import { readStorage, STORAGE_KEYS, writeStorage } from '@/lib/storage';
-import type { Comment, CommentAnchor, Me, ViewGrant } from '@/lib/types';
+import type { Comment, Me, ViewGrant } from '@/lib/types';
 import { useServerInfoStore } from '@/stores/server-info.store';
 
 /** Refetch a content URL that expires within this window before reusing it. */
@@ -290,7 +298,9 @@ function ParcelViewer({
   const [filter, setFilter] = useState<CommentFilter>('open');
   const [active, setActive] = useState<number | null>(null);
   const [reveal, setReveal] = useState<{ number: number; nonce: number } | null>(null);
-  const [draftAnchor, setDraftAnchor] = useState<CommentAnchor | null>(null);
+  // The spot being commented on, with the version it was picked on.
+  const [draft, setDraft] = useState<CommentDraft | null>(null);
+  const draftAnchor = draft?.anchor ?? null;
   const [composerText, setComposerText] = useState('');
   const [composingKeys, setComposingKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [signInPrompt, setSignInPrompt] = useState(false);
@@ -314,7 +324,7 @@ function ParcelViewer({
     });
   }, []);
 
-  const composing = draftAnchor !== null || composerText.trim() !== '' || composingKeys.size > 0;
+  const composing = draft !== null || composerText.trim() !== '' || composingKeys.size > 0;
   const decision = decideLiveUpdate({
     shown: version.version,
     latest,
@@ -336,12 +346,15 @@ function ParcelViewer({
   const { frameRef, live, post, onLoad } = useFrameBridge({
     frameKey,
     token: contentToken(grant.content_url),
-    onMessage: (message) => {
+    version: version.version,
+    onMessage: (message, session) => {
       switch (message.type) {
         case 'anchor':
           // Only clicks made in comment mode; a page could send this anytime.
           if (!commentModeOn) return;
-          setDraftAnchor(message.anchor);
+          // The comment belongs to the version this page was loaded from,
+          // even if the frame moves on before it is sent.
+          setDraft({ anchor: message.anchor, version: session.version });
           setPanel('comments');
           break;
         case 'pin-click': {
@@ -411,37 +424,74 @@ function ParcelViewer({
     seenLatest.current = latest;
   }, [latest, client, parcel.id]);
 
-  const refetchRef = useRef(refetchGrant);
-  useEffect(() => {
-    refetchRef.current = refetchGrant;
-  });
-  const reloading = useRef(false);
-  const shownVersion = version.version;
-  const reloadToLatest = useCallback(
-    async (auto: boolean) => {
-      if (reloading.current) return;
-      reloading.current = true;
+  // Reloading to a new version is two steps. The grant is fetched, and only
+  // when it arrives is it decided, against the state at that moment,
+  // whether to apply it (put it in the view query, which remounts the
+  // frame). The user may have started a comment while it was in flight.
+  const [arrived, setArrived] = useState<{ grant: ViewGrant; manual: boolean } | null>(null);
+  const fetching = useRef(false);
+  const fetchLatestGrant = useCallback(
+    async (manual: boolean) => {
+      if (fetching.current) return;
+      fetching.current = true;
       try {
-        // A fresh grant for the current version; its new URL remounts the frame.
-        const fresh = await refetchRef.current();
-        if (fresh && fresh.version.version > shownVersion) {
-          if (auto) toast.success(`Updated to v${fresh.version.version}`);
-          else setAutoReloadFailed(false);
-        } else if (auto) {
-          setAutoReloadFailed(true);
-        }
-      } catch {
-        if (auto) setAutoReloadFailed(true);
+        setArrived({ grant: await api.view(parcel.id), manual });
+      } catch (err) {
+        if (manual) toast.error('Could not reload', { description: errorMessage(err) });
+        else setAutoReloadFailed(true);
       } finally {
-        reloading.current = false;
+        fetching.current = false;
       }
     },
-    [shownVersion],
+    [parcel.id],
   );
 
   useEffect(() => {
-    if (decision === 'reload') void reloadToLatest(true);
-  }, [decision, reloadToLatest]);
+    if (decision === 'reload') void fetchLatestGrant(false);
+  }, [decision, fetchLatestGrant]);
+
+  // Layout phase: nothing (a page message, a keystroke) can be handled
+  // between the render that sees the arrived grant and this decision.
+  useLayoutEffect(() => {
+    if (!arrived) return;
+    setArrived(null);
+    const fresh = arrived.grant;
+    const apply = shouldApplyFreshGrant({
+      shown: version.version,
+      fresh: fresh.version.version,
+      pinned,
+      composing,
+      autoReload: autoReload && !autoReloadFailed,
+      manual: arrived.manual,
+    });
+    if (apply) {
+      client.setQueryData(queryKeys.view(parcel.id, null), fresh);
+      if (arrived.manual) setAutoReloadFailed(false);
+      else toast.success(`Updated to v${fresh.version.version}`);
+    } else if (
+      !arrived.manual &&
+      !pinned &&
+      fresh.version.version <= version.version &&
+      latest > version.version
+    ) {
+      // The poll says there is a newer version but the grant isn't one; offer
+      // the reload rather than retrying in a loop. (A grant the frame has
+      // already moved past, say after a publish from this tab, is just dropped.)
+      setAutoReloadFailed(true);
+    }
+    // Otherwise the frame stays and the banner offers vN (the decision above
+    // is now 'offer-reload', or the view is pinned).
+  }, [
+    arrived,
+    version.version,
+    latest,
+    pinned,
+    composing,
+    autoReload,
+    autoReloadFailed,
+    client,
+    parcel.id,
+  ]);
 
   const changeAutoReload = (on: boolean) => {
     setAutoReload(on);
@@ -463,7 +513,7 @@ function ParcelViewer({
   };
 
   const clearDraft = () => {
-    setDraftAnchor(null);
+    setDraft(null);
     setComposerText('');
   };
 
@@ -476,7 +526,7 @@ function ParcelViewer({
     setCommentMode(false);
     if (panel === 'comments') setPanel(null);
     // A spot with nothing written about it yet goes; a written draft stays.
-    if (!composerText.trim()) setDraftAnchor(null);
+    if (!composerText.trim()) setDraft(null);
   };
 
   const activate = (thread: Comment) => {
@@ -485,20 +535,16 @@ function ParcelViewer({
   };
 
   const submitComment = () => {
-    const anchor = draftAnchor;
-    createComment.mutate(
-      { body: composerText.trim(), version: version.version, ...(anchor ? { anchor } : {}) },
-      {
-        onSuccess: (thread) => {
-          clearDraft();
-          setFilter('open');
-          setActive(thread.number);
-          setReveal({ number: thread.number, nonce: Date.now() });
-        },
-        onError: (err) =>
-          toast.error('Could not add the comment', { description: errorMessage(err) }),
+    createComment.mutate(newThread(composerText, draft, version.version), {
+      onSuccess: (thread) => {
+        clearDraft();
+        setFilter('open');
+        setActive(thread.number);
+        setReveal({ number: thread.number, nonce: Date.now() });
       },
-    );
+      onError: (err) =>
+        toast.error('Could not add the comment', { description: errorMessage(err) }),
+    });
   };
 
   // `c` toggles comments and Escape leaves comment mode, unless the user is
@@ -779,7 +825,7 @@ function ParcelViewer({
             <span className="font-medium">v{latest}</span> is available.
             {composing && ' Reload when you’ve finished your comment.'}
           </span>
-          <Button size="sm" variant="outline" onClick={() => void reloadToLatest(false)}>
+          <Button size="sm" variant="outline" onClick={() => void fetchLatestGrant(true)}>
             <RotateCw />
             Reload
           </Button>
@@ -854,6 +900,7 @@ function ParcelViewer({
             onClose={() => setPanel(null)}
             onComposingChange={onComposingChange}
             draftAnchor={draftAnchor}
+            draftVersion={draft?.version ?? null}
             composerText={composerText}
             onComposerTextChange={setComposerText}
             onCancelDraft={clearDraft}

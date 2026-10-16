@@ -37,19 +37,18 @@ impl Helper {
 
     /// Add the script tag to an HTML document, as early as possible so the
     /// storage stand-ins exist before any page script runs: right after
-    /// `<head …>`, else after `<html …>`, else after the doctype, else first.
-    /// Never before the doctype, which would drop the page into quirks mode.
+    /// `<head …>`, else after `<html …>`, else after the doctype and any
+    /// leading comments. Never before the doctype, which would drop the page
+    /// into quirks mode.
+    ///
+    /// This is a scan, not a parser: it skips `<!-- … -->` comments and
+    /// quoted attribute values, which covers what real pages put before
+    /// `<head>`. If it is fooled, the script lands somewhere inert and the
+    /// page merely runs without the helper.
     pub fn inject(&self, html: &[u8]) -> Vec<u8> {
         let at = after_open_tag(html, b"head")
             .or_else(|| after_open_tag(html, b"html"))
-            .or_else(|| after_doctype(html))
-            .unwrap_or_else(|| {
-                if html.starts_with(b"\xEF\xBB\xBF") {
-                    3
-                } else {
-                    0
-                }
-            });
+            .unwrap_or_else(|| prologue_end(html));
         let mut out = Vec::with_capacity(html.len() + self.tag.len());
         out.extend_from_slice(&html[..at]);
         out.extend_from_slice(self.tag.as_bytes());
@@ -59,36 +58,85 @@ impl Helper {
 }
 
 /// The index just past the first `<name …>` open tag (ASCII
-/// case-insensitive), where `name` is followed by `>`, `/` or whitespace so
-/// `<header>` doesn't count as `<head>`.
+/// case-insensitive) outside comments, where `name` is followed by `>`, `/`
+/// or whitespace so `<header>` doesn't count as `<head>`.
 fn after_open_tag(html: &[u8], name: &[u8]) -> Option<usize> {
-    let mut from = 0;
-    while let Some(lt) = find(&html[from..], b"<").map(|i| from + i) {
-        let tag_start = lt + 1;
-        let tag_end = tag_start + name.len();
+    let mut i = 0;
+    while i < html.len() {
+        if html[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        if html[i..].starts_with(b"<!--") {
+            // An unterminated comment runs to the end of the document.
+            i = find(&html[i + 4..], b"-->").map(|j| i + 4 + j + 3)?;
+            continue;
+        }
+        let tag_end = i + 1 + name.len();
         if html.len() > tag_end
-            && html[tag_start..tag_end].eq_ignore_ascii_case(name)
+            && html[i + 1..tag_end].eq_ignore_ascii_case(name)
             && matches!(
                 html[tag_end],
                 b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r' | b'\x0c'
             )
         {
-            return find(&html[tag_end..], b">").map(|i| tag_end + i + 1);
+            return end_of_tag(html, tag_end);
         }
-        from = tag_start;
+        i += 1;
     }
     None
 }
 
-fn after_doctype(html: &[u8]) -> Option<usize> {
-    let start = html
-        .iter()
-        .position(|b| !b.is_ascii_whitespace() && !matches!(b, 0xEF | 0xBB | 0xBF))?;
-    let rest = &html[start..];
-    if rest.len() >= 9 && rest[..9].eq_ignore_ascii_case(b"<!doctype") {
-        find(rest, b">").map(|i| start + i + 1)
+/// The index just past the `>` that closes a tag whose attributes start at
+/// `from`. A quote opens a value only right after `=`, as in HTML.
+fn end_of_tag(html: &[u8], from: usize) -> Option<usize> {
+    let mut quote: Option<u8> = None;
+    let mut after_equals = false;
+    for (offset, &b) in html[from..].iter().enumerate() {
+        if let Some(q) = quote {
+            if b == q {
+                quote = None;
+            }
+            continue;
+        }
+        match b {
+            b'>' => return Some(from + offset + 1),
+            b'"' | b'\'' if after_equals => {
+                quote = Some(b);
+                after_equals = false;
+            }
+            b'=' => after_equals = true,
+            b if b.is_ascii_whitespace() => {}
+            _ => after_equals = false,
+        }
+    }
+    None
+}
+
+/// Past a byte-order mark, whitespace, comments and the doctype: the first
+/// place content may go.
+fn prologue_end(html: &[u8]) -> usize {
+    let mut i = if html.starts_with(b"\xEF\xBB\xBF") {
+        3
     } else {
-        None
+        0
+    };
+    loop {
+        while i < html.len() && html[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let rest = &html[i..];
+        let end = if rest.starts_with(b"<!--") {
+            find(&rest[4..], b"-->").map(|j| 4 + j + 3)
+        } else if rest.len() >= 9 && rest[..9].eq_ignore_ascii_case(b"<!doctype") {
+            find(rest, b">").map(|j| j + 1)
+        } else {
+            None
+        };
+        match end {
+            Some(len) => i += len,
+            None => return i,
+        }
     }
 }
 
@@ -117,6 +165,29 @@ mod tests {
             injected("<html><header>x</header><head>"),
             "<html><header>x</header><head>@"
         );
+    }
+
+    #[test]
+    fn skips_comments_and_quoted_attributes() {
+        assert_eq!(
+            injected("<!doctype html><!-- <head> --><html><head>x"),
+            "<!doctype html><!-- <head> --><html><head>@x"
+        );
+        assert_eq!(
+            injected("<head data-note=\"a > b\" title='c>d'><title>"),
+            "<head data-note=\"a > b\" title='c>d'>@<title>"
+        );
+        assert_eq!(
+            injected("<head data-x=a\"b><title>"),
+            "<head data-x=a\"b>@<title>"
+        );
+        assert_eq!(
+            injected("<!-- intro -->\n<!DOCTYPE html><!-- c --><p>hi"),
+            "<!-- intro -->\n<!DOCTYPE html><!-- c -->@<p>hi"
+        );
+        // An unterminated comment hides any tag after it; the script goes
+        // first, where it still runs.
+        assert_eq!(injected("<!-- <head>"), "@<!-- <head>");
     }
 
     #[test]

@@ -36,6 +36,8 @@ interface CommentsPanelProps {
   // The new-thread composer; its state lives in the viewer, which also
   // drives the draft pin in the page.
   draftAnchor: CommentAnchor | null;
+  /** The version the spot was picked on (the comment goes there). */
+  draftVersion: number | null;
   composerText: string;
   onComposerTextChange: (text: string) => void;
   onCancelDraft: () => void;
@@ -64,6 +66,7 @@ export function CommentsPanel({
   onClose,
   onComposingChange,
   draftAnchor,
+  draftVersion,
   composerText,
   onComposerTextChange,
   onCancelDraft,
@@ -205,6 +208,7 @@ export function CommentsPanel({
                 <Crosshair className="mt-0.5 h-3 w-3 shrink-0 text-primary" aria-hidden="true" />
                 <span className="min-w-0 break-words">
                   Commenting on {anchorLabel(draftAnchor, framePath)}
+                  {draftVersion !== null && draftVersion !== viewedVersion && ` (v${draftVersion})`}
                 </span>
               </p>
             ) : null

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   isVerifiedReady,
   type PageMessage,
@@ -16,6 +16,8 @@ export interface BridgeSession {
   path: string;
   /** Bumped by every verified `ready`, so each new page is sent the current state. */
   epoch: number;
+  /** The version of the grant the frame was loaded from. */
+  version: number;
 }
 
 /** Messages the viewer handles once the bridge is live (`ready`/`bye` are the hook's). */
@@ -26,7 +28,10 @@ interface FrameBridgeOptions {
   frameKey: string;
   /** The capability token in the URL the frame was given (`contentToken`). */
   token: string | null;
-  onMessage: (message: LivePageMessage) => void;
+  /** The version of the grant that URL came from. */
+  version: number;
+  /** Called with the session the message arrived in. */
+  onMessage: (message: LivePageMessage, session: BridgeSession) => void;
 }
 
 /**
@@ -43,23 +48,32 @@ interface FrameBridgeOptions {
  * reload (it is keyed by URL and a nonce), so the listener is registered
  * once and checks the ref at event time.
  */
-export function useFrameBridge({ frameKey, token, onMessage }: FrameBridgeOptions) {
+export function useFrameBridge({ frameKey, token, version, onMessage }: FrameBridgeOptions) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [session, setSession] = useState<BridgeSession | null>(null);
   // What event handlers read: the latest props, and the session as of the
   // last event (state lags a render behind).
-  const latest = useRef({ frameKey, token, onMessage, session: null as BridgeSession | null });
+  const latest = useRef({
+    frameKey,
+    token,
+    version,
+    onMessage,
+    session: null as BridgeSession | null,
+  });
   const epochs = useRef(0);
-  useEffect(() => {
+  // Layout phase, so a message handled right after a commit already sees
+  // that render's frame, token and version together.
+  useLayoutEffect(() => {
     latest.current.frameKey = frameKey;
     latest.current.token = token;
+    latest.current.version = version;
     latest.current.onMessage = onMessage;
   });
 
   useEffect(() => {
-    const isLive = () => {
+    const liveSession = () => {
       const s = latest.current.session;
-      return s !== null && s.key === latest.current.frameKey;
+      return s !== null && s.key === latest.current.frameKey ? s : null;
     };
     const listener = (event: MessageEvent) => {
       const frame = frameRef.current?.contentWindow;
@@ -77,12 +91,19 @@ export function useFrameBridge({ frameKey, token, onMessage }: FrameBridgeOption
       if (message.type === 'ready') {
         if (!isVerifiedReady(message, latest.current.token)) return;
         epochs.current += 1;
-        const next = { key: latest.current.frameKey, path: message.path, epoch: epochs.current };
+        // Key, token and version all come from the same render.
+        const next = {
+          key: latest.current.frameKey,
+          path: message.path,
+          epoch: epochs.current,
+          version: latest.current.version,
+        };
         latest.current.session = next;
         setSession(next);
         return;
       }
-      if (isLive()) latest.current.onMessage(message);
+      const session = liveSession();
+      if (session) latest.current.onMessage(message, session);
     };
     window.addEventListener('message', listener);
     return () => window.removeEventListener('message', listener);

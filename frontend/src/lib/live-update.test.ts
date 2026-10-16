@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'bun:test';
-import { decideLiveUpdate, type LiveUpdateInput, parseAutoReload } from './live-update';
+import {
+  decideLiveUpdate,
+  type FreshGrantInput,
+  type LiveUpdateInput,
+  parseAutoReload,
+  shouldApplyFreshGrant,
+} from './live-update';
 
 const base: LiveUpdateInput = {
   shown: 4,
@@ -49,5 +55,41 @@ describe('parseAutoReload', () => {
 
   it('is off only when stored as 0', () => {
     expect(parseAutoReload('0')).toBe(false);
+  });
+});
+
+describe('shouldApplyFreshGrant', () => {
+  const arrived: FreshGrantInput = {
+    shown: 1,
+    fresh: 2,
+    pinned: false,
+    composing: false,
+    autoReload: true,
+    manual: false,
+  };
+
+  it('applies an automatic reload when nothing changed while it was in flight', () => {
+    expect(shouldApplyFreshGrant(arrived)).toBe(true);
+  });
+
+  it('holds the frame when a comment was started while the request was in flight', () => {
+    expect(shouldApplyFreshGrant({ ...arrived, composing: true })).toBe(false);
+  });
+
+  it('holds the frame when auto-reload was turned off meanwhile', () => {
+    expect(shouldApplyFreshGrant({ ...arrived, autoReload: false })).toBe(false);
+  });
+
+  it('never applies to a pinned view, or a grant no newer than the frame', () => {
+    expect(shouldApplyFreshGrant({ ...arrived, pinned: true })).toBe(false);
+    expect(shouldApplyFreshGrant({ ...arrived, pinned: true, manual: true })).toBe(false);
+    // A publish from this tab already moved the frame past it.
+    expect(shouldApplyFreshGrant({ ...arrived, shown: 3 })).toBe(false);
+    expect(shouldApplyFreshGrant({ ...arrived, shown: 2, manual: true })).toBe(false);
+  });
+
+  it('applies what the user asked for, even mid-comment', () => {
+    expect(shouldApplyFreshGrant({ ...arrived, manual: true, composing: true })).toBe(true);
+    expect(shouldApplyFreshGrant({ ...arrived, manual: true, autoReload: false })).toBe(true);
   });
 });
