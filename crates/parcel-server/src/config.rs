@@ -116,6 +116,10 @@ pub struct Config {
 
     pub gc_interval: Duration,
     pub gc_grace: Duration,
+
+    /// Apply migrations at boot. Production turns this off and runs
+    /// `parcel-server migrate` as a job on Neon's direct (non-pooled) URL.
+    pub run_migrations: bool,
 }
 
 const DEV_SIGNING_KEY: &str = "parcel-dev-content-signing-key-not-for-production";
@@ -162,6 +166,7 @@ impl Default for Config {
             static_dir: None,
             gc_interval: Duration::from_secs(3600),
             gc_grace: Duration::from_secs(3600),
+            run_migrations: true,
         }
     }
 }
@@ -404,6 +409,7 @@ impl Config {
                 d.gc_grace.as_secs(),
                 &mut errs,
             )),
+            run_migrations: env.parse("RUN_MIGRATIONS", d.run_migrations, &mut errs),
         };
 
         errs.into_result().map_err(|list| {

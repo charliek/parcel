@@ -1,0 +1,12 @@
+target
+**/node_modules
+frontend/dist
+frontend/test-results
+frontend/playwright-report
+.venv
+data
+.prox
+.env
+.git
+site-build
+tests

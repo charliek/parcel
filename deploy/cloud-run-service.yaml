@@ -1,0 +1,84 @@
+# Cloud Run service for parcel, rendered with envsubst by deploy/deploy.sh
+# (or .github/workflows/deploy.yml). One service answers both origins: the app
+# domain and the content domain are both domain-mapped to it, and the server
+# routes by Host.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ${SERVICE_NAME}
+  labels:
+    app: parcel
+    env: ${ENV}
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "${MIN_INSTANCES}"
+        autoscaling.knative.dev/maxScale: "${MAX_INSTANCES}"
+        run.googleapis.com/cpu-throttling: "true"
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      serviceAccountName: ${SERVER_SA_EMAIL}
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      containers:
+        - image: ${IMAGE}
+          ports:
+            - containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              # Publishes buffer their upload (<= PARCEL_MAX_UPLOAD_BYTES) and
+              # PARCEL_MAX_CONCURRENT_UPLOADS bounds how many at once.
+              memory: 1Gi
+          env:
+            - name: APP_ENV
+              value: production
+            - name: LOG_FORMAT
+              value: json
+            - name: RUST_LOG
+              value: info
+            - name: RUN_MIGRATIONS
+              value: "false"
+            - name: PARCEL_APP_ORIGIN
+              value: https://${APP_DOMAIN}
+            - name: PARCEL_CONTENT_ORIGIN
+              value: https://${CONTENT_DOMAIN}
+            - name: SLAUTH_ISSUER
+              value: https://${AUTH_DOMAIN}
+            - name: SLAUTH_JWKS_URL
+              value: https://${AUTH_DOMAIN}/.well-known/jwks.json
+            - name: SLAUTH_AUDIENCE
+              value: parcel
+            - name: SLAUTH_CLIENT_ID
+              value: parcel
+            - name: BLOB_BACKEND
+              value: gcs
+            - name: GCS_BUCKET
+              value: ${GCS_BUCKET}
+            - name: PARCEL_MAX_CONCURRENT_UPLOADS
+              value: "6"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${ENV}-parcel-database-url
+                  key: latest
+            - name: PARCEL_CONTENT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ${ENV}-parcel-content-signing-key
+                  key: latest
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+            initialDelaySeconds: 1
+            periodSeconds: 3
+            timeoutSeconds: 3
+            # Sized for a Neon compute waking from scale-to-zero.
+            failureThreshold: 20
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            periodSeconds: 30

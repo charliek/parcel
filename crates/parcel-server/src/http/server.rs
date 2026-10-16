@@ -201,7 +201,11 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         "starting parcel"
     );
     let state = AppState::new(config)?;
-    db::migrate(&state.db).await?;
+    if state.config.run_migrations {
+        db::migrate(&state.db).await?;
+    } else {
+        tracing::info!("RUN_MIGRATIONS=false; expecting `parcel-server migrate` to have run");
+    }
     gc::spawn(state.clone());
 
     let app = build_app(state);

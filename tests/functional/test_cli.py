@@ -1,0 +1,194 @@
+"""The `parcel` CLI against the real server: login, publish, read, manage."""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import time
+from pathlib import Path
+
+import httpx
+
+from conftest import CLI_BIN, ROOT, Cli, Server
+
+PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>CLI report</title>
+<link rel="stylesheet" href="assets/site.css"></head>
+<body><h1>Numbers</h1><script src="assets/app.js"></script></body></html>
+"""
+
+
+def device_login(cli: Cli, server: Server, approver_token: str) -> None:
+    """Run `parcel login` for real and approve it the way the web app does."""
+    process = subprocess.Popen(
+        [str(CLI_BIN), "login", "--no-browser"],
+        env=cli.env(None),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    code = None
+    assert process.stderr is not None
+    deadline = time.time() + 20
+    seen = ""
+    while code is None and time.time() < deadline:
+        line = process.stderr.readline()
+        seen += line
+        if match := re.search(r"confirm the code ([A-Z]{4}-[A-Z]{4})", line):
+            code = match.group(1)
+    assert code, f"no device code printed:\n{seen}"
+    url = f"{server.app_url}/device?code={code}"
+    while url not in seen and time.time() < deadline:
+        seen += process.stderr.readline()
+    assert url in seen, seen
+    with server.client(approver_token) as api:
+        assert api.get(f"/api/v1/cli/device/{code}").json()["user_code"] == code
+        assert api.post(f"/api/v1/cli/device/{code}/approve").status_code == 204
+    stdout, stderr = process.communicate(timeout=30)
+    assert process.returncode == 0, stderr
+    assert "Logged in" in stdout + stderr
+
+
+def test_device_login_whoami_and_logout(cli: Cli, server: Server):
+    approver = server.issuer.token(email="cli-user@example.com")
+    assert cli.run("whoami", check=False).returncode == 3
+
+    device_login(cli, server, approver)
+    me = cli.json("whoami")
+    assert me["email"] == "cli-user@example.com"
+
+    config = cli.home / ".config" / "parcel" / "config.toml"
+    assert config.stat().st_mode & 0o077 == 0, "config holds a token: must be 0600"
+    assert "pcl_" in config.read_text()
+    shown = cli.run("config", "show").stdout
+    assert "pcl_" not in shown, "never print the token"
+
+    cli.run("logout")
+    assert "pcl_" not in config.read_text()
+    assert cli.run("whoami", check=False).returncode == 3
+
+
+def test_publish_read_update_and_delete(cli: Cli, server: Server, user: str, tmp_path: Path):
+    site = tmp_path / "site"
+    (site / "assets").mkdir(parents=True)
+    (site / "index.html").write_text(PAGE)
+    (site / "assets" / "site.css").write_text("h1 { color: teal }")
+    (site / "assets" / "app.js").write_text("document.title += ' ✓'")
+    (site / ".env").write_text("SECRET=1")  # dotfiles are never published
+    (site / "node_modules").mkdir()
+    (site / "node_modules" / "x.js").write_text("nope")
+
+    created = cli.json("publish", str(site), "--label", "first", token=user)
+    parcel = created["parcel"]
+    pid = parcel["id"]
+    assert parcel["title"] == "CLI report"
+    assert parcel["url"] == f"{server.app_url}/p/{pid}"
+    published = sorted(f["path"] for f in created["version"]["files"])
+    assert published == ["assets/app.js", "assets/site.css", "index.html"]
+
+    listed = cli.json("list", token=user)
+    assert [p["id"] for p in listed["parcels"]] == [pid]
+    human = cli.run("list", token=user).stdout
+    assert pid in human and "CLI report" in human
+
+    # Read it back, by id and by URL.
+    assert cli.run("cat", pid, token=user).stdout == PAGE
+    assert cli.run("cat", parcel["url"], "assets/site.css", token=user).stdout == "h1 { color: teal }"
+    out = tmp_path / "pulled"
+    cli.run("pull", pid, str(out), token=user)
+    assert (out / "assets" / "app.js").read_text() == "document.title += ' ✓'"
+    assert not (out / ".env").exists()
+
+    # Merge a single file into a new version: the URL stays the same.
+    patch = tmp_path / "data.json"
+    patch.write_text('{"rows": 3}')
+    v2 = cli.json(
+        "publish", "--parcel", pid, "--file", f"data/rows.json={patch}", "--label", "data",
+        token=user,
+    )
+    assert v2["version"]["version"] == 2
+    assert v2["parcel"]["url"] == parcel["url"]
+    assert sorted(f["path"] for f in v2["version"]["files"]) == [
+        "assets/app.js", "assets/site.css", "data/rows.json", "index.html",
+    ]
+    assert cli.run("publish", "--parcel", pid, "--file", str(patch), "--base-version", "1",
+                   token=user, check=False).returncode != 0
+
+    versions = cli.json("versions", pid, token=user)
+    assert [v["version"] for v in versions["versions"]] == [2, 1]
+    assert cli.run("cat", f"{parcel['url']}/v/1", "assets/site.css", token=user).returncode == 0
+    assert cli.run("cat", f"{parcel['url']}/v/1", "data/rows.json", token=user,
+                   check=False).returncode == 4
+
+    restored = cli.json("restore", pid, "--version", "1", token=user)
+    assert restored["version"]["version"] == 3
+    assert len(restored["version"]["files"]) == 3
+
+    # Visibility: public parcels are readable by anyone.
+    cli.json("update", pid, "--public", "--title", "Shared CLI report", token=user)
+    anonymous = Cli(server=server, home=cli.home)
+    assert anonymous.run("cat", pid).stdout == PAGE
+    detail = anonymous.json("info", pid)
+    assert detail["parcel"]["title"] == "Shared CLI report"
+    assert detail["is_owner"] is False
+    cli.json("update", pid, "--private", token=user)
+    assert anonymous.run("cat", pid, check=False).returncode == 4
+
+    # Delete needs --yes without a terminal.
+    assert cli.run("delete", pid, token=user, check=False).returncode != 0
+    cli.run("delete", pid, "--yes", token=user)
+    assert cli.run("info", pid, token=user, check=False).returncode == 4
+
+
+def test_single_file_and_markdown_publishes(cli: Cli, server: Server, user: str, tmp_path: Path):
+    note = tmp_path / "notes.md"
+    note.write_text("# Standup\n\n- shipped parcel\n")
+    created = cli.json("publish", str(note), "--public", token=user)
+    assert created["parcel"]["entry"] == "notes.md"
+    assert created["parcel"]["title"] == "Standup"
+    assert created["parcel"]["visibility"] == "public"
+    grant = httpx.get(f"{server.app_url}/api/v1/parcels/{created['parcel']['id']}/view").json()
+    page = httpx.get(grant["content_url"])
+    assert "<h1>Standup</h1>" in page.text
+
+
+def test_client_side_validation(cli: Cli, user: str, tmp_path: Path):
+    big = tmp_path / "big"
+    big.mkdir()
+    (big / "index.html").write_text("<p>ok</p>")
+    (big / "huge.js").write_bytes(b"x" * (1024 * 1024 + 1))  # functional limit is 1 MiB
+    result = cli.run("publish", str(big), token=user, check=False)
+    assert result.returncode == 1
+    assert "huge.js" in result.stderr
+
+    odd = tmp_path / "odd"
+    odd.mkdir()
+    (odd / "index.html").write_text("<p>ok</p>")
+    (odd / "tool.exe").write_bytes(b"MZ")
+    result = cli.run("publish", str(odd), token=user, check=False)
+    assert result.returncode == 1
+    assert "tool.exe" in result.stderr
+
+
+def test_skill_install_matches_the_repo(cli: Cli):
+    result = cli.run("skill", "install")
+    installed = cli.home / ".claude" / "skills" / "parcel" / "SKILL.md"
+    assert installed.exists(), result.stdout + result.stderr
+    assert installed.read_text() == (ROOT / "skills" / "parcel" / "SKILL.md").read_text()
+    refs = sorted(p.name for p in (installed.parent / "references").iterdir())
+    assert refs == sorted(p.name for p in (ROOT / "skills" / "parcel" / "references").iterdir())
+
+    cli.run("skill", "install", "--agents")
+    assert (cli.home / ".agents" / "skills" / "parcel" / "SKILL.md").exists()
+    assert cli.run("skill", "show").stdout.startswith("---\nname: parcel")
+
+
+def test_json_output_is_the_api_shape(cli: Cli, server: Server, user: str, tmp_path: Path):
+    page = tmp_path / "x.html"
+    page.write_text("<title>Shape</title>")
+    created = cli.json("publish", str(page), token=user)
+    with server.client(user) as api:
+        via_api = api.get(f"/api/v1/parcels/{created['parcel']['id']}").json()
+    via_cli = cli.json("info", created["parcel"]["id"], token=user)
+    assert json.dumps(via_cli, sort_keys=True) == json.dumps(via_api, sort_keys=True)

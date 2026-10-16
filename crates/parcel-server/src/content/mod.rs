@@ -83,6 +83,8 @@ pub fn grant_url(
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        // So uptime checks against the content domain have something to hit.
+        .route("/health/live", get(|| async { "ok" }))
         .route("/v/{token}", get(redirect_to_dir))
         .route("/v/{token}/", get(redirect_to_entry))
         .route("/v/{token}/{*path}", get(serve))

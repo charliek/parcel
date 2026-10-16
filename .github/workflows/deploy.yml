@@ -1,0 +1,34 @@
+name: Deploy
+
+# Manual rollout of an already-built image tag: migrate job, then service.
+# Same steps as deploy/deploy.sh. Not yet exercised.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        required: true
+      image_tag:
+        description: "Image tag (e.g. v2026.10.16)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SA }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Deploy
+        run: deploy/deploy.sh "${{ inputs.environment }}" "${{ inputs.image_tag }}"

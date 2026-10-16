@@ -1,0 +1,41 @@
+# One-shot migration job, run before each deploy. Uses Neon's DIRECT
+# (non-pooled) URL: DDL and advisory locks through pgbouncer are unreliable.
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: ${SERVICE_NAME}-migrate
+  labels:
+    app: parcel
+    env: ${ENV}
+spec:
+  template:
+    spec:
+      taskCount: 1
+      template:
+        spec:
+          serviceAccountName: ${SERVER_SA_EMAIL}
+          maxRetries: 0
+          timeoutSeconds: 300
+          containers:
+            - image: ${IMAGE}
+              command: ["parcel-server", "migrate"]
+              env:
+                - name: APP_ENV
+                  value: production
+                - name: LOG_FORMAT
+                  value: json
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${ENV}-parcel-database-url-direct
+                      key: latest
+                # Config validation requires these even for `migrate`.
+                - name: PARCEL_APP_ORIGIN
+                  value: https://${APP_DOMAIN}
+                - name: PARCEL_CONTENT_ORIGIN
+                  value: https://${CONTENT_DOMAIN}
+                - name: PARCEL_CONTENT_SIGNING_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${ENV}-parcel-content-signing-key
+                      key: latest

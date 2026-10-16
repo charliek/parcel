@@ -1,0 +1,29 @@
+[project]
+name = "parcel-tools"
+version = "0.1.0"
+description = "Functional tests and docs tooling for parcel (the Rust code lives in crates/)"
+requires-python = ">=3.12"
+
+[dependency-groups]
+# Python functional suite: drives the real parcel-server and parcel binaries
+# over HTTP/subprocess. See tests/functional/README.md.
+test = [
+    "pytest>=9.0",
+    "pytest-timeout>=2.3",
+    "httpx>=0.28",
+    "pyjwt[crypto]>=2.10",
+]
+docs = [
+    "zensical>=0.0.52",
+    "stridelabs-docs-theme",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+stridelabs-docs-theme = { git = "https://github.com/charliek/stridelabs-docs-theme", tag = "v0.2.2" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests/functional"]
+addopts = "-ra --timeout=120"
