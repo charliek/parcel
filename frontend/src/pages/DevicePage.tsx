@@ -251,6 +251,10 @@ export function DevicePage() {
               Check that this matches the code in your terminal.
             </p>
           </div>
+          <p className="text-muted-foreground text-xs" data-testid="device-warning">
+            Only approve a login you just started yourself with <code>parcel login</code>. Never
+            approve a code someone sent you.
+          </p>
           {device && (
             <p className="text-muted-foreground text-xs">
               {expired ? (

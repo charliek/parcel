@@ -46,6 +46,7 @@ import {
 import { useSession } from '@/hooks/useSession';
 import { useSilentReauth } from '@/hooks/useSilentReauth';
 import { api, downloadFile } from '@/lib/api';
+import { hasSignedInHint } from '@/lib/auth';
 import { viewerAccess } from '@/lib/auth/policy';
 import { isExpiringSoon } from '@/lib/format';
 import { errorMessage, errorStatus } from '@/lib/http';
@@ -90,6 +91,7 @@ export function ViewerPage() {
         session: session.status,
         mode,
         silentTried: silentReauthTried(),
+        signedInHint: hasSignedInHint(),
       })
     : 'not-found';
   const silent = useSilentReauth(access === 'silent-reauth');

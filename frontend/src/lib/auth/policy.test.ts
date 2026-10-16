@@ -81,6 +81,15 @@ describe('viewerAccess', () => {
     expect(viewerAccess({ ...base, view: 'pending' })).toBe('loading');
   });
 
+  it('gives a browser that signed in before one silent try, so owners keep their controls', () => {
+    const hinted = { ...base, view: 'success' as const, signedInHint: true };
+    expect(viewerAccess(hinted)).toBe('silent-reauth');
+    expect(viewerAccess({ ...hinted, session: 'loading' })).toBe('loading');
+    expect(viewerAccess({ ...hinted, silentTried: true })).toBe('ready');
+    expect(viewerAccess({ ...hinted, session: 'authenticated' })).toBe('ready');
+    expect(viewerAccess({ ...hinted, mode: 'dev' })).toBe('ready');
+  });
+
   it('for anonymous visitors, tries silent re-auth on 401/403/404, then asks to sign in', () => {
     for (const status of [401, 403, 404]) {
       expect(viewerAccess({ ...base, view: 'error', errorStatus: status })).toBe('silent-reauth');

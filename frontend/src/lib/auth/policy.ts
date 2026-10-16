@@ -84,8 +84,22 @@ export function viewerAccess(input: {
   session: SessionStatus;
   mode: string | null | undefined;
   silentTried: boolean;
+  /** This browser has completed a sign-in before (localStorage hint). */
+  signedInHint?: boolean;
 }): ViewerAccess {
-  if (input.view === 'success') return 'ready';
+  if (input.view === 'success') {
+    // A public parcel rendered anonymously. If this browser has signed in
+    // before, its owner may be the one looking: try one silent re-auth so a
+    // reload doesn't strip the owner controls. First-time visitors (no
+    // hint) never bounce through slauth.
+    const mightBeOwner =
+      input.signedInHint === true &&
+      canStartOAuth(input.mode) &&
+      !input.silentTried &&
+      input.session !== 'authenticated';
+    if (!mightBeOwner) return 'ready';
+    return isResolving(input.session) ? 'loading' : 'silent-reauth';
+  }
   if (input.view === 'pending') return 'loading';
   const denied =
     input.errorStatus === 401 || input.errorStatus === 403 || input.errorStatus === 404;
