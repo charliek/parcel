@@ -1,0 +1,85 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Class-based dark mode for Tailwind v4 (the theme store toggles `.dark` on <html>). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Neutral zinc-leaning palette with a single warm "kraft paper" accent.
+ * Tokens are CSS variables so `.dark` can redefine them at runtime.
+ */
+@theme {
+  --color-background: oklch(0.992 0.001 286);
+  --color-foreground: oklch(0.21 0.006 286);
+  --color-card: oklch(1 0 0);
+  --color-card-foreground: oklch(0.21 0.006 286);
+  --color-popover: oklch(1 0 0);
+  --color-popover-foreground: oklch(0.21 0.006 286);
+  --color-primary: oklch(0.555 0.145 48);
+  --color-primary-foreground: oklch(0.99 0.004 60);
+  --color-secondary: oklch(0.965 0.002 286);
+  --color-secondary-foreground: oklch(0.25 0.006 286);
+  --color-muted: oklch(0.965 0.002 286);
+  --color-muted-foreground: oklch(0.52 0.014 286);
+  --color-accent: oklch(0.955 0.003 286);
+  --color-accent-foreground: oklch(0.21 0.006 286);
+  --color-destructive: oklch(0.577 0.215 27);
+  --color-destructive-foreground: oklch(0.99 0 0);
+  --color-success: oklch(0.56 0.13 155);
+  --color-border: oklch(0.915 0.004 286);
+  --color-input: oklch(0.89 0.005 286);
+  --color-ring: oklch(0.555 0.145 48);
+  --radius: 0.625rem;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+}
+
+.dark {
+  --color-background: oklch(0.155 0.004 286);
+  --color-foreground: oklch(0.96 0.002 286);
+  --color-card: oklch(0.195 0.005 286);
+  --color-card-foreground: oklch(0.96 0.002 286);
+  --color-popover: oklch(0.205 0.005 286);
+  --color-popover-foreground: oklch(0.96 0.002 286);
+  --color-primary: oklch(0.75 0.13 62);
+  --color-primary-foreground: oklch(0.2 0.03 50);
+  --color-secondary: oklch(0.255 0.006 286);
+  --color-secondary-foreground: oklch(0.96 0.002 286);
+  --color-muted: oklch(0.24 0.006 286);
+  --color-muted-foreground: oklch(0.715 0.012 286);
+  --color-accent: oklch(0.265 0.006 286);
+  --color-accent-foreground: oklch(0.96 0.002 286);
+  --color-destructive: oklch(0.64 0.2 25);
+  --color-destructive-foreground: oklch(0.99 0 0);
+  --color-success: oklch(0.72 0.14 155);
+  --color-border: oklch(0.28 0.006 286);
+  --color-input: oklch(0.32 0.007 286);
+  --color-ring: oklch(0.75 0.13 62);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}

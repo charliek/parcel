@@ -1,0 +1,9 @@
+# Bun configuration
+
+[install]
+registry = "https://registry.npmjs.org"
+
+[test]
+# Unit tests live next to the code in src/. Scoping the scan keeps `bun test`
+# from picking up the Playwright specs in e2e/ (they need the Playwright runner).
+root = "./src"
