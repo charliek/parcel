@@ -49,7 +49,13 @@ mise exec -- make test          # REQUIRES docker compose up -d; fails loudly, n
 make spectral                   # OpenAPI lint
 make functional                 # pytest against the real binaries
 make frontend-check             # biome/eslint, tsc, bun test, vite build
+scripts/e2e-stack.sh &          # prod-shaped server (built SPA, dev auth) on :18110
+PARCEL_E2E_BASE_URL=http://localhost:18110 make e2e   # Playwright
 ```
+
+Driving the real UI with `playwright-cli`: `.playwright/cli.config.json`
+(git-ignored) sets `ignoreHTTPSErrors` because Playwright's Chromium doesn't
+trust prox's local CA.
 
 ## Load-bearing invariants
 

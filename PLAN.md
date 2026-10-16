@@ -201,3 +201,30 @@ Web app routes: `/` (my parcels, or landing when signed out), `/p/:id` and
 `/p/:id/v/:version` (viewer; public parcels need no sign-in), `/new` (upload),
 `/tokens`, `/cli` (CLI + skill setup), `/device` (approve a CLI login),
 `/auth/callback`.
+
+## Status (2026-10-16)
+
+The MVP is built and verified locally, end to end:
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` (real Postgres per-test schemas, GCS emulator) | 116 passed |
+| `pytest tests/functional` (real server + CLI binaries, GCS emulator, test JWKS, real device-flow login through the CLI) | 14 passed |
+| `bun test` (frontend units) / Playwright e2e against the production build (`scripts/e2e-stack.sh`) | 75 / 17 passed |
+| clippy `-D warnings` (default + production features), fmt, Spectral, biome/eslint, tsc | clean |
+| Real slauth login in a browser (playwright-cli) → dashboard → CLI device login approved in the web app → CLI publish → sandboxed viewer → public share viewed signed-out | works |
+| Production Docker image (distroless, 53 MB) run with `APP_ENV=production` + GCS emulator | works |
+| Claude Code headless with only the project-installed skill: wrote and published a page, then revised it by URL (v2, same link) | works; opencode discovers the skill |
+
+An independent Codex review found 11 issues (GC/publish races, duplicate-blob
+upserts, device-redeem atomicity, `parcel pull` symlink handling, token leaks
+in errors/logs, cache revocation); all are fixed with regression tests where
+testable.
+
+Deviations from the original brief, by design:
+- CLI auth is a device flow + app-local `pcl_` tokens rather than slauth PATs or
+  a loopback OAuth client (see "Auth"). Accepting slauth PATs too is on the roadmap.
+- Nothing is deployed: Cloud Run/Neon/GCS/DNS setup is scripted and documented in
+  `deploy/README.md` but not executed; GitHub workflows are written but not run.
+- slauth registration lives on slauth's local `feature/add-parcel-app` branch
+  (committed, not pushed), which is currently checked out in `../slauth`.
