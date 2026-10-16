@@ -22,6 +22,8 @@ const LIMITS: Limits = {
   max_files_per_version: 512,
   max_version_bytes: 256 * MB,
   user_quota_bytes: 2 * 1024 * MB,
+  max_data_bytes: 10 * MB,
+  max_data_value_bytes: 256 * 1024,
 };
 
 /** A fake upload item; `file` is just the path so assertions stay readable. */

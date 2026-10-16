@@ -62,11 +62,20 @@ pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
                 format!("v{}", p.current_version),
                 format_size(p.total_bytes),
                 age(p.updated_at),
+                open_comments(p.open_comments),
             ]
         })
         .collect();
     let mut out = table(
-        &["ID", "TITLE", "VISIBILITY", "VERSION", "SIZE", "UPDATED"],
+        &[
+            "ID",
+            "TITLE",
+            "VISIBILITY",
+            "VERSION",
+            "SIZE",
+            "UPDATED",
+            "COMMENTS",
+        ],
         &rows,
     );
     let shown = i64::try_from(parcels.len()).unwrap_or(i64::MAX);
@@ -81,6 +90,15 @@ pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
     output::print(&out)
 }
 
+/// `2 open`, or blank when there are none (so the column stays quiet).
+fn open_comments(n: i64) -> String {
+    if n > 0 {
+        format!("{n} open")
+    } else {
+        String::new()
+    }
+}
+
 fn get_detail(api: &Api, id: &str) -> Result<Fetched<ParcelDetail>> {
     api.get::<ParcelDetail>(api.endpoint(["parcels", id]))
         .map_err(|e| signed_out_hint(e, api.has_token()))
@@ -93,7 +111,7 @@ fn get_version(api: &Api, id: &str, version: Option<i32>) -> Result<Fetched<Vers
 }
 
 /// A 404 while signed out is usually a private parcel; say so.
-fn signed_out_hint(err: anyhow::Error, has_token: bool) -> anyhow::Error {
+pub(super) fn signed_out_hint(err: anyhow::Error, has_token: bool) -> anyhow::Error {
     match err.downcast_ref::<ApiError>() {
         Some(api) if !has_token && api.status == 404 => ApiError {
             status: 404,
@@ -163,6 +181,11 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
     );
     field("created", age(parcel.created_at));
     field("updated", age(parcel.updated_at));
+    let comments = match parcel.open_comments {
+        0 => "none open".to_string(),
+        n => format!("{n} open; see `parcel comments list {}`", parcel.id),
+    };
+    field("comments", comments);
 
     out.push_str("\nVersions (newest first):\n");
     out.push_str(&indent(&versions_table(

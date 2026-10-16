@@ -77,6 +77,15 @@ trust prox's local CA.
    `tests/openapi_shape.rs`; regenerate `openapi.json` with `make openapi`.
 7. **Env var names are an operator contract** (see `.env.example`,
    `config.rs`, `deploy/cloud-run-service.yaml`).
+8. **Page data is written only with owner authority**: the owner's API
+   credentials, or an owner-scope content capability (minted only when the
+   owner views their own parcel). A public-scope capability reads, never
+   writes, and stops working when the parcel goes private.
+9. **The page helper talks only to the app origin** (baked in at startup)
+   and the viewer accepts its messages only from its own iframe, as
+   untrusted input. Nothing sensitive crosses: anchors and comment numbers,
+   never comment text, authors or tokens. Anonymous viewers never see
+   comments. Protocol: PLAN.md, "Comments, live updates and page data".
 
 ## Conventions
 

@@ -27,6 +27,8 @@ export interface ParcelSummary {
   updated_at: string;
   /** The viewer URL in the web app (`https://…/p/<id>`). */
   url: string;
+  /** Unresolved comment threads. */
+  open_comments: number;
 }
 
 /** One immutable version of a parcel. */
@@ -136,6 +138,10 @@ export interface Limits {
   max_version_bytes: number;
   /** Total bytes across all of a user's versions; 0 means unlimited. */
   user_quota_bytes: number;
+  /** Data a parcel may keep (each item's JSON plus a per-item overhead). */
+  max_data_bytes: number;
+  /** Largest single data value, as compact JSON. */
+  max_data_value_bytes: number;
 }
 
 /** What a user is currently storing. */
@@ -250,6 +256,142 @@ export interface DeviceInfo {
   client_name: string;
   created_at: string;
   expires_at: string;
+}
+
+// ---- comments (crates/parcel-types/src/comments.rs) -------------------------
+
+/** Where on the page a comment points, as recorded by the page helper. */
+export interface CommentAnchor {
+  /** Published path of the page the comment was made on (`index.html`). */
+  path: string;
+  /** CSS selector of the element that was clicked. */
+  selector?: string;
+  /** The element's visible text when the comment was made. */
+  text?: string;
+  /** Click position inside the element's box, as a fraction of its width (0–1). */
+  x?: number;
+  /** Click position inside the element's box, as a fraction of its height (0–1). */
+  y?: number;
+}
+
+/** Where a comment was written: the web viewer, or a `pcl_` token (CLI or agent). */
+export type CommentVia = 'web' | 'cli' | (string & {});
+
+/** Who wrote a comment, from the caller's point of view. */
+export interface CommentAuthor {
+  /** Display name (the account's name, else its email). */
+  name: string;
+  /** The author owns the parcel. */
+  is_owner: boolean;
+  /** The author is the caller. */
+  is_you: boolean;
+}
+
+/** A reply in a comment thread. */
+export interface CommentReply {
+  number: number;
+  author: CommentAuthor;
+  body: string;
+  via: CommentVia;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A comment thread: the top-level comment and its replies. */
+export interface Comment {
+  number: number;
+  /** The version the commenter was looking at. */
+  version: number;
+  author: CommentAuthor;
+  body: string;
+  /** Absent for a general comment about the whole parcel. */
+  anchor?: CommentAnchor;
+  via: CommentVia;
+  resolved: boolean;
+  resolved_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  /** Oldest first. */
+  replies: CommentReply[];
+}
+
+/** Which threads to list. */
+export type CommentStatus = 'open' | 'resolved' | 'all';
+
+/** `GET /api/v1/parcels/{id}/comments`. */
+export interface CommentList {
+  /** Oldest first. */
+  comments: Comment[];
+  /** Unresolved threads on the parcel, whatever the filter. */
+  open: number;
+}
+
+/** `POST /api/v1/parcels/{id}/comments` — a new thread, or a reply. */
+export interface NewComment {
+  body: string;
+  /** The version being commented on (threads only). */
+  version?: number;
+  /** Where on the page (threads only). */
+  anchor?: CommentAnchor;
+  /** Reply to this thread instead of starting a new one. */
+  reply_to?: number;
+}
+
+/** `PATCH /api/v1/parcels/{id}/comments/{number}`. */
+export interface UpdateComment {
+  body?: string;
+  resolved?: boolean;
+}
+
+/** `GET /api/v1/parcels/{id}/activity` — the viewer's cheap poll. */
+export interface ParcelActivity {
+  current_version: number;
+  updated_at: string;
+  /** Unresolved comment threads. */
+  open_comments: number;
+  /** Changes whenever any comment is added, edited, resolved or deleted. */
+  comments_revision: number;
+}
+
+// ---- page data (crates/parcel-types/src/data.rs) ----------------------------
+
+/** One stored item. */
+export interface DataItem {
+  collection: string;
+  key: string;
+  /** Any JSON value. */
+  value: unknown;
+  size_bytes: number;
+  updated_at: string;
+}
+
+/** A page of a collection's items, ordered by key. */
+export interface DataItemList {
+  items: DataItem[];
+  /** Pass as `after` to fetch the next page; absent on the last page. */
+  next_after?: string;
+}
+
+/** A collection as listed in a {@link DataSummary}. */
+export interface DataCollection {
+  name: string;
+  count: number;
+  /** What the collection counts against the parcel's data limit. */
+  usage_bytes: number;
+  updated_at: string;
+}
+
+/** `GET /api/v1/parcels/{id}/data`: a parcel's collections and usage. */
+export interface DataSummary {
+  /** Changes whenever any item is written or deleted. */
+  revision: number;
+  /** Each item's JSON size plus a fixed per-item overhead. */
+  usage_bytes: number;
+  limit_bytes: number;
+  /** Whether the caller may change this parcel's data. */
+  writable: boolean;
+  /** By name. */
+  collections: DataCollection[];
 }
 
 /** The error envelope every non-2xx JSON response uses. */

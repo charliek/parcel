@@ -1,5 +1,5 @@
 import { Loader2 } from 'lucide-react';
-import { useState } from 'react';
+import { type Ref, useState } from 'react';
 
 /**
  * The sandboxed iframe that renders a parcel.
@@ -11,7 +11,19 @@ import { useState } from 'react';
 export const IFRAME_SANDBOX =
   'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads';
 
-export function ContentFrame({ src, title }: { src: string; title: string }) {
+export function ContentFrame({
+  src,
+  title,
+  frameRef,
+  onLoad,
+}: {
+  src: string;
+  title: string;
+  /** The iframe element, for talking to the page helper. */
+  frameRef?: Ref<HTMLIFrameElement>;
+  /** Every load, including navigations inside the frame. */
+  onLoad?: () => void;
+}) {
   // The parent keys this component by src + reload count, so state resets per load.
   const [loaded, setLoaded] = useState(false);
   return (
@@ -26,13 +38,17 @@ export function ContentFrame({ src, title }: { src: string; title: string }) {
         </div>
       )}
       <iframe
+        ref={frameRef}
         src={src}
         title={title}
         sandbox={IFRAME_SANDBOX}
         allow="clipboard-write; fullscreen"
         referrerPolicy="no-referrer"
         className="absolute inset-0 h-full w-full border-0"
-        onLoad={() => setLoaded(true)}
+        onLoad={() => {
+          setLoaded(true);
+          onLoad?.();
+        }}
         data-testid="parcel-frame"
       />
     </div>

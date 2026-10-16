@@ -1,12 +1,30 @@
+import { MessageSquare } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { RelativeTime } from '@/components/common/RelativeTime';
 import { VisibilityBadge } from '@/components/common/VisibilityBadge';
-import { formatBytes, pluralize } from '@/lib/format';
+import { formatBytes, formatNumber, pluralize } from '@/lib/format';
 import type { ParcelSummary } from '@/lib/types';
 import { ParcelIcon } from './ParcelIcon';
 
 const LINK_FOCUS =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background';
+
+/** Unresolved comment threads, shown only when there are some. */
+function OpenComments({ count }: { count: number }) {
+  if (count <= 0) return null;
+  const label = pluralize(count, 'open comment');
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 rounded bg-primary/12 px-1.5 py-0.5 font-medium text-[11px] text-primary"
+      title={label}
+      data-testid="open-comments"
+    >
+      <MessageSquare className="h-3 w-3" aria-hidden="true" />
+      <span aria-hidden="true">{formatNumber(count)}</span>
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
 
 /** A parcel in the dashboard grid. The whole card is the link. */
 export function ParcelCard({ parcel }: { parcel: ParcelSummary }) {
@@ -36,6 +54,7 @@ export function ParcelCard({ parcel }: { parcel: ParcelSummary }) {
         <span>{formatBytes(parcel.total_bytes)}</span>
         <span aria-hidden="true">·</span>
         <span>{pluralize(parcel.file_count, 'file')}</span>
+        <OpenComments count={parcel.open_comments} />
         <span className="ml-auto">
           <RelativeTime value={parcel.updated_at} />
         </span>
@@ -60,6 +79,7 @@ export function ParcelRow({ parcel }: { parcel: ParcelSummary }) {
               {parcel.title || parcel.entry}
             </h3>
             <VisibilityBadge visibility={parcel.visibility} className="hidden sm:inline-flex" />
+            <OpenComments count={parcel.open_comments} />
           </div>
           <p className="truncate font-mono text-muted-foreground text-xs">{parcel.id}</p>
         </div>

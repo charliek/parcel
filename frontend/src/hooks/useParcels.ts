@@ -61,6 +61,9 @@ export function forgetParcel(client: QueryClient, id: string) {
   client.removeQueries({ queryKey: queryKeys.parcel(id) });
   client.removeQueries({ queryKey: queryKeys.allViews(id) });
   client.removeQueries({ queryKey: ['version', id] });
+  client.removeQueries({ queryKey: queryKeys.activity(id) });
+  client.removeQueries({ queryKey: queryKeys.comments(id) });
+  client.removeQueries({ queryKey: queryKeys.data(id) });
 }
 
 export function useUpdateParcel(id: string) {

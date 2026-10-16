@@ -2,12 +2,16 @@
 //! warnings to stderr; errors are returned and printed once by `main`.
 
 mod auth;
+mod comments;
+mod data;
 mod local;
 mod manage;
 mod publish;
 mod read;
 
-use anyhow::Result;
+use std::io::Read;
+
+use anyhow::{Context, Result};
 use parcel_types::ids::parse_parcel_ref;
 
 use crate::cli::{Cli, Command};
@@ -57,6 +61,8 @@ fn dispatch(settings: Settings, command: Command) -> Result<()> {
         Command::Update(args) => manage::update(&settings, args),
         Command::Restore(args) => manage::restore(&settings, args),
         Command::Delete(args) => manage::delete(&settings, args),
+        Command::Comments(cmd) => comments::run(&settings, cmd),
+        Command::Data(cmd) => data::run(&settings, cmd),
         Command::Config(cmd) => local::config(settings, cmd),
         Command::Skill(_) => unreachable!("handled before loading settings"),
     }
@@ -86,6 +92,15 @@ pub fn parse_ref(input: &str) -> Result<(String, Option<i32>)> {
 /// The `{version}` path segment: a number, or `latest`.
 fn version_segment(version: Option<i32>) -> String {
     version.map_or_else(|| "latest".to_string(), |v| v.to_string())
+}
+
+/// All of stdin as text, for arguments given as `-`.
+fn read_stdin(what: &str) -> Result<String> {
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .with_context(|| format!("reading {what} from stdin"))?;
+    Ok(text)
 }
 
 /// Try to open a URL in the default browser without waiting for it.

@@ -32,17 +32,39 @@ export function parcelFrame(page: Page): FrameLocator {
 /** Create a single-file parcel through the API (dev auth: no token needed). */
 export async function createParcelViaApi(
   request: APIRequestContext,
-  { title, marker, visibility = 'private' }: { title: string; marker: string; visibility?: string },
+  {
+    title,
+    marker,
+    visibility = 'private',
+    html,
+  }: { title: string; marker: string; visibility?: string; html?: Buffer },
 ): Promise<string> {
   const response = await request.post('/api/v1/parcels', {
     multipart: {
       metadata: JSON.stringify({ title, visibility }),
-      file: { name: 'index.html', mimeType: 'text/html', buffer: htmlPage(marker) },
+      file: { name: 'index.html', mimeType: 'text/html', buffer: html ?? htmlPage(marker) },
     },
   });
   expect(response.status(), await response.text()).toBe(201);
   const body = await response.json();
   return body.parcel.id as string;
+}
+
+/** Publish a new `index.html` for a parcel through the API; returns the version number. */
+export async function publishVersionViaApi(
+  request: APIRequestContext,
+  id: string,
+  html: Buffer,
+): Promise<number> {
+  const response = await request.post(`/api/v1/parcels/${id}/versions`, {
+    multipart: {
+      metadata: JSON.stringify({}),
+      file: { name: 'index.html', mimeType: 'text/html', buffer: html },
+    },
+  });
+  expect(response.status(), await response.text()).toBe(201);
+  const body = await response.json();
+  return body.version.version as number;
 }
 
 /** Best-effort cleanup. */

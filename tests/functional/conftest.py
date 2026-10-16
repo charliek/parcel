@@ -182,12 +182,18 @@ class Server:
         return httpx.Client(timeout=30, follow_redirects=False)
 
 
+# Page data limits, small so the 413 paths are cheap to reach.
+MAX_DATA_VALUE_BYTES = 8 * 1024
+MAX_DATA_BYTES = 32 * 1024
+
 LIMITS = {
     # Small enough that limit tests stay fast, large enough for real pages.
     "PARCEL_MAX_ENTRY_BYTES": str(2 * 1024 * 1024),
     "PARCEL_MAX_FILE_BYTES": str(1024 * 1024),
     "PARCEL_MAX_UPLOAD_BYTES": str(4 * 1024 * 1024),
     "PARCEL_MAX_FILES_PER_UPLOAD": "40",
+    "PARCEL_MAX_DATA_VALUE_BYTES": str(MAX_DATA_VALUE_BYTES),
+    "PARCEL_MAX_DATA_BYTES": str(MAX_DATA_BYTES),
 }
 
 
@@ -265,6 +271,18 @@ def user(server: Server) -> str:
 def api(server: Server, user: str) -> Iterator[httpx.Client]:
     with server.client(user) as client:
         yield client
+
+
+@pytest.fixture
+def stranger(server: Server) -> Iterator[httpx.Client]:
+    """A second signed-in user, who owns none of the test's parcels."""
+    with server.client(server.issuer.token(name="Sam Stranger")) as client:
+        yield client
+
+
+def content_token(content_url: str) -> str:
+    """The capability token in a content URL (``…/v/<token>/<path>``)."""
+    return content_url.split("/v/", 1)[1].split("/", 1)[0]
 
 
 @dataclass

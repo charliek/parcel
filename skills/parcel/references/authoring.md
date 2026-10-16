@@ -105,15 +105,7 @@ site/
 
 ## Sandbox-safe patterns
 
-The parcel's document has an opaque origin. Storage APIs exist but throw, so guard them:
-
-```js
-const memory = new Map();
-const store = {
-  get(key) { try { return localStorage.getItem(key); } catch { return memory.get(key) ?? null; } },
-  set(key, value) { try { localStorage.setItem(key, value); } catch { memory.set(key, value); } },
-};
-```
+The parcel's document has an opaque origin, where browser storage normally throws. Parcel's page helper (below) replaces `localStorage`, `sessionStorage` and `document.cookie` with in-memory stand-ins, so code written for a normal site keeps running, but **everything stored there is gone on reload**. Use them for state within one visit; use `window.parcel.data` for anything that must persist. `indexedDB` still throws: wrap it in `try`/`catch`.
 
 - **Data files:** `const rows = await (await fetch("data/results.json")).json();` works (relative URL, same parcel version). Absolute URLs to other sites work only if those sites allow cross-origin requests from any origin.
 - **Links:** give external links `target="_blank" rel="noopener"`. Links between the parcel's own pages can be plain relative links.
@@ -121,6 +113,83 @@ const store = {
 - **No identity:** cookies don't exist, so a parcel can't sign anyone in. Don't build login forms or anything that asks for credentials.
 - **Dialogs, forms, downloads, popups** work: `alert()`, `confirm()`, `<a download>`, `window.open()`.
 - **Embedding other sites** in an `<iframe>` depends on that site's own framing policy; most block it.
+
+## The page helper and `window.parcel`
+
+Parcel adds one script to every HTML page it serves, `<script src="/_parcel/helper.<hash>.js"></script>`, right after `<head>`, so it runs before the page's own scripts. It:
+
+- swaps the throwing storage APIs for in-memory stand-ins (above);
+- defines `window.parcel` (below);
+- drives the web viewer's comment mode: highlighting what the user hovers, reporting which element they click, and drawing comment pins. It only talks to the Parcel app that frames the page.
+
+It is added when the page is served: `parcel cat` and `parcel pull` return the files exactly as published, without it. Don't define a global named `parcel` (`var parcel`, `let parcel`, `function parcel`, `window.parcel = …`) — yours wins and hides the helper's API. When the page is opened as a local file the helper isn't there, so guard with `window.parcel?.`.
+
+| Member | Meaning |
+|---|---|
+| `parcel.id`, `parcel.version` | The parcel's id and the version being shown |
+| `parcel.path` | This page's published path (`index.html`) |
+| `parcel.canWrite` | `true` only while the parcel's owner views it signed in; `false` for everyone else (including the owner on a signed-out public link) |
+| `await parcel.data.get(collection, key)` | The stored value, or `undefined` |
+| `await parcel.data.list(collection)` | Every item, by key: `[{collection, key, value, size_bytes, updated_at}]` |
+| `await parcel.data.set(collection, key, value)` | Create or replace an item with any JSON value; resolves to it |
+| `await parcel.data.update(collection, key, patch)` | Merge an object into an item (RFC 7386: nested objects merge, `null` removes a field); creates it if missing |
+| `await parcel.data.delete(collection, key)` | Remove one item |
+| `await parcel.data.clear(collection)` | Remove every item in a collection |
+| `await parcel.data.collections()` | `[{name, count, usage_bytes, updated_at}]` |
+| `parcel.data.subscribe(callback)` | Calls `callback({revision})` whenever the parcel's data changes — from another tab, the CLI or the page's own writes (checked every few seconds while the page is visible). Returns an unsubscribe function |
+
+Data is shared by every version of the parcel and deleted with it. Anyone who can view the parcel can read it; only the owner writes. A failed call rejects with an `Error` whose `status` is the HTTP status: 403 when writing without `canWrite`, 413 over a limit, 400 for a bad name. Names (collections and keys) are 1–128 of `A–Z a–z 0–9 _ . : -`, starting with a letter or digit. Limits: 256 KiB per value, 10 MiB per parcel (each item counts its JSON plus 128 bytes).
+
+### Example: a checklist that persists
+
+The owner ticks items and they stay ticked; a visitor on a public link sees the same state read-only.
+
+```html
+<ul id="todo"></ul>
+<p id="readonly" class="muted" hidden>Read-only: only the owner can tick items.</p>
+<script>
+  const tasks = ["Draft the outline", "Collect Q3 numbers", "Review with Sam"];
+  const data = window.parcel?.data;                 // undefined when opened as a local file
+  const canWrite = Boolean(window.parcel?.canWrite);
+  document.getElementById("readonly").hidden = canWrite || !data;
+
+  async function render() {
+    const done = (await data?.get("checklist", "done")) ?? {};
+    document.getElementById("todo").replaceChildren(...tasks.map((task, i) => {
+      const box = Object.assign(document.createElement("input"),
+                                { type: "checkbox", checked: Boolean(done[i]), disabled: !canWrite });
+      box.addEventListener("change", () =>
+        data.update("checklist", "done", { [i]: box.checked })
+            .catch((err) => { box.checked = !box.checked; alert(err.message); }));
+      const label = document.createElement("label");
+      label.append(box, " ", task);
+      const li = document.createElement("li");
+      li.append(label);
+      return li;
+    }));
+  }
+  render();
+  data?.subscribe(render);                          // another tab or `parcel data set` changed it
+</script>
+```
+
+### Example: a dashboard an agent keeps current
+
+The page renders whatever is in `dashboard/metrics`; an agent refreshes it with the CLI, no republish needed, and open viewers update live:
+
+```js
+async function render() {
+  const metrics = await window.parcel?.data.get("dashboard", "metrics");
+  if (metrics) drawCharts(metrics);           // your rendering code
+}
+render();
+window.parcel?.data.subscribe(render);
+```
+
+```bash
+parcel data set <ref> dashboard metrics @metrics.json        # replace
+parcel data update <ref> dashboard metrics '{"p99_ms": 412}'  # merge one field
+```
 
 ## Markdown entry pages
 

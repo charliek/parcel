@@ -251,19 +251,26 @@ includes the hash. The script (`crates/parcel-server/assets/parcel-helper.js`):
 |---|---|---|
 | viewer → page | `hello` | — (page answers `ready`) |
 | viewer → page | `comment-mode` | `enabled: bool` |
-| viewer → page | `pins` | `pins: [{number, anchor, resolved, active?}]` |
+| viewer → page | `pins` | `pins: [{number, anchor, resolved, active}]` (the full set for the page; the one flagged `active` is highlighted) |
 | viewer → page | `draft` | `anchor \| null` (the spot being commented on) |
 | viewer → page | `focus` | `number` (scroll to and pulse that pin) |
-| page → viewer | `ready` | `path, title, version` (on load and on `hello`) |
+| page → viewer | `ready` | `path, title, version, token` (on load and on `hello`; `token` is the page's own capability token, read from its URL) |
 | page → viewer | `anchor` | `anchor` (a click in comment mode) |
 | page → viewer | `pin-click` | `number` |
 | page → viewer | `located` | `found: number[], missing: number[]` |
 | page → viewer | `escape` | — (Escape pressed in comment mode) |
+| page → viewer | `bye` | — (`pagehide`: the viewer stops sending until the next verified `ready`) |
 
 Viewer messages carry `source: 'parcel-viewer'`, page messages
 `source: 'parcel-helper'`. The viewer accepts page messages only from its
 iframe's `contentWindow` and treats them as untrusted input (the page can
-forge any of them); it sends anchors and numbers, never comment text.
+forge any of them); it sends anchors and numbers, never comment text. The
+frame can be navigated to another site that allows framing, which posts from
+the same `"null"` origin, so the bridge goes live only after a `ready` whose
+`token` equals the one in the URL the viewer loaded, and drops back on every
+iframe `load` (then `hello`), `bye` or remount; until then the viewer sends
+only `hello` and acts on nothing but `ready`/`bye`. Framed, the helper opens
+links to other origins in a new tab.
 
 **Page data.** Collections of keyed JSON items per parcel, shared by every
 version, deleted with the parcel. Readable by anyone who can view the parcel;

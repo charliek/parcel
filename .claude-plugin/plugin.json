@@ -1,7 +1,7 @@
 {
   "name": "parcel",
   "version": "0.1.0",
-  "description": "Publish HTML pages, reports, dashboards and prototypes to private, sandboxed Parcel URLs with the parcel CLI, and read or revise existing parcels.",
+  "description": "Publish HTML pages, reports, dashboards and prototypes to private, sandboxed Parcel URLs with the parcel CLI; read or revise existing parcels, act on comments left in the viewer, and update the data pages keep.",
   "author": {
     "name": "Charlie Knudsen",
     "url": "https://github.com/charliek"

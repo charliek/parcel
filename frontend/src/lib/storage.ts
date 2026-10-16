@@ -59,4 +59,6 @@ export const STORAGE_KEYS = {
   dashboardLayout: 'parcel_dashboard_layout',
   /** localStorage: whether the viewer's info panel is open. */
   viewerPanel: 'parcel_viewer_panel',
+  /** localStorage: `0` stops the viewer reloading itself when a new version is published. */
+  viewerAutoReload: 'parcel_viewer_auto_reload',
 } as const;

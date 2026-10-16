@@ -4,7 +4,7 @@
  * The content origin adds this script to every HTML page it serves (see
  * `content::helper`). It runs inside the parcel's sandbox with exactly the
  * page's own powers — no cookies, no tokens beyond the capability already in
- * the page's URL — and gives the page three things:
+ * the page's URL — and gives the page four things:
  *
  * 1. Storage that doesn't throw. A sandboxed page has an opaque origin, so
  *    `localStorage`, `sessionStorage` and `document.cookie` throw on access.
@@ -15,7 +15,16 @@
  * 3. Comment mode, driven by the Parcel viewer that frames the page: it
  *    reports where the user clicked and draws comment pins. Messages go only
  *    to and from the app origin, and carry anchors and numbers — never
- *    comment text or credentials.
+ *    comment text. The one credential, the page's own capability token, is
+ *    sent in `ready` to the app origin that minted it, so the viewer can tell
+ *    its parcel page from any other document the frame is navigated to; the
+ *    page says `bye` when it unloads.
+ * 4. Links to other sites open in a new tab. In the viewer's frame, a plain
+ *    click on a link to another origin (with no target, or `_self`) gets
+ *    `target="_blank" rel="noopener noreferrer"` before the browser follows
+ *    it. Most sites refuse to be framed anyway, and the viewer's frame should
+ *    only ever hold the parcel. Links within the parcel's origin, and
+ *    `javascript:`, `blob:`, `data:` and other non-http(s) URLs, are left alone.
  */
 (() => {
   'use strict';
@@ -525,6 +534,48 @@
     },
     true,
   );
+  // A link to another origin opens in a new tab rather than in the viewer's
+  // frame (see the header). Capture phase, so the target is set before the
+  // click's default action reads it; comment mode swallows clicks above.
+  function linkOf(e) {
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [e.target];
+    for (const node of path) {
+      if (
+        (node instanceof HTMLAnchorElement || node instanceof HTMLAreaElement) &&
+        node.hasAttribute('href')
+      ) {
+        return node;
+      }
+    }
+    return null;
+  }
+  window.addEventListener(
+    'click',
+    (e) => {
+      if (commenting || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const link = linkOf(e);
+      if (!link) return;
+      const target = (link.getAttribute('target') || '').trim().toLowerCase();
+      if (target && target !== '_self') return;
+      let url;
+      try {
+        url = new URL(link.href);
+      } catch (_) {
+        return;
+      }
+      // javascript:, blob:, data:, mailto: and the like keep their default.
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+      // `location.origin` is the URL's origin (the content host), even though
+      // the sandboxed document's own origin is opaque.
+      if (url.origin === location.origin) return;
+      link.setAttribute('target', '_blank');
+      const rel = new Set((link.getAttribute('rel') || '').split(/\s+/).filter(Boolean));
+      rel.add('noopener');
+      rel.add('noreferrer');
+      link.setAttribute('rel', Array.from(rel).join(' '));
+    },
+    true,
+  );
   window.addEventListener(
     'mousemove',
     (e) => {
@@ -581,11 +632,16 @@
       case 'comment-mode':
         setCommenting(Boolean(msg.enabled));
         break;
-      case 'pins':
+      case 'pins': {
         pins = Array.isArray(msg.pins) ? msg.pins : [];
+        // The viewer owns which thread is selected; this keeps the
+        // highlight across page reloads and for threads it just created.
+        const flagged = pins.find((p) => p && p.active === true);
+        active = flagged ? flagged.number : null;
         lastReport = '';
         schedule();
         break;
+      }
       case 'draft':
         draft = msg.anchor && msg.anchor.path === pagePath ? msg.anchor : null;
         found.delete('draft');
@@ -607,11 +663,19 @@
     }
   });
 
+  // The token is what the viewer checks before it talks to this frame: only
+  // the page it loaded knows it. `post` sends only to the app origin, which
+  // minted it.
   function sendReady() {
-    post('ready', { path: pagePath, title: document.title, version: claims.version });
+    post('ready', { path: pagePath, title: document.title, version: claims.version, token });
   }
   sendReady();
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', sendReady, { once: true });
   }
+  // Leaving: the viewer stops sending until the next page proves itself.
+  window.addEventListener('pagehide', () => post('bye', {}));
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted) sendReady();
+  });
 })();

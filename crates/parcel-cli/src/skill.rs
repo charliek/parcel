@@ -161,6 +161,35 @@ mod tests {
     }
 
     #[test]
+    fn skill_teaches_the_feedback_loop_and_page_data() {
+        let md = skill_md();
+        for needle in [
+            "parcel comments list",
+            "parcel comments resolve",
+            "--reply",
+            "--parcel <ref>",
+            "window.parcel.data",
+            "canWrite",
+            "parcel data set",
+        ] {
+            assert!(
+                md.contains(needle),
+                "SKILL.md no longer mentions {needle:?}"
+            );
+        }
+        // Every reference SKILL.md links to is bundled.
+        for link in md.split("](").skip(1) {
+            let target = &link[..link.find(')').unwrap()];
+            if target.starts_with("references/") {
+                assert!(
+                    SKILL_FILES.iter().any(|f| f.path == target),
+                    "SKILL.md links to {target}, which is not bundled"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn installs_and_refuses_to_clobber_edits() {
         let home = tempfile::tempdir().unwrap();
         let dir = claude_skill_dir(home.path());

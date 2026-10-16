@@ -146,6 +146,24 @@ impl Api {
         self.decode(response)
     }
 
+    /// PUT/PATCH a body that is already JSON text (a data value, kept exactly
+    /// as the user wrote it rather than re-serialized with sorted keys).
+    pub fn send_json_text<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        url: Url,
+        content_type: &'static str,
+        body: Vec<u8>,
+    ) -> Result<Fetched<T>> {
+        let response = self.send(
+            self.request(method, url)
+                .header(reqwest::header::CONTENT_TYPE, content_type)
+                .body(body)
+                .timeout(REQUEST_TIMEOUT),
+        )?;
+        self.decode(response)
+    }
+
     pub fn delete(&self, url: Url) -> Result<()> {
         self.send(self.request(Method::DELETE, url).timeout(REQUEST_TIMEOUT))?;
         Ok(())

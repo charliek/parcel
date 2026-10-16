@@ -12,6 +12,13 @@ craze, opencode) as much as for people.
 - **Sandboxed.** User HTML runs on a separate content origin with an opaque
   origin (CSP `sandbox`), so a parcel can't touch your cookies, storage or the
   app around it.
+- **Live.** Open pages reload themselves when a new version is published.
+- **Feedback loop.** Click anywhere on a page in comment mode to pin a
+  comment; an agent reads them with `parcel comments list`, publishes a fix
+  and resolves them.
+- **Pages that remember.** `window.parcel.data` keeps JSON between visits:
+  every viewer reads it, the owner (or their agent, with `parcel data set`)
+  writes it.
 - **Agent-ready.** The `parcel` CLI and its bundled skill let an agent publish
   and read parcels with one command and JSON output.
 
@@ -20,6 +27,8 @@ parcel login                              # opens the browser, approve the code
 parcel publish report.html                # → https://parcel.stridelabs.ai/p/k3m9x2qtw8ra
 parcel publish ./site --parcel k3m9x2qtw8ra --label "v2 copy"
 parcel cat k3m9x2qtw8ra                   # read it back
+parcel comments list k3m9x2qtw8ra         # feedback left in the viewer
+parcel data set k3m9x2qtw8ra stats today '{"visits": 42}'
 parcel skill install                      # teach Claude Code / craze / opencode
 ```
 

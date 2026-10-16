@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use parcel_types::{PublishMode, Visibility};
+use parcel_types::{CommentStatus, PublishMode, Visibility};
 
 use crate::files::parse_file_arg;
 
@@ -73,6 +73,12 @@ pub enum Command {
     Delete(DeleteArgs),
     /// Open a parcel in the browser
     Open(RefArg),
+    /// Read, answer and resolve feedback left on a parcel
+    #[command(subcommand, after_help = COMMENTS_HELP)]
+    Comments(CommentsCommand),
+    /// Read and change a parcel's data (JSON its pages keep between visits)
+    #[command(subcommand, after_help = DATA_HELP)]
+    Data(DataCommand),
     /// Install or print the bundled agent skill
     #[command(subcommand)]
     Skill(SkillCommand),
@@ -300,6 +306,233 @@ pub struct DeleteArgs {
     pub yes: bool,
 }
 
+const COMMENTS_HELP: &str = "\
+Comments are left in the web viewer's comment mode, usually pinned to an
+element of a page, and numbered per parcel (#1, #2, …; replies take numbers
+too). `list` shows which page and element each thread is about.
+
+Seeing and adding comments needs a login: on a private parcel only its owner
+can; on a public one, any signed-in user. Only a comment's author can edit
+it; its thread's author or the parcel's owner can resolve it; its author or
+the owner can delete it.";
+
+const DATA_HELP: &str = "\
+Data is JSON a parcel's pages keep between visits (window.parcel.data),
+grouped into collections of keyed items and shared by every version.
+
+Anyone who can view the parcel can read its data (public parcels need no
+login). Only the parcel's owner can change it: with these commands, or from
+the page while the owner is viewing it. Visitors' pages see it read-only.
+
+Collection names and keys are 1–128 letters, digits, '_', '.', ':' or '-',
+starting with a letter or digit.";
+
+/// A comment or reply's text: `-` reads it from stdin.
+#[derive(Debug, Args)]
+pub struct CommentText {
+    /// The comment's text, or - to read it from stdin
+    #[arg(value_name = "TEXT")]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CommentStatusArg {
+    /// Unresolved threads
+    Open,
+    /// Resolved threads
+    Resolved,
+    /// Every thread
+    All,
+}
+
+impl From<CommentStatusArg> for CommentStatus {
+    fn from(status: CommentStatusArg) -> Self {
+        match status {
+            CommentStatusArg::Open => CommentStatus::Open,
+            CommentStatusArg::Resolved => CommentStatus::Resolved,
+            CommentStatusArg::All => CommentStatus::All,
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CommentsCommand {
+    /// List comment threads: where on which page, who, and what was asked
+    List(CommentsListArgs),
+    /// Add a general comment about the whole parcel
+    Add(CommentsAddArgs),
+    /// Reply to a thread
+    Reply(CommentsReplyArgs),
+    /// Resolve threads, optionally replying to each first
+    Resolve(CommentsResolveArgs),
+    /// Reopen resolved threads
+    Reopen(CommentNumbersArgs),
+    /// Delete a comment (a thread's first comment takes its replies with it)
+    Delete(CommentNumberArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CommentsListArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    /// Which threads to show
+    #[arg(long, value_enum, default_value = "open")]
+    pub status: CommentStatusArg,
+    #[command(flatten)]
+    pub json: JsonArg,
+}
+
+#[derive(Debug, Args)]
+pub struct CommentsAddArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    #[command(flatten)]
+    pub text: CommentText,
+    /// The version the comment is about [default: the URL's version, else the current one]
+    #[arg(long, value_name = "N")]
+    pub version: Option<i32>,
+    #[command(flatten)]
+    pub json: JsonArg,
+}
+
+#[derive(Debug, Args)]
+pub struct CommentsReplyArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    /// The thread's number
+    #[arg(value_name = "NUMBER", value_parser = clap::value_parser!(i32).range(1..))]
+    pub number: i32,
+    #[command(flatten)]
+    pub text: CommentText,
+    #[command(flatten)]
+    pub json: JsonArg,
+}
+
+#[derive(Debug, Args)]
+pub struct CommentsResolveArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    /// Thread numbers
+    #[arg(value_name = "NUMBER", required = true,
+          value_parser = clap::value_parser!(i32).range(1..))]
+    pub numbers: Vec<i32>,
+    /// Reply to each thread with this text before resolving it (- reads stdin),
+    /// e.g. "Fixed in v4: the bars are blue now"
+    #[arg(long, value_name = "TEXT")]
+    pub reply: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct CommentNumbersArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    /// Thread numbers
+    #[arg(value_name = "NUMBER", required = true,
+          value_parser = clap::value_parser!(i32).range(1..))]
+    pub numbers: Vec<i32>,
+}
+
+#[derive(Debug, Args)]
+pub struct CommentNumberArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    /// Comment number
+    #[arg(value_name = "NUMBER", value_parser = clap::value_parser!(i32).range(1..))]
+    pub number: i32,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DataCommand {
+    /// List the parcel's collections, or every item in one collection
+    List(DataListArgs),
+    /// Print one item's value as JSON
+    Get(DataGetArgs),
+    /// Create or replace an item (owner only)
+    Set(DataSetArgs),
+    /// Merge a JSON object into an item, creating it if needed (owner only)
+    Update(DataUpdateArgs),
+    /// Delete one item (owner only)
+    Delete(DataItemArgs),
+    /// Delete every item in a collection (owner only)
+    Clear(DataCollectionArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct DataListArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    /// List this collection's items instead of the collections
+    #[arg(value_name = "COLLECTION")]
+    pub collection: Option<String>,
+    /// Print the API's JSON response (a collection's pages merged into one
+    /// `{"items": [...]}`)
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DataItemArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    /// Collection name
+    #[arg(value_name = "COLLECTION")]
+    pub collection: String,
+    /// Item key
+    #[arg(value_name = "KEY")]
+    pub key: String,
+}
+
+#[derive(Debug, Args)]
+pub struct DataCollectionArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    /// Collection name
+    #[arg(value_name = "COLLECTION")]
+    pub collection: String,
+}
+
+#[derive(Debug, Args)]
+pub struct DataGetArgs {
+    #[command(flatten)]
+    pub item: DataItemArgs,
+    /// Print the whole item (value, size, updated_at) as the API sent it
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+#[command(after_help = "\
+VALUE is inline JSON ('{\"done\": true}', '42', '\"text\"'), @FILE to read a
+JSON file, or - to read stdin. With --string it is stored as a JSON string
+instead (a single trailing newline from a file or stdin is dropped).")]
+pub struct DataSetArgs {
+    #[command(flatten)]
+    pub item: DataItemArgs,
+    /// The value: inline JSON, @FILE, or - for stdin
+    #[arg(value_name = "VALUE", allow_negative_numbers = true)]
+    pub value: String,
+    /// Store the text as a JSON string rather than parsing it as JSON
+    #[arg(long)]
+    pub string: bool,
+    #[command(flatten)]
+    pub json: JsonArg,
+}
+
+#[derive(Debug, Args)]
+#[command(after_help = "\
+PATCH is a JSON object merged into the stored value (RFC 7386): its fields
+replace the item's, nested objects merge, and a null removes a field. Give
+it inline, as @FILE, or - to read stdin.")]
+pub struct DataUpdateArgs {
+    #[command(flatten)]
+    pub item: DataItemArgs,
+    /// A JSON object: inline, @FILE, or - for stdin
+    #[arg(value_name = "PATCH")]
+    pub patch: String,
+    #[command(flatten)]
+    pub json: JsonArg,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum SkillCommand {
     /// Write the skill to ~/.claude/skills/parcel/ (read by Claude Code, craze and opencode)
@@ -374,6 +607,53 @@ mod tests {
         assert!(matches!(args.mode, Some(ModeArg::Merge)));
         assert_eq!(args.visibility.visibility(), Some(Visibility::Public));
         assert!(args.json.json);
+    }
+
+    #[test]
+    fn parses_comment_and_data_commands() {
+        let cli = Cli::try_parse_from([
+            "parcel",
+            "comments",
+            "resolve",
+            "abcdefghijkm",
+            "1",
+            "3",
+            "--reply",
+            "-",
+        ])
+        .unwrap();
+        let Command::Comments(CommentsCommand::Resolve(args)) = cli.command else {
+            panic!("expected comments resolve")
+        };
+        assert_eq!(args.numbers, vec![1, 3]);
+        assert_eq!(args.reply.as_deref(), Some("-"));
+
+        // A negative number is a value, not a flag.
+        let cli =
+            Cli::try_parse_from(["parcel", "data", "set", "abcdefghijkm", "c", "k", "-5"]).unwrap();
+        let Command::Data(DataCommand::Set(args)) = cli.command else {
+            panic!("expected data set")
+        };
+        assert_eq!(args.value, "-5");
+
+        for bad in [
+            &["parcel", "comments", "resolve", "abcdefghijkm"][..],
+            &["parcel", "comments", "reopen", "abcdefghijkm", "0"],
+            &[
+                "parcel",
+                "comments",
+                "list",
+                "abcdefghijkm",
+                "--status",
+                "closed",
+            ],
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(bad).unwrap_err().exit_code(),
+                2,
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

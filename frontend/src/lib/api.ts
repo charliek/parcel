@@ -11,15 +11,22 @@
 import { ApiError, errorFromBody, parseResponse } from './http';
 import { useTokenStore } from './token-store';
 import type {
+  Comment,
+  CommentList,
+  CommentStatus,
   CreatedToken,
   CreateTokenRequest,
+  DataSummary,
   DeviceInfo,
   Me,
+  NewComment,
+  ParcelActivity,
   ParcelDetail,
   ParcelList,
   ParcelSummary,
   PublishResult,
   TokenList,
+  UpdateComment,
   UpdateParcelRequest,
   VersionDetail,
   VersionList,
@@ -189,6 +196,26 @@ export const api = {
 
   publishVersion: (id: string, form: FormData, onProgress?: (fraction: number) => void) =>
     apiUpload<PublishResult>(`/api/v1/parcels/${enc(id)}/versions`, form, onProgress),
+
+  activity: (id: string) =>
+    apiFetch<ParcelActivity>(`/api/v1/parcels/${enc(id)}/activity`, { cache: 'no-store' }),
+
+  listComments: (id: string, status: CommentStatus = 'open') =>
+    apiFetch<CommentList>(`/api/v1/parcels/${enc(id)}/comments${query({ status })}`),
+
+  createComment: (id: string, body: NewComment) =>
+    apiFetch<Comment>(`/api/v1/parcels/${enc(id)}/comments`, { method: 'POST', json: body }),
+
+  updateComment: (id: string, number: number, body: UpdateComment) =>
+    apiFetch<Comment>(`/api/v1/parcels/${enc(id)}/comments/${number}`, {
+      method: 'PATCH',
+      json: body,
+    }),
+
+  deleteComment: (id: string, number: number) =>
+    apiFetch<void>(`/api/v1/parcels/${enc(id)}/comments/${number}`, { method: 'DELETE' }),
+
+  dataSummary: (id: string) => apiFetch<DataSummary>(`/api/v1/parcels/${enc(id)}/data`),
 
   listTokens: () => apiFetch<TokenList>('/api/v1/tokens'),
 

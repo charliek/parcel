@@ -16,13 +16,13 @@ import type { MouseEvent } from 'react';
 import { IconButton } from '@/components/common/IconButton';
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import type { Visibility } from '@/lib/types';
-import { cn } from '@/lib/utils';
 
 export interface ViewerActions {
   reload: () => void;
@@ -40,27 +40,33 @@ export interface ViewerActions {
 
 /**
  * Overflow menu. On phones it also carries the actions that sit in the top
- * bar on wider screens; on desktop it is owner-only.
+ * bar on wider screens; owners get the parcel's settings; everyone gets the
+ * viewer preferences.
  */
 export function ViewerMoreMenu({
   actions,
   isOwner,
   isCurrent,
   visibility,
+  autoReload,
+  onAutoReloadChange,
 }: {
   actions: ViewerActions;
   isOwner: boolean;
   isCurrent: boolean;
   visibility: Visibility;
+  /** Reload the frame when a new version is published. */
+  autoReload: boolean;
+  onAutoReloadChange: (on: boolean) => void;
 }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <IconButton label="More actions" className={cn(!isOwner && 'md:hidden')}>
+        <IconButton label="More actions">
           <MoreHorizontal />
         </IconButton>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuContent align="end" className="w-64">
         <div className="md:hidden">
           <DropdownMenuItem onSelect={actions.reload}>
             <RotateCw />
@@ -85,7 +91,7 @@ export function ViewerMoreMenu({
             <Download />
             Download page
           </DropdownMenuItem>
-          {isOwner && <DropdownMenuSeparator />}
+          <DropdownMenuSeparator />
         </div>
         {isOwner && (
           <>
@@ -119,8 +125,12 @@ export function ViewerMoreMenu({
               <Trash2 />
               Delete parcel…
             </DropdownMenuItem>
+            <DropdownMenuSeparator />
           </>
         )}
+        <DropdownMenuCheckboxItem checked={autoReload} onCheckedChange={onAutoReloadChange}>
+          Reload when a new version is published
+        </DropdownMenuCheckboxItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

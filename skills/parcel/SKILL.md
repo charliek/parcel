@@ -1,6 +1,6 @@
 ---
 name: parcel
-description: "Use when the user wants to see, share or hand off something as a web page rendered in a browser at a private link: an HTML page, report, dashboard, chart or data visualization, interactive prototype or mockup, diagram, slide-style summary, or a long document that reads better as a page than as chat. Triggers include 'publish this', 'share a link', 'make it a page', 'show it to me in the browser', 'put it on parcel', and any parcel URL (…/p/<id>) or 12-character parcel id the user gives you to read, review, revise, restore or delete. Works through the `parcel` CLI (parcel publish, info, cat, pull, list, update, delete). Do NOT use it for files that belong in the user's repository (write and commit those instead), for an answer that fits comfortably in chat, or for unrelated things named Parcel such as the parcel.js web bundler or package tracking."
+description: "Use when the user wants to see, share or hand off something as a web page rendered in a browser at a private link: an HTML page, report, dashboard, chart or data visualization, interactive prototype or mockup, diagram, slide-style summary, or a long document that reads better as a page than as chat. Triggers include 'publish this', 'share a link', 'make it a page', 'show it to me in the browser', 'put it on parcel', 'there's feedback / there are comments on the parcel', 'update the dashboard's data', and any parcel URL (…/p/<id>) or 12-character parcel id the user gives you to read, review, revise, act on comments for, restore or delete. Works through the `parcel` CLI (parcel publish, info, cat, pull, list, update, delete, comments, data). Do NOT use it for files that belong in the user's repository (write and commit those instead), for an answer that fits comfortably in chat, or for unrelated things named Parcel such as the parcel.js web bundler or package tracking."
 ---
 
 # Publishing pages with parcel
@@ -87,6 +87,20 @@ parcel publish --parcel <id> --remove old.css                    # drop a file
 - `--base-version N` fails with a conflict if someone published since version N — use it when the user may be editing too.
 - Old versions stay viewable at `<url>/v/<n>`; `parcel versions <id>` lists them and `parcel restore <id> --version N` makes an old one current again.
 
+## Act on feedback (comments)
+
+People comment on a parcel in the web viewer's comment mode, usually by clicking an element of the page. When the user says there's feedback or there are comments on a parcel:
+
+```bash
+parcel comments list <ref>     # open threads; --status all includes resolved ones; --json for anchors
+```
+
+1. Read every thread. `#3 · v2 · index.html › "Revenue by region" · Sam · 2h ago` is comment 3, made on version 2, about the element on `index.html` whose text starts "Revenue by region" (a CSS selector is shown when the element had no text; `general` means the whole parcel). The body is indented below it, replies below that.
+2. Make the changes in the source (`parcel pull <ref> ./work` if you don't have it), then publish a new version **to the same parcel** so the link stays the same: `parcel publish … --parcel <ref> --label "Address comments"`.
+3. Resolve what you fixed, saying what changed: `parcel comments resolve <ref> 3 5 --reply "Fixed in v4: bars are blue, axis labelled"`. For a question or something you didn't change, `parcel comments reply <ref> N "…"` and leave it open.
+
+`parcel info <ref>` shows the open-comment count. Commenting needs a login, even on public parcels.
+
 ## Read an existing parcel
 
 ```bash
@@ -104,10 +118,27 @@ Parcels run with an **opaque origin** in a sandbox, on a separate content domain
 
 | Works | Does not work |
 |---|---|
-| Inline and external `<script>` (CDN scripts load, but inline when you can), ES modules, Web Workers | `localStorage`, `sessionStorage`, `IndexedDB` and `document.cookie` **throw** — wrap any use in `try`/`catch` and fall back to memory |
+| Inline and external `<script>` (CDN scripts load, but inline when you can), ES modules, Web Workers | `IndexedDB` **throws** — wrap it in `try`/`catch`. `localStorage`, `sessionStorage` and `document.cookie` work but live **in memory**: they reset on every reload |
 | `fetch("data.json")` and other relative URLs to the parcel's own files | Navigating the top window (`top.location`), reading the parent page |
 | Forms, `alert`/`confirm`/`prompt`, downloads, `window.open` | Logins, payments or anything relying on cookies or the user's identity |
 | Links with `target="_blank"` open in a new tab | Plain external links try to load inside the frame (many sites refuse) — give them `target="_blank" rel="noopener"` |
+
+## Pages that remember (`window.parcel.data`)
+
+Parcel adds a small helper script to every HTML page; it defines `window.parcel`. Use `window.parcel.data` for anything that must survive a reload (checklists, settings, form drafts, a dashboard's numbers): JSON items in named collections, kept on the server and shared by every version of the parcel.
+
+```js
+const data = window.parcel?.data;                    // undefined when opened as a local file
+const prefs = (await data?.get("settings", "prefs")) ?? { theme: "auto" };
+if (window.parcel?.canWrite) await data.update("settings", "prefs", { theme: "dark" });
+data?.subscribe(render);                             // live: call your render() when the data changes
+```
+
+- **Only the owner's own viewing can write.** Visitors (anyone else on a public parcel) can read but not change it. Check `parcel.canWrite` and show a read-only view when it is `false`; writes would reject with status 403.
+- **Agents can feed a page without republishing:** `parcel data set <ref> dashboard metrics @metrics.json` (or `parcel data update` to merge). A page that reads `parcel.data` and subscribes shows the new numbers live.
+- Limits: 256 KiB per value, 10 MiB per parcel. Names: letters, digits, `_ . : -`. Don't name your own global `parcel`; it hides the helper.
+
+Full API, a complete example and the CLI commands: [references/authoring.md](references/authoring.md), [references/cli.md](references/cli.md).
 
 ## Limits and file types
 
@@ -118,7 +149,7 @@ Parcels run with an **opaque origin** in a sandbox, on a separate content domain
 ## Visibility and safety
 
 - New parcels are **private**. Use `--public` (anyone with the link, no sign-in) only when the user explicitly asks to share it publicly; `parcel update <id> --public` / `--private` changes it later.
-- **Never publish secrets**: API keys, tokens, passwords, `.env` contents, private keys, connection strings, or personal data the user did not ask to share. Check data files and inline JSON before publishing a folder, and publish a narrow folder rather than a project root.
+- **Never publish secrets**: API keys, tokens, passwords, `.env` contents, private keys, connection strings, or personal data the user did not ask to share. Check data files and inline JSON before publishing a folder, and publish a narrow folder rather than a project root. The same goes for `parcel data set`: anyone who can view the parcel can read its data.
 - `parcel delete <id> --yes` is permanent (every version). Only delete when the user asks, and confirm which parcel first; without a terminal the CLI refuses unless `--yes` is given.
 
 ## Other commands
@@ -128,12 +159,14 @@ Parcels run with an **opaque origin** in a sandbox, on a separate content domain
 | List the user's parcels | `parcel list [--query TEXT] [--limit N] [--json]` |
 | Rename / re-describe / change visibility | `parcel update <ref> [--title …] [--description …] [--public\|--private]` |
 | Open in the user's browser | `parcel open <ref>` |
+| Comments | `parcel comments list\|add\|reply\|resolve\|reopen\|delete <ref> …` |
+| A page's data | `parcel data list\|get\|set\|update\|delete\|clear <ref> …` |
 | Show config (server, profile, token set?) | `parcel config show` |
 
-`--json` prints the server's JSON response verbatim for `whoami`, `publish`, `list`, `info`, `update`, `versions` and `restore`. Exit codes: `0` ok, `1` error, `2` bad arguments, `3` not logged in or token rejected, `4` not found (a private parcel also looks like this when signed out). Errors print as `error: <message>` on stderr.
+`--json` prints the server's JSON response verbatim for `whoami`, `publish`, `list`, `info`, `update`, `versions`, `restore`, `comments list|add|reply` and `data list|get|set|update`. Exit codes: `0` ok, `1` error, `2` bad arguments, `3` not logged in or token rejected, `4` not found (a private parcel also looks like this when signed out). Errors print as `error: <message>` on stderr.
 
 ## References
 
-- [references/authoring.md](references/authoring.md) — design checklist, a chart example, multi-file layouts, sandbox-safe patterns
-- [references/cli.md](references/cli.md) — every command and flag, JSON shapes, config and environment
-- [references/troubleshooting.md](references/troubleshooting.md) — exit codes, error messages and fixes, blank-page debugging
+- [references/authoring.md](references/authoring.md) — design checklist, a chart example, multi-file layouts, sandbox-safe patterns, the `window.parcel` API
+- [references/cli.md](references/cli.md) — every command and flag (including `comments` and `data`), JSON shapes, config and environment
+- [references/troubleshooting.md](references/troubleshooting.md) — exit codes, error messages and fixes (comments and data too), blank-page debugging

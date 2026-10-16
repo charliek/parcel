@@ -1,4 +1,4 @@
-import { Download, FileIcon, Pencil, X } from 'lucide-react';
+import { Database, Download, FileIcon, Pencil, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { CopyButton } from '@/components/common/CopyButton';
@@ -6,8 +6,9 @@ import { RelativeTime } from '@/components/common/RelativeTime';
 import { VisibilityBadge } from '@/components/common/VisibilityBadge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useDataSummary } from '@/hooks/useParcelData';
 import { downloadFile } from '@/lib/api';
-import { formatBytes, pluralize } from '@/lib/format';
+import { formatBytes, percentOf, pluralize } from '@/lib/format';
 import { errorMessage } from '@/lib/http';
 import type { FileEntry, ParcelSummary, VersionSummary } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -36,6 +37,45 @@ function Meta({ label, children }: { label: string; children: React.ReactNode })
 
 function shortType(contentType: string): string {
   return contentType.split(';')[0];
+}
+
+const SECTION_HEADING = 'font-medium text-muted-foreground text-xs uppercase tracking-wide';
+
+/** The parcel's stored data (what `window.parcel.data` keeps), when it has any. */
+function DataSection({ parcelId }: { parcelId: string }) {
+  const { data } = useDataSummary(parcelId, true);
+  if (!data || data.collections.length === 0) return null;
+  const percent = percentOf(data.usage_bytes, data.limit_bytes);
+  return (
+    <section className="space-y-2" aria-label="Data">
+      <h3 className={SECTION_HEADING}>Data</h3>
+      <div className="space-y-1.5">
+        {/* Decorative: the line below says the same in words. */}
+        <div className="h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+          <div
+            className={cn('h-full rounded-full', percent >= 90 ? 'bg-destructive' : 'bg-primary')}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+        <p className="text-muted-foreground text-xs">
+          {formatBytes(data.usage_bytes)} of {formatBytes(data.limit_bytes)} used
+        </p>
+      </div>
+      <ul className="divide-y rounded-lg border" aria-label="Data collections">
+        {data.collections.map((c) => (
+          <li key={c.name} className="flex items-center gap-2 py-1.5 pr-3 pl-3">
+            <Database className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate font-mono text-xs" title={c.name}>
+              {c.name}
+            </span>
+            <span className="shrink-0 text-muted-foreground text-xs">
+              {pluralize(c.count, 'item')} · {formatBytes(c.usage_bytes)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 /** Description, files and history for the parcel in view. */
@@ -131,9 +171,7 @@ export function InfoPanel({
         </dl>
 
         <section className="space-y-2">
-          <h3 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-            Files
-          </h3>
+          <h3 className={SECTION_HEADING}>Files</h3>
           {files === null ? (
             <div className="space-y-2">
               <Skeleton className="h-8" />
@@ -170,10 +208,10 @@ export function InfoPanel({
           )}
         </section>
 
+        <DataSection parcelId={parcel.id} />
+
         <section className="space-y-2">
-          <h3 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-            History
-          </h3>
+          <h3 className={SECTION_HEADING}>History</h3>
           {versions === null ? (
             <Skeleton className="h-16" />
           ) : (
