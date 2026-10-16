@@ -30,6 +30,9 @@ use crate::state::AppState;
 const USER_CODE_ALPHABET: &[u8; 20] = b"BCDFGHJKLMNPQRSTVWXZ";
 const CODE_TTL: time::Duration = time::Duration::minutes(10);
 const POLL_INTERVAL_SECS: i32 = 5;
+/// Ceiling on live pending logins across all clients: the start endpoint is
+/// unauthenticated, so this is what bounds the table.
+const MAX_PENDING: i64 = 1000;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -86,6 +89,11 @@ async fn device_start(
     if client_name.chars().count() > 120 {
         return Err(AppError::BadRequest(
             "client_name must be at most 120 characters".into(),
+        ));
+    }
+    if device::count_pending(&state.db).await? >= MAX_PENDING {
+        return Err(AppError::TooManyRequests(
+            "too many CLI logins are in progress; try again in a few minutes".into(),
         ));
     }
     let device_code = B64.encode(rand::random::<[u8; 32]>());
@@ -159,16 +167,27 @@ async fn device_poll(
             let user_id = row
                 .user_id
                 .ok_or_else(|| AppError::Internal(anyhow::anyhow!("approved without user")))?;
-            if !device::redeem(&state.db, row.id).await? {
-                // Another poll won the race and already took the token.
-                return Ok(status_only(DeviceStatus::Expired));
-            }
             let user = users::find_by_id(&state.db, user_id)
                 .await?
                 .ok_or_else(|| AppError::Internal(anyhow::anyhow!("approving user vanished")))?;
+            // Claim the approval and mint the token in one transaction, so a
+            // failure in between leaves the approval redeemable rather than
+            // burned. Exactly one concurrent poll can win the claim.
+            let mut tx = state
+                .db
+                .begin()
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
+            if !device::redeem(&mut *tx, row.id).await? {
+                // Another poll won the race and already took the token.
+                return Ok(status_only(DeviceStatus::Expired));
+            }
             let created =
-                crate::http::tokens::mint(&state, user_id, &row.client_name, "device", None)
+                crate::http::tokens::mint(&mut *tx, user_id, &row.client_name, "device", None)
                     .await?;
+            tx.commit()
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
             tracing::info!(user = %user_id, "CLI device login redeemed");
             Ok(Json(DevicePollResponse {
                 status: DeviceStatus::Approved,

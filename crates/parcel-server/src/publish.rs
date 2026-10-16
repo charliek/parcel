@@ -297,11 +297,14 @@ async fn store_blobs(state: &AppState, uploads: &[Upload]) -> Result<(), AppErro
     if uploads.is_empty() {
         return Ok(());
     }
-    let shas: Vec<String> = uploads.iter().map(|u| u.sha256.clone()).collect();
-    let sizes: Vec<i64> = uploads
-        .iter()
-        .map(|u| i64::try_from(u.bytes.len()).unwrap_or(i64::MAX))
-        .collect();
+    // One row per distinct blob: identical files in one upload share a hash,
+    // and a single INSERT … ON CONFLICT may not touch the same row twice.
+    let mut distinct: BTreeMap<&str, i64> = BTreeMap::new();
+    for u in uploads {
+        distinct.insert(&u.sha256, i64::try_from(u.bytes.len()).unwrap_or(i64::MAX));
+    }
+    let shas: Vec<String> = distinct.keys().map(|s| s.to_string()).collect();
+    let sizes: Vec<i64> = distinct.values().copied().collect();
     let touched = blobs::touch(&state.db, &shas, &sizes)
         .await
         .map_err(AppError::Internal)?;
@@ -335,6 +338,25 @@ fn check_quota(limits: &Limits, stored: i64, adding: i64) -> Result<(), AppError
         )));
     }
     Ok(())
+}
+
+fn stale_base(current: i32, base: i32) -> AppError {
+    AppError::Conflict(format!(
+        "parcel is at version {current}, not {base}; refetch and retry"
+    ))
+}
+
+/// Quota check outside any transaction, used to refuse a publish before its
+/// bytes are written. Only a lower bound on what the version will need.
+async fn precheck_quota(state: &AppState, owner_id: Uuid, adding: i64) -> Result<(), AppError> {
+    let limits = &state.config.limits;
+    if limits.user_quota_bytes == 0 {
+        return Ok(());
+    }
+    let usage = parcels::usage(&state.db, owner_id)
+        .await
+        .map_err(AppError::Internal)?;
+    check_quota(limits, usage.stored_bytes, adding)
 }
 
 fn new_parcel_id() -> String {
@@ -376,6 +398,9 @@ pub async fn create(
     let label = clean_text(meta.label, MAX_LABEL_CHARS, "label")?.filter(|l| !l.is_empty());
     let visibility = meta.visibility.unwrap_or_default();
 
+    // Cheap pre-check so a request that will be refused never writes bytes;
+    // the authoritative check runs again under the quota lock below.
+    precheck_quota(state, owner_id, total).await?;
     store_blobs(state, &uploads).await?;
 
     let files: Vec<FileRow> = manifest.into_values().collect();
@@ -516,21 +541,19 @@ pub async fn add_version(
     }
     if let Some(base) = meta.base_version {
         if base != current {
-            return Err(AppError::Conflict(format!(
-                "parcel is at version {current}, not {base}; refetch and retry"
-            )));
+            return Err(stale_base(current, base));
         }
     }
 
     // Build the manifest against the locked current version, so concurrent
     // merges never drop each other's files.
-    let previous = parcels::get_version(&state.db, parcel_id, current)
+    let previous = parcels::get_version(&mut *tx, parcel_id, current)
         .await
         .map_err(AppError::Internal)?;
     let mut manifest: Manifest = match (&restore_files, meta.mode.unwrap_or_default()) {
         (Some(files), _) => files.iter().map(|f| (f.path.clone(), f.clone())).collect(),
         (None, PublishMode::Replace) => Manifest::new(),
-        (None, PublishMode::Merge) => parcels::version_files(&state.db, parcel_id, current)
+        (None, PublishMode::Merge) => parcels::version_files(&mut *tx, parcel_id, current)
             .await
             .map_err(AppError::Internal)?
             .into_iter()

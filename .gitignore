@@ -14,3 +14,4 @@ frontend/playwright-report/
 .playwright-cli/
 *.log
 .DS_Store
+.playwright/

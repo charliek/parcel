@@ -1,7 +1,7 @@
 //! Pending CLI device logins.
 
 use anyhow::{Context, Result};
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -92,19 +92,30 @@ pub async fn poll(pool: &PgPool, device_code_hash: &str) -> Result<Option<Device
 
 /// Atomically move an approved authorization to `redeemed`. Exactly one
 /// poller wins, which is what makes the token deliverable only once.
-pub async fn redeem(pool: &PgPool, id: Uuid) -> Result<bool> {
+pub async fn redeem<'e>(db: impl PgExecutor<'e>, id: Uuid) -> Result<bool> {
     let result = sqlx::query(
         "UPDATE device_authorizations SET status = 'redeemed'
          WHERE id = $1 AND status = 'approved' AND expires_at > now()",
     )
     .bind(id)
-    .execute(pool)
+    .execute(db)
     .await
     .context("redeeming device authorization")?;
     Ok(result.rows_affected() > 0)
 }
 
-/// Drop authorizations that expired more than a day ago.
+/// Live (pending, unexpired) authorizations — bounded so the unauthenticated
+/// start endpoint can't grow the table without limit.
+pub async fn count_pending(pool: &PgPool) -> Result<i64> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM device_authorizations WHERE status = 'pending' AND expires_at > now()",
+    )
+    .fetch_one(pool)
+    .await
+    .context("counting pending device authorizations")
+}
+
+/// Drop authorizations that expired more than an hour ago.
 pub async fn purge_expired(pool: &PgPool) -> Result<u64> {
     let result = sqlx::query(
         "DELETE FROM device_authorizations WHERE expires_at < now() - interval '1 day'",

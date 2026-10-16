@@ -654,6 +654,45 @@ async fn pull_downloads_a_version_and_refuses_to_overwrite() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn pull_never_writes_through_a_symlinked_directory() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let files = json!([
+        {"path": "assets/app.js", "size_bytes": 2, "content_type": "text/javascript; charset=utf-8", "sha256": "bb"},
+    ]);
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/parcels/{ID}/versions/2")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(version_detail(2, files)))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/v1/parcels/{ID}/versions/2/files/assets/app.js"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1;"))
+        .mount(&server)
+        .await;
+
+    // A checkout where `assets` points somewhere outside the destination.
+    let outside = sandbox.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::create_dir_all(sandbox.root.join("out")).unwrap();
+    std::os::unix::fs::symlink(&outside, sandbox.root.join("out/assets")).unwrap();
+
+    let mut cmd = sandbox.parcel(&server.uri());
+    cmd.args(["pull", ID, "out", "--version", "2", "--force"]);
+    let out = run(&mut cmd);
+    assert_code(&out, 1);
+    assert!(stderr(&out).contains("symlink"), "{}", stderr(&out));
+    assert_eq!(
+        fs::read_dir(&outside).unwrap().count(),
+        0,
+        "nothing escaped"
+    );
+}
+
 // ---------------------------------------------------------------- auth
 
 #[tokio::test]

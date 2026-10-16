@@ -22,8 +22,10 @@ pub fn router() -> OpenApiRouter<AppState> {
 }
 
 /// Mint and store a token for `user_id`; returns the row and the raw secret.
-pub(crate) async fn mint(
-    state: &AppState,
+/// Takes any executor so the device flow can mint inside its redeem
+/// transaction.
+pub(crate) async fn mint<'e>(
+    db: impl sqlx::PgExecutor<'e>,
     user_id: Uuid,
     name: &str,
     created_via: &str,
@@ -31,7 +33,7 @@ pub(crate) async fn mint(
 ) -> anyhow::Result<CreatedToken> {
     let generated = TOKEN_FORMAT.generate();
     let row = tokens::insert(
-        &state.db,
+        db,
         &NewToken {
             user_id,
             name,
@@ -97,7 +99,7 @@ async fn create_token(
             ))
         }
     };
-    let created = mint(&state, caller.user.id, name, "web", expires_at).await?;
+    let created = mint(&state.db, caller.user.id, name, "web", expires_at).await?;
     Ok((StatusCode::CREATED, Json(created)))
 }
 

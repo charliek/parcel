@@ -305,6 +305,30 @@ fn local_target(dir: &Path, published: &str) -> Result<PathBuf> {
     Ok(dir.join(relative))
 }
 
+/// Create `rel` under `base` one component at a time, refusing to traverse a
+/// symlink: `create_dir_all` would follow a planted `assets -> /elsewhere`
+/// link and write outside the destination.
+fn create_dirs_inside(base: &Path, rel: &Path) -> Result<()> {
+    let mut current = base.to_path_buf();
+    for component in rel.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => bail!(
+                "{} is a symlink; refusing to write through it",
+                current.display()
+            ),
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => bail!("{} exists and is not a directory", current.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current)
+                    .with_context(|| format!("creating {}", current.display()))?;
+            }
+            Err(e) => return Err(e).with_context(|| format!("checking {}", current.display())),
+        }
+    }
+    Ok(())
+}
+
 pub fn pull(settings: &Settings, args: PullArgs) -> Result<()> {
     let (id, pinned) = parse_ref(&args.parcel.parcel)?;
     let version = args.version.or(pinned);
@@ -350,20 +374,27 @@ pub fn pull(settings: &Settings, args: PullArgs) -> Result<()> {
     }
 
     let segment = detail.summary.version.to_string();
-    for (file, target) in &targets {
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    for (n, (file, target)) in targets.iter().enumerate() {
+        if let Some(parent) = Path::new(&file.path).parent() {
+            create_dirs_inside(&dir, parent)?;
         }
         let mut response = api.download(file_url(&api, &id, &segment, &file.path))?;
+        // Unique and created exclusively (O_EXCL): a planted file or symlink
+        // at a predictable temp name can never be followed or truncated.
         let partial = target.with_file_name(format!(
-            ".{}.parcel-partial",
+            ".{}.{}-{n}.parcel-partial",
             target
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or("file")
+                .unwrap_or("file"),
+            std::process::id()
         ));
         let written = (|| -> Result<u64> {
-            let mut out = fs::File::create(&partial)?;
+            let mut out = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&partial)?;
             let n = std::io::copy(&mut response, &mut out)?;
             out.sync_all()?;
             Ok(n)

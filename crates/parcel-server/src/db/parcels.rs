@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use parcel_types::{FileEntry, Usage, Visibility};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgExecutor, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -122,8 +122,10 @@ pub async fn list_versions(pool: &PgPool, parcel_id: &str) -> Result<Vec<Version
     .context("listing versions")
 }
 
-pub async fn get_version(
-    pool: &PgPool,
+/// Generic over the executor so a publish can read inside its own
+/// transaction instead of taking a second pool connection.
+pub async fn get_version<'e>(
+    db: impl PgExecutor<'e>,
     parcel_id: &str,
     version: i32,
 ) -> Result<Option<VersionRow>> {
@@ -133,19 +135,23 @@ pub async fn get_version(
     )
     .bind(parcel_id)
     .bind(version)
-    .fetch_optional(pool)
+    .fetch_optional(db)
     .await
     .context("loading version")
 }
 
-pub async fn version_files(pool: &PgPool, parcel_id: &str, version: i32) -> Result<Vec<FileRow>> {
+pub async fn version_files<'e>(
+    db: impl PgExecutor<'e>,
+    parcel_id: &str,
+    version: i32,
+) -> Result<Vec<FileRow>> {
     sqlx::query_as::<_, FileRow>(
         "SELECT path, blob_sha256, size_bytes, content_type
          FROM version_files WHERE parcel_id = $1 AND version = $2 ORDER BY path",
     )
     .bind(parcel_id)
     .bind(version)
-    .fetch_all(pool)
+    .fetch_all(db)
     .await
     .context("listing version files")
 }

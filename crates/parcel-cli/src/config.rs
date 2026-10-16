@@ -92,7 +92,7 @@ impl ConfigStore {
             }
         };
         let config: ConfigFile =
-            toml::from_str(&text).with_context(|| format!("parsing {}", self.path.display()))?;
+            toml::from_str(&text).map_err(|e| parse_error(&self.path, &text, &e))?;
         if config.has_token() {
             check_private(&self.path)?;
         }
@@ -363,8 +363,62 @@ impl Settings {
     }
 }
 
+/// A TOML error for `config.toml` that never echoes the file's contents.
+///
+/// `toml::de::Error`'s Display quotes the offending source line, and this
+/// file holds API tokens — a stray comma after `token = "pcl_…"` would
+/// otherwise print the secret into a terminal, CI log or agent transcript.
+/// Only the line number and the parser's message (with anything token-shaped
+/// masked) are reported.
+fn parse_error(path: &Path, text: &str, e: &toml::de::Error) -> anyhow::Error {
+    let line = e
+        .span()
+        .map(|span| text[..span.start.min(text.len())].matches('\n').count() + 1);
+    let location = line.map(|l| format!(" (line {l})")).unwrap_or_default();
+    anyhow::anyhow!(
+        "{} is not valid TOML{location}: {}",
+        path.display(),
+        mask_tokens(e.message())
+    )
+}
+
+fn mask_tokens(message: &str) -> String {
+    message
+        .split_inclusive(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map(|word| {
+            let trimmed = word.trim_end_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_'));
+            if trimmed.starts_with("pcl_") {
+                word.replacen(trimmed, "pcl_<redacted>", 1)
+            } else {
+                word.to_string()
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_errors_never_echo_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let text =
+            "[profiles.default]\nserver = \"https://x\"\ntoken = \"pcl_supersecretvalue123\",\n";
+        std::fs::write(&path, text).unwrap();
+        let err = super::parse_error(
+            &path,
+            text,
+            &toml::from_str::<toml::Table>(text).unwrap_err(),
+        );
+        let shown = format!("{err:#}");
+        assert!(!shown.contains("supersecret"), "{shown}");
+        assert!(shown.contains("line 3"), "{shown}");
+        assert_eq!(
+            super::mask_tokens("bad pcl_abc123, ok"),
+            "bad pcl_<redacted>, ok"
+        );
+    }
+
     use super::*;
 
     fn store() -> (tempfile::TempDir, ConfigStore) {

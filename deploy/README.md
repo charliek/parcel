@@ -61,7 +61,16 @@ Shown for production; substitute `staging` / `parcel-staging` names.
    gcloud beta run domain-mappings create --service parcel --domain parcel.stridelabs.ai --region us-central1
    gcloud beta run domain-mappings create --service parcel --domain parcelcontent.stridelabs.ai --region us-central1
    ```
-6. **slauth** — the `parcel` client and app are on slauth's
+6. **Keep capability URLs out of Cloud Run's request log.** The server
+   redacts `/v/<token>` in its own logs, but Cloud Run's platform request log
+   records every full URL, and a content URL is a bearer capability until it
+   expires. Exclude content-path requests from the `_Default` sink (and any
+   other sink that exports logs):
+   ```bash
+   gcloud logging sinks update _Default --project projects-413401 \
+     --add-exclusion='name=parcel-content-capabilities,filter=resource.type="cloud_run_revision" AND resource.labels.service_name=~"^parcel" AND httpRequest.requestUrl:"/v/"'
+   ```
+7. **slauth** — the `parcel` client and app are on slauth's
    `feature/add-parcel-app` branch (redirects for all three envs). Merge and
    deploy slauth before parcel's first login in that environment, and hand out
    the `parcel-…` invite code (or `scripts/admin-cli.sh grants add --app parcel`).

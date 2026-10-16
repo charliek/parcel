@@ -187,3 +187,33 @@ async fn metadata_is_validated() {
         "no <title>, so the file name"
     );
 }
+
+#[tokio::test]
+async fn identical_files_in_one_upload_share_a_blob() {
+    // Two pages with the same bytes and two empty stylesheets: one blob row
+    // each, without tripping Postgres' "ON CONFLICT … a second time" error.
+    let app = TestApp::new().await;
+    let token = user_token();
+    let form = Form::new()
+        .file("index.html", "<p>same</p>")
+        .file("copy.html", "<p>same</p>")
+        .file("a.css", "")
+        .file("b.css", "");
+    let created: parcel_types::PublishResult = json(
+        expect_status(
+            app.post_multipart("/api/v1/parcels", Some(&token), &form)
+                .await,
+            StatusCode::CREATED,
+        )
+        .await,
+    )
+    .await;
+    let shas: std::collections::HashSet<_> = created
+        .version
+        .files
+        .iter()
+        .map(|f| f.sha256.clone())
+        .collect();
+    assert_eq!(created.version.files.len(), 4);
+    assert_eq!(shas.len(), 2);
+}

@@ -56,6 +56,26 @@ pub async fn lock_collectable(
     .context("selecting collectable blobs")
 }
 
+/// Of `shas` (already locked by [`lock_collectable`]), the ones still
+/// unreferenced. This is a fresh statement, so under READ COMMITTED it sees
+/// every version committed before it ran — including one that committed
+/// after `lock_collectable`'s snapshot was taken. A reference that is still
+/// uncommitted holds a key-share lock on the blob row, which is why
+/// `lock_collectable` (FOR UPDATE SKIP LOCKED) never returned it.
+pub async fn still_unreferenced(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    shas: &[String],
+) -> Result<Vec<String>> {
+    sqlx::query_scalar(
+        "SELECT s FROM UNNEST($1::text[]) AS s
+         WHERE NOT EXISTS (SELECT 1 FROM version_files f WHERE f.blob_sha256 = s)",
+    )
+    .bind(shas)
+    .fetch_all(&mut **tx)
+    .await
+    .context("rechecking blob references")
+}
+
 pub async fn delete_rows(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     shas: &[String],

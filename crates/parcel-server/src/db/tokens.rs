@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use parcel_types::ApiToken;
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -44,7 +44,7 @@ pub struct NewToken<'a> {
     pub expires_at: Option<OffsetDateTime>,
 }
 
-pub async fn insert(pool: &PgPool, t: &NewToken<'_>) -> Result<TokenRow> {
+pub async fn insert<'e>(db: impl PgExecutor<'e>, t: &NewToken<'_>) -> Result<TokenRow> {
     sqlx::query_as::<_, TokenRow>(&format!(
         "INSERT INTO api_tokens (user_id, name, token_hash, prefix_display, created_via, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING {COLUMNS}"
@@ -55,7 +55,7 @@ pub async fn insert(pool: &PgPool, t: &NewToken<'_>) -> Result<TokenRow> {
     .bind(t.prefix_display)
     .bind(t.created_via)
     .bind(t.expires_at)
-    .fetch_one(pool)
+    .fetch_one(db)
     .await
     .context("inserting token")
 }

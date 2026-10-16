@@ -30,18 +30,19 @@ pub async fn run_once(state: &AppState, grace: Duration) -> Result<GcReport> {
     let mut report = GcReport::default();
     loop {
         let mut tx = state.db.begin().await?;
-        let shas = blobs::lock_collectable(&mut tx, grace, BATCH).await?;
-        if shas.is_empty() {
+        let locked = blobs::lock_collectable(&mut tx, grace, BATCH).await?;
+        if locked.is_empty() {
             tx.rollback().await?;
             break;
         }
+        let shas = blobs::still_unreferenced(&mut tx, &locked).await?;
         for sha in &shas {
             state.blobs.delete(&blob_key(sha)).await?;
             state.blob_cache.invalidate(sha).await;
         }
         report.blobs_deleted += blobs::delete_rows(&mut tx, &shas).await?;
         tx.commit().await?;
-        if (shas.len() as i64) < BATCH {
+        if (locked.len() as i64) < BATCH {
             break;
         }
     }
