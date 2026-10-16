@@ -1,0 +1,108 @@
+[package]
+name = "parcel-server"
+description = "Parcel: publish HTML artifacts to private, sandboxed URLs"
+default-run = "parcel-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "parcel_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "parcel-server"
+path = "src/main.rs"
+
+[features]
+# Swagger UI at `/docs`, additionally gated at runtime on APP_ENV != production
+# (the slauth pattern). `--no-default-features` removes every reference to
+# utoipa-swagger-ui, which is how the production image is built.
+# `/openapi.json` itself is plain utoipa wiring and is served in every build.
+default = ["swagger-ui"]
+swagger-ui = ["dep:utoipa-swagger-ui"]
+
+[dependencies]
+parcel-types = { workspace = true, features = ["openapi"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# HTTP server
+axum = { version = "0.8", features = ["multipart"] }
+tower = { version = "0.5", features = ["util", "steer"] }
+tower-http = { version = "0.6", features = ["trace", "fs", "set-header", "limit"] }
+http-body-util = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Outbound HTTP (JWKS via stridelabs-auth, GCS JSON API, Google OAuth)
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "rustls-tls-native-roots",
+] }
+bytes = "1"
+url = "2"
+percent-encoding = "2"
+
+# Database
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "uuid",
+    "time",
+    "migrate",
+    "macros",
+] }
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+
+# Crypto: content-token HMAC, blob hashing, device codes, GCS service-account JWT
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+rand = "0.9"
+base64 = "0.22"
+hex = "0.4"
+jsonwebtoken = "9"
+
+# Content serving
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+moka = { version = "0.12", features = ["future"] }
+
+# Observability
+tracing = "0.1"
+
+# CLI / errors / config
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+thiserror = "2"
+dotenvy = "0.15"
+async-trait = "0.1"
+
+# OpenAPI: utoipa-axum's OpenApiRouter for every documented /api/v1 route; the
+# committed spec is checked by tests/openapi_shape.rs.
+utoipa = { version = "5", features = ["uuid", "time"] }
+utoipa-axum = "0.2"
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "vendored"], optional = true }
+
+# StrideLabs shared crates (public git dep, lockstep-versioned).
+stridelabs-config = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.4.0" }
+stridelabs-observability = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.4.0" }
+stridelabs-http = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.4.0", features = ["openapi"] }
+stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.4.0", features = ["axum", "http"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6"
+tempfile = "3"
+stridelabs-testing = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.4.0", features = ["postgres"] }
+stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.4.0", features = ["test-support"] }

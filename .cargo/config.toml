@@ -1,0 +1,3 @@
+[resolver]
+# Resolve the dependency graph against the pinned compiler (rust-toolchain.toml).
+incompatible-rust-versions = "fallback"

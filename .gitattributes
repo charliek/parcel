@@ -1,0 +1,3 @@
+# The committed OpenAPI spec is compared byte-for-byte against a fresh export
+# (LF) by tests/openapi_shape.rs; a CRLF checkout would fail every line.
+crates/parcel-server/openapi.json text eol=lf
