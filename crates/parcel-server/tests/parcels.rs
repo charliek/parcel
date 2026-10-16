@@ -493,8 +493,15 @@ async fn me_reports_usage() {
 async fn info_is_public() {
     let app = TestApp::new().await;
     let info: parcel_types::ServerInfo = json(app.get("/api/v1/info", None).await).await;
-    assert_eq!(info.auth.mode, "slauth");
-    assert_eq!(info.auth.client_id, "parcel");
+    assert_eq!(info.auth.mode, "oidc");
+    assert_eq!(
+        info.auth.providers,
+        [parcel_types::AuthProvider {
+            id: "test".into(),
+            label: "Test IdP".into()
+        }]
+    );
+    assert!(info.allow_public);
     assert_eq!(info.content_origin, format!("https://{CONTENT_HOST}"));
     assert!(info.allowed_extensions.iter().any(|e| e == "html"));
 }

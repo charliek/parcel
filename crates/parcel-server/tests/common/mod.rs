@@ -1,6 +1,12 @@
 //! Shared integration-test harness: a fail-loud real Postgres (database
-//! `parcel_test`, created on demand), a mock slauth JWKS endpoint, an
-//! in-memory blob store, and the full router driven with `oneshot`.
+//! `parcel_test`, created on demand), a mock OIDC provider (discovery +
+//! JWKS; tests mount its token endpoint), an in-memory blob store, and the
+//! full router driven with `oneshot`.
+//!
+//! Most tests don't care how a user signed in: [`user_token`] returns a
+//! stand-in credential that [`TestApp::send`] swaps for a real signed
+//! session cookie (and the `Origin` a browser would send). Sign-in itself is
+//! tested end to end in `tests/auth.rs`.
 //!
 //! Each `TestApp` runs in its own Postgres schema (see [`migrated_pool`]).
 //! `cargo test` REQUIRES the compose
@@ -16,18 +22,24 @@ use axum::http::{header, Method, Request, StatusCode};
 use axum::response::Response;
 use axum::Router;
 use http_body_util::BodyExt;
-use parcel_server::config::{AuthMode, Config};
+use parcel_server::auth::cookie::{self, Session};
+use parcel_server::config::{AuthMode, Config, ProviderConfig};
+use parcel_server::db::users;
 use parcel_server::state::AppState;
 use parcel_server::storage::MemoryBlobStore;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::PgPool;
-use stridelabs_auth::test_support::{TestClaims, TestKey};
+use stridelabs_auth::test_support::TestKey;
 use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-pub const ISSUER: &str = "https://auth.parcel.test";
+/// The mock provider's id in `AUTH_PROVIDERS`.
+pub const PROVIDER: &str = "test";
+pub const CLIENT_ID: &str = "parcel";
+/// Prefix of the stand-in credential [`user_token`] returns.
+const TEST_USER: &str = "test-user:";
 pub const APP_ORIGIN: &str = "https://parcel.test";
 pub const CONTENT_HOST: &str = "content.parcel.test";
 
@@ -119,19 +131,51 @@ pub async fn migrated_pool() -> PgPool {
     pool
 }
 
-pub fn test_config(jwks_url: &str) -> Config {
-    let mut config = Config {
+pub fn test_config(issuer: &str) -> Config {
+    Config {
         database_url: database_url(),
         app_origin: url::Url::parse(APP_ORIGIN).unwrap(),
         content_origin: url::Url::parse(&format!("https://{CONTENT_HOST}")).unwrap(),
-        auth_mode: AuthMode::Slauth,
+        auth_mode: AuthMode::Oidc,
+        providers: vec![ProviderConfig {
+            id: PROVIDER.into(),
+            label: "Test IdP".into(),
+            issuer: issuer.into(),
+            client_id: CLIENT_ID.into(),
+            client_secret: None,
+            allowed_domains: Vec::new(),
+            trust_email: false,
+            scopes: "openid email profile".into(),
+            provider_logout: false,
+        }],
         blob_backend: parcel_server::config::BlobBackend::Memory,
         ..Config::default()
-    };
-    config.slauth.issuer = ISSUER.into();
-    config.slauth.jwks_url = jwks_url.into();
-    config.slauth.audience = "parcel".into();
-    config
+    }
+}
+
+/// Serve a discovery document and JWKS for an issuer at `server`.
+pub async fn mount_provider(server: &MockServer) {
+    let issuer = server.uri();
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("{issuer}/authorize"),
+            "token_endpoint": format!("{issuer}/token"),
+            "jwks_uri": format!("{issuer}/jwks.json"),
+            "userinfo_endpoint": format!("{issuer}/userinfo"),
+            "end_session_endpoint": format!("{issuer}/logout"),
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            TestKey::primary().jwks_json().to_owned(),
+            "application/json",
+        ))
+        .mount(server)
+        .await;
 }
 
 pub struct TestApp {
@@ -139,7 +183,8 @@ pub struct TestApp {
     pub state: AppState,
     pub blobs: Arc<MemoryBlobStore>,
     pub pool: PgPool,
-    _jwks: MockServer,
+    /// The mock OIDC provider (its issuer is `idp.uri()`).
+    pub idp: MockServer,
 }
 
 impl TestApp {
@@ -149,16 +194,9 @@ impl TestApp {
 
     /// Build an app, letting the test adjust config (limits, auth mode…).
     pub async fn with_config(adjust: impl FnOnce(&mut Config)) -> Self {
-        let jwks = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.well-known/jwks.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(
-                TestKey::primary().jwks_json().to_owned(),
-                "application/json",
-            ))
-            .mount(&jwks)
-            .await;
-        let mut config = test_config(&format!("{}/.well-known/jwks.json", jwks.uri()));
+        let idp = MockServer::start().await;
+        mount_provider(&idp).await;
+        let mut config = test_config(&idp.uri());
         adjust(&mut config);
         let pool = migrated_pool().await;
         let blobs = Arc::new(MemoryBlobStore::default());
@@ -170,11 +208,50 @@ impl TestApp {
             state,
             blobs,
             pool,
-            _jwks: jwks,
+            idp,
         }
     }
 
-    pub async fn send(&self, request: Request<Body>) -> Response {
+    /// A signed session cookie (`name=value`) for the user with this
+    /// provider subject and email, signing them in first.
+    pub async fn session_cookie(&self, sub: &str, email: &str) -> String {
+        let user = users::sign_in(&self.pool, PROVIDER, sub, email, "Test User")
+            .await
+            .expect("sign in test user");
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let session = Session {
+            user_id: user.id,
+            epoch: user.session_epoch,
+            issued_at: now,
+            expires_at: now + 3600,
+            provider: PROVIDER.into(),
+        };
+        format!(
+            "{}={}",
+            cookie::names(&self.state.config).session,
+            cookie::seal_session(&self.state.config, &session)
+        )
+    }
+
+    pub async fn send(&self, mut request: Request<Body>) -> Response {
+        // Swap a stand-in credential for what a signed-in browser sends.
+        let stand_in = request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .and_then(|v| v.strip_prefix(TEST_USER))
+            .map(String::from);
+        if let Some(who) = stand_in {
+            let (sub, email) = who.split_once(':').expect("test-user:<sub>:<email>");
+            let cookie = self.session_cookie(sub, email).await;
+            let headers = request.headers_mut();
+            headers.remove(header::AUTHORIZATION);
+            headers.insert(header::COOKIE, cookie.parse().unwrap());
+            if !headers.contains_key(header::ORIGIN) {
+                headers.insert(header::ORIGIN, APP_ORIGIN.parse().unwrap());
+            }
+        }
         self.router
             .clone()
             .oneshot(request)
@@ -303,20 +380,15 @@ fn build(
     req.body(body).unwrap()
 }
 
-/// A fresh user's slauth access token.
+/// A fresh user's credential (a stand-in for a web session; see the
+/// module docs).
 pub fn user_token() -> String {
     let sub = uuid::Uuid::new_v4().to_string();
     token_for(&sub, &format!("{sub}@example.com"))
 }
 
 pub fn token_for(sub: &str, email: &str) -> String {
-    TestKey::primary().mint(
-        &TestClaims::new(ISSUER, "parcel")
-            .subject(sub)
-            .email(email)
-            .name("Test User")
-            .build(),
-    )
+    format!("{TEST_USER}{sub}:{email}")
 }
 
 pub async fn body_bytes(response: Response) -> Vec<u8> {

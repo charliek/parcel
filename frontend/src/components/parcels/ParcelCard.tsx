@@ -2,8 +2,9 @@ import { MessageSquare } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { RelativeTime } from '@/components/common/RelativeTime';
 import { VisibilityBadge } from '@/components/common/VisibilityBadge';
+import { ROLE_LABEL } from '@/lib/access';
 import { formatBytes, formatNumber, pluralize } from '@/lib/format';
-import type { ParcelSummary } from '@/lib/types';
+import type { ParcelSummary, ShareRole } from '@/lib/types';
 import { ParcelIcon } from './ParcelIcon';
 
 const LINK_FOCUS =
@@ -26,8 +27,26 @@ function OpenComments({ count }: { count: number }) {
   );
 }
 
+/** Someone else's parcel, shared with the viewer of the list. */
+export interface SharedBy {
+  ownerName: string;
+  role: ShareRole;
+}
+
+/** The line under the title: the id for your own parcels, who shared it otherwise. */
+function Subtitle({ parcel, sharedBy }: { parcel: ParcelSummary; sharedBy?: SharedBy }) {
+  if (!sharedBy) {
+    return <p className="truncate font-mono text-muted-foreground text-xs">{parcel.id}</p>;
+  }
+  return (
+    <p className="truncate text-muted-foreground text-xs" data-testid="shared-by">
+      {sharedBy.ownerName} · {ROLE_LABEL[sharedBy.role]}
+    </p>
+  );
+}
+
 /** A parcel in the dashboard grid. The whole card is the link. */
-export function ParcelCard({ parcel }: { parcel: ParcelSummary }) {
+export function ParcelCard({ parcel, sharedBy }: { parcel: ParcelSummary; sharedBy?: SharedBy }) {
   return (
     <Link
       to={`/p/${parcel.id}`}
@@ -40,7 +59,9 @@ export function ParcelCard({ parcel }: { parcel: ParcelSummary }) {
           <h3 className="truncate font-medium text-[15px] leading-tight group-hover:text-primary">
             {parcel.title || parcel.entry}
           </h3>
-          <p className="mt-1 truncate font-mono text-muted-foreground text-xs">{parcel.id}</p>
+          <div className="mt-1">
+            <Subtitle parcel={parcel} sharedBy={sharedBy} />
+          </div>
         </div>
         <VisibilityBadge visibility={parcel.visibility} />
       </div>
@@ -64,7 +85,7 @@ export function ParcelCard({ parcel }: { parcel: ParcelSummary }) {
 }
 
 /** A parcel in the dashboard list layout. */
-export function ParcelRow({ parcel }: { parcel: ParcelSummary }) {
+export function ParcelRow({ parcel, sharedBy }: { parcel: ParcelSummary; sharedBy?: SharedBy }) {
   return (
     <li>
       <Link
@@ -81,7 +102,7 @@ export function ParcelRow({ parcel }: { parcel: ParcelSummary }) {
             <VisibilityBadge visibility={parcel.visibility} className="hidden sm:inline-flex" />
             <OpenComments count={parcel.open_comments} />
           </div>
-          <p className="truncate font-mono text-muted-foreground text-xs">{parcel.id}</p>
+          <Subtitle parcel={parcel} sharedBy={sharedBy} />
         </div>
         <span className="hidden w-12 text-right font-mono text-muted-foreground text-xs sm:block">
           v{parcel.current_version}

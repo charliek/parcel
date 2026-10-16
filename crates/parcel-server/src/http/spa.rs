@@ -38,15 +38,13 @@ async fn api_not_found() -> AppError {
     AppError::NotFound("no such API route".into())
 }
 
-/// The SPA only talks to itself and slauth, and only frames the content origin.
+/// The SPA only talks to itself (sign-in is server-side redirects), and
+/// only frames the content origin.
 fn spa_csp(config: &Config) -> String {
-    let auth = url::Url::parse(&config.slauth.issuer)
-        .map(|u| crate::config::origin_string(&u))
-        .unwrap_or_default();
     let content = config.content_origin_str();
     format!(
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-         img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' {auth}; \
+         img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; \
          frame-src {content}; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
     )
 }

@@ -76,7 +76,10 @@ async fn create_version(
     owned(&state, &id, &caller).await?;
     let _permit = upload_permit(&state).await?;
     let (meta, uploads) =
-        publish::read_multipart::<NewVersionMetadata>(multipart, &state.config.limits).await?;
+        publish::read_multipart::<NewVersionMetadata>(multipart, &state.config.limits, |m| {
+            views::check_visibility(&state.config, m.visibility)
+        })
+        .await?;
     let version = publish::add_version(
         &state,
         &id,

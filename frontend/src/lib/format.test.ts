@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  asSentence,
   formatBytes,
   formatDate,
   formatDateTime,
@@ -151,5 +152,15 @@ describe('initials', () => {
     expect(initials('Charlie Knudsen', 'c@x.com')).toBe('CK');
     expect(initials('', 'charlie.knudsen@x.com')).toBe('CK');
     expect(initials(null, 'dev@localhost')).toBe('DE');
+  });
+});
+
+describe('asSentence', () => {
+  it('capitalizes the first letter only', () => {
+    expect(asSentence('that’s you: owners always have access')).toBe(
+      'That’s you: owners always have access',
+    );
+    expect(asSentence('"x" is not an email address')).toBe('"x" is not an email address');
+    expect(asSentence('')).toBe('');
   });
 });

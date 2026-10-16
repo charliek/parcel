@@ -75,6 +75,54 @@ Shown for production; substitute `staging` / `parcel-staging` names.
    deploy slauth before parcel's first login in that environment, and hand out
    the `parcel-…` invite code (or `scripts/admin-cli.sh grants add --app parcel`).
 
+## Sign-in providers (Okta, Keycloak, …)
+
+Parcel signs people in server-side through any OIDC provider, several at
+once (e.g. one office on Okta, another on Keycloak). Each provider needs a
+client registered on its side and `AUTH_<ID>_*` here; the full list of
+variables is in `.env.example` and PLAN.md ("Sign-in providers and
+sharing").
+
+At the provider, register a **web application** (confidential client,
+authorization code flow; PKCE is used either way):
+
+- sign-in redirect URI: `https://<app domain>/auth/callback`
+- post-logout redirect URI `https://<app domain>/` — only needed with
+  `AUTH_<ID>_PROVIDER_LOGOUT=true`
+- scopes `openid email profile`; the ID token (or `userinfo`) must carry
+  `email`, marked `email_verified`, unless you set `AUTH_<ID>_TRUST_EMAIL=true`
+  for a provider whose emails are all admin-managed.
+
+| Provider | Issuer (`AUTH_<ID>_ISSUER`) | Notes |
+|---|---|---|
+| Okta | `https://<org>.okta.com` (org server; a custom server like `…/oauth2/default` works too) | App integration → OIDC → Web Application. Assign it to the people or groups who may sign in. |
+| Keycloak | `https://<host>/realms/<realm>` | Client authentication on, standard flow, PKCE method S256. `dev/keycloak/` has a local example. |
+| slauth | `https://auth….stridelabs.ai` | The public `parcel` client; no secret. |
+
+Then, for example:
+
+```bash
+AUTH_PROVIDERS=okta,keycloak
+AUTH_OKTA_ISSUER=https://acme.okta.com
+AUTH_OKTA_CLIENT_ID=0oa…
+AUTH_OKTA_LABEL="Acme US (Okta)"
+AUTH_OKTA_ALLOWED_DOMAINS=acme.com
+AUTH_KEYCLOAK_ISSUER=https://sso.acme.eu/realms/acme
+AUTH_KEYCLOAK_CLIENT_ID=parcel
+AUTH_KEYCLOAK_LABEL="Acme EU (Keycloak)"
+AUTH_KEYCLOAK_ALLOWED_DOMAINS=acme.eu
+PARCEL_ALLOW_PUBLIC=false          # work setups: no anonymous links
+```
+
+Client secrets go in Secret Manager (`${ENV}-parcel-auth-<id>-client-secret`)
+and reach the service as `AUTH_<ID>_CLIENT_SECRET` through `secretKeyRef`,
+like `DATABASE_URL`. A person who signs in through two providers with the
+same email is one Parcel user. Removing someone at the provider ends their
+access when their session lapses (`PARCEL_SESSION_TTL_SECS`, default 7 days;
+shorten it for work setups) and pauses their API tokens after
+`PARCEL_TOKEN_LOGIN_MAX_AGE_DAYS`. To cut someone off at once:
+`UPDATE users SET disabled_at = now() WHERE lower(email) = '…';`.
+
 ## Each deploy
 
 ```bash

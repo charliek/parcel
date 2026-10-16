@@ -6,37 +6,35 @@
 //! and no cookie is ever needed on the content origin.
 //!
 //! Format: `base64url(payload) "." base64url(HMAC-SHA256(key, payload))`,
-//! where payload is `{parcel_id}.{version}.{expires_unix}.{scope}`.
+//! where payload is `{parcel_id}.{version}.{expires_unix}.{scope}` and, for
+//! a member grant, `.{user_id}` after it.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 
 /// Why a viewer was granted access. Checked again on every content request,
-/// so making a public parcel private revokes outstanding public grants
-/// immediately instead of at expiry.
+/// so making a public parcel private, unsharing someone, or turning public
+/// links off revokes outstanding grants immediately instead of at expiry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Owner,
+    /// Anyone, because the parcel is public.
     Public,
+    /// This signed-in user, because the parcel is internal or shared with them.
+    Member(Uuid),
 }
 
 impl Scope {
-    fn code(self) -> &'static str {
+    fn code(self) -> String {
         match self {
-            Scope::Owner => "o",
-            Scope::Public => "p",
-        }
-    }
-
-    fn from_code(code: &str) -> Option<Self> {
-        match code {
-            "o" => Some(Scope::Owner),
-            "p" => Some(Scope::Public),
-            _ => None,
+            Scope::Owner => "o".into(),
+            Scope::Public => "p".into(),
+            Scope::Member(user) => format!("m.{}", user.simple()),
         }
     }
 }
@@ -87,21 +85,23 @@ pub fn verify(key: &[u8], token: &str, now_unix: i64) -> Result<ContentClaims, T
     m.verify_slice(&sig).map_err(|_| TokenError::BadSignature)?;
 
     let payload = String::from_utf8(payload).map_err(|_| TokenError::Malformed)?;
-    let mut parts = payload.split('.');
-    let (Some(id), Some(version), Some(exp), Some(scope), None) = (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) else {
-        return Err(TokenError::Malformed);
+    let parts: Vec<&str> = payload.split('.').collect();
+    let (id, version, exp, scope) = match parts.as_slice() {
+        [id, version, exp, "o"] => (id, version, exp, Scope::Owner),
+        [id, version, exp, "p"] => (id, version, exp, Scope::Public),
+        [id, version, exp, "m", user] => (
+            id,
+            version,
+            exp,
+            Scope::Member(Uuid::try_parse(user).map_err(|_| TokenError::Malformed)?),
+        ),
+        _ => return Err(TokenError::Malformed),
     };
     let claims = ContentClaims {
         parcel_id: id.to_string(),
         version: version.parse().map_err(|_| TokenError::Malformed)?,
         expires_at: exp.parse().map_err(|_| TokenError::Malformed)?,
-        scope: Scope::from_code(scope).ok_or(TokenError::Malformed)?,
+        scope,
     };
     if claims.expires_at <= now_unix {
         return Err(TokenError::Expired);
@@ -147,5 +147,35 @@ mod tests {
             Err(TokenError::BadSignature)
         );
         assert_eq!(verify(b"key", "garbage", 1_000), Err(TokenError::Malformed));
+    }
+
+    #[test]
+    fn member_grants_carry_the_user() {
+        let user = Uuid::from_u128(0xabc);
+        let member = ContentClaims {
+            scope: Scope::Member(user),
+            ..claims()
+        };
+        let token = sign(b"key", &member);
+        assert_eq!(verify(b"key", &token, 1_000), Ok(member));
+        // A member scope without its user, or with junk, is malformed.
+        for payload in [
+            "abcdefghijkm.3.2000.m",
+            "abcdefghijkm.3.2000.m.nope",
+            "abcdefghijkm.3.2000.o.x",
+        ] {
+            let mut m = mac(b"key");
+            m.update(payload.as_bytes());
+            let forged = format!(
+                "{}.{}",
+                B64.encode(payload),
+                B64.encode(m.finalize().into_bytes())
+            );
+            assert_eq!(
+                verify(b"key", &forged, 1_000),
+                Err(TokenError::Malformed),
+                "{payload}"
+            );
+        }
     }
 }

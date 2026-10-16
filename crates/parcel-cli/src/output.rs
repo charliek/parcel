@@ -99,6 +99,23 @@ pub fn table(header: &[&str], rows: &[Vec<String>]) -> String {
     out
 }
 
+/// Text that came from other people (comments, names, titles of parcels
+/// shared with you): spell out control characters other than line breaks
+/// and tabs, so it can't drive the terminal (ESC/OSC sequences that rewrite
+/// the screen or the clipboard). The server refuses them in comment bodies;
+/// this also covers names, titles and anything an older server let through.
+pub fn printable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() && c != '\n' && c != '\t' {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Pretty-print a JSON body exactly as the server sent it (same keys, same
 /// order), followed by a newline.
 pub fn print_json(raw: &[u8]) -> Result<()> {
@@ -158,6 +175,14 @@ mod tests {
         assert_eq!(
             table(&["ID", "TITLE", "V"], &rows),
             "ID      TITLE    V\nabc     A title  1\ndefghi  T\n"
+        );
+    }
+
+    #[test]
+    fn control_characters_are_spelled_out() {
+        assert_eq!(
+            printable("hi\u{1b}]52;c;SGVsbG8=\u{7}\r\n\tok\u{9b}2J"),
+            "hi\\u{1b}]52;c;SGVsbG8=\\u{7}\\u{d}\n\tok\\u{9b}2J"
         );
     }
 

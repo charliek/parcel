@@ -150,3 +150,12 @@ export function initials(name: string | null | undefined, email: string): string
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
   return source.slice(0, 2).toUpperCase();
 }
+
+/**
+ * A server message as a sentence: the API's messages start lowercase
+ * ("that's you: owners always have access") because they also read well
+ * after a prefix; shown on their own, they get a capital.
+ */
+export function asSentence(message: string): string {
+  return message.charAt(0).toUpperCase() + message.slice(1);
+}

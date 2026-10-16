@@ -44,12 +44,12 @@ spec:
               value: https://${APP_DOMAIN}
             - name: PARCEL_CONTENT_ORIGIN
               value: https://${CONTENT_DOMAIN}
+            # Sign-in: one provider, slauth. For more (Okta, Keycloak…) set
+            # AUTH_PROVIDERS and AUTH_<ID>_* — see deploy/README.md.
+            - name: AUTH_MODE
+              value: oidc
             - name: SLAUTH_ISSUER
               value: https://${AUTH_DOMAIN}
-            - name: SLAUTH_JWKS_URL
-              value: https://${AUTH_DOMAIN}/.well-known/jwks.json
-            - name: SLAUTH_AUDIENCE
-              value: parcel
             - name: SLAUTH_CLIENT_ID
               value: parcel
             - name: BLOB_BACKEND

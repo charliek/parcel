@@ -4,8 +4,8 @@ use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use parcel_types::{
-    CreateParcelMetadata, ErrorBody, ParcelDetail, ParcelList, ParcelSummary, PublishResult,
-    UpdateParcelRequest, ViewGrant,
+    CreateParcelMetadata, ErrorBody, ParcelAccess, ParcelDetail, ParcelList, ParcelSummary,
+    PublishResult, UpdateParcelRequest, ViewGrant,
 };
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -122,7 +122,10 @@ async fn create_parcel(
 ) -> AppResult<(StatusCode, Json<PublishResult>)> {
     let _permit = upload_permit(&state).await?;
     let (meta, uploads) =
-        publish::read_multipart::<CreateParcelMetadata>(multipart, &state.config.limits).await?;
+        publish::read_multipart::<CreateParcelMetadata>(multipart, &state.config.limits, |m| {
+            views::check_visibility(&state.config, m.visibility)
+        })
+        .await?;
     let id = publish::create(&state, caller.user.id, meta, uploads).await?;
     tracing::info!(parcel = %id, user = %caller.user.id, "parcel created");
     Ok((
@@ -136,7 +139,8 @@ async fn create_parcel(
     path = "/parcels/{id}",
     tag = "parcels",
     description = "A parcel with its version history and current files. Public parcels are \
-        readable without credentials; private ones only by their owner.",
+        readable without credentials, internal ones by anyone signed in, private ones by their \
+        owner and the people it is shared with.",
     params(("id" = String, Path, description = "Parcel id")),
     security((), ("bearer" = [])),
     responses(
@@ -149,12 +153,14 @@ async fn get_parcel(
     MaybeAuthUser(caller): MaybeAuthUser,
     Path(id): Path<String>,
 ) -> AppResult<Json<ParcelDetail>> {
-    let (row, is_owner) = readable(&state, &id, caller.as_ref()).await?;
+    let (row, access) = readable(&state, &id, caller.as_ref()).await?;
     let versions = parcels::list_versions(&state.db, &id).await?;
     let files = parcels::version_files(&state.db, &id, row.current_version).await?;
     Ok(Json(ParcelDetail {
         parcel: views::summary(&state.config, &row),
-        is_owner,
+        is_owner: access == ParcelAccess::Owner,
+        access,
+        owner_name: views::owner_name(&state, &row, caller.as_ref()).await?,
         versions: versions.iter().map(views::version_summary).collect(),
         files: files.into_iter().map(Into::into).collect(),
     }))
@@ -183,6 +189,7 @@ async fn update_parcel(
     Json(body): Json<UpdateParcelRequest>,
 ) -> AppResult<Json<ParcelSummary>> {
     owned(&state, &id, &caller).await?;
+    views::check_visibility(&state.config, body.visibility)?;
     let title = body.title.as_deref().map(str::trim);
     if title.is_some_and(|t| t.is_empty() || t.chars().count() > 200) {
         return Err(AppError::BadRequest(
@@ -252,21 +259,23 @@ async fn view_parcel(
     Path(id): Path<String>,
     Query(q): Query<ViewQuery>,
 ) -> AppResult<Json<ViewGrant>> {
-    let (row, is_owner) = readable(&state, &id, caller.as_ref()).await?;
+    let (row, access) = readable(&state, &id, caller.as_ref()).await?;
     let version = q.version.unwrap_or(row.current_version);
     let v = parcels::get_version(&state.db, &id, version)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("version {version} not found")))?;
-    let scope = if is_owner {
-        Scope::Owner
-    } else {
-        Scope::Public
+    let scope = match (access, &caller) {
+        (ParcelAccess::Owner, _) => Scope::Owner,
+        (ParcelAccess::Viewer | ParcelAccess::Commenter, Some(c)) => Scope::Member(c.user.id),
+        _ => Scope::Public,
     };
     let (content_url, expires_at) = content::grant_url(&state, &id, version, &v.entry, scope);
     Ok(Json(ViewGrant {
         parcel: views::summary(&state.config, &row),
         version: views::version_summary(&v),
-        is_owner,
+        is_owner: access == ParcelAccess::Owner,
+        access,
+        owner_name: views::owner_name(&state, &row, caller.as_ref()).await?,
         content_url,
         expires_at,
     }))

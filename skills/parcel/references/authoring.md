@@ -142,7 +142,7 @@ Data is shared by every version of the parcel and deleted with it. Anyone who ca
 
 ### Example: a checklist that persists
 
-The owner ticks items and they stay ticked; a visitor on a public link sees the same state read-only.
+The owner ticks items and they stay ticked; anyone else who can open the parcel (shared with, internal or public) sees the same state read-only.
 
 ```html
 <ul id="todo"></ul>

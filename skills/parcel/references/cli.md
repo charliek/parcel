@@ -36,10 +36,14 @@ read a token from a config file other users can read (`chmod 600` fixes it).
 | `parcel whoami [--json]` | Signed-in email, storage used and quota |
 | `parcel publish <PATH> [flags]` | Create a parcel, or a new version with `--parcel` (below) |
 | `parcel list [--query T] [--limit N] [--offset N] [--json]` | Your parcels: id, title, visibility, version, size, updated |
+| `parcel list --shared [--limit N] [--offset N] [--json]` | Parcels other people shared with you by email: id, title, owner, your role, version, updated |
 | `parcel info <ref> [--version N] [--json]` | Metadata, versions (newest first) and files |
 | `parcel cat <ref> [PATH] [--version N]` | Raw bytes of one file (default: the entry page) to stdout |
 | `parcel pull <ref> [DIR] [--version N] [--force]` | Download a version's files into DIR (default `./<id>`); refuses to overwrite without `--force` |
-| `parcel update <ref> [--title T] [--description D] [--public\|--private] [--json]` | Change metadata (files change only through publish) |
+| `parcel update <ref> [--title T] [--description D] [--private\|--internal\|--public] [--json]` | Change metadata (files change only through publish) |
+| `parcel share <ref> <EMAIL>... [--role viewer\|commenter] [--json]` | Share with people by email (owner only); then prints who has access |
+| `parcel unshare <ref> <EMAIL>... [--json]` | Stop sharing with them; then prints who still has access |
+| `parcel shares <ref> [--json]` | Who the parcel is shared with: email, role, name (or `not signed in yet`) |
 | `parcel versions <ref> [--json]` | Version history |
 | `parcel restore <ref> --version N [--json]` | Publish a copy of version N as the newest version |
 | `parcel delete <ref> [--yes]` | Delete the parcel and every version. Prompts on a terminal; needs `--yes` otherwise |
@@ -66,7 +70,7 @@ read a token from a config file other users can read (`chmod 600` fixes it).
 |---|---|
 | `<PATH>` | A file (published under its file name; the entry page for a new parcel) or a directory (walked recursively) |
 | `--title`, `--description` | Metadata. Title defaults to the entry's `<title>` / first heading, else its file name |
-| `--public` / `--private` | Visibility (new parcels are private) |
+| `--private` / `--internal` / `--public` | Visibility (new parcels are private); see below |
 | `--entry <path>` | Entry page path inside the parcel (`.html`, `.htm`, `.md`, `.markdown`) |
 | `--label <text>` | Note stored with this version |
 | `--file PUBLISHED=LOCAL` | Add a file at an explicit published path (repeatable; `--file LOCAL` keeps the file name). Overrides a walked file with the same path |
@@ -77,11 +81,46 @@ read a token from a config file other users can read (`chmod 600` fixes it).
 | `--open` | Open the result in a browser |
 | `--json` | Print the `PublishResult` JSON |
 
+### visibility and sharing
+
+| Visibility | Who can open it |
+|---|---|
+| `private` (default) | The owner and the people it is shared with |
+| `internal` | Anyone signed in to this Parcel server (every one of them can comment) |
+| `public` | Anyone with the link, signed in or not. Signed-out viewers see no comments |
+
+Servers can turn public links off: `--public` is then refused (`public links
+are turned off on this server…`; `publish` refuses before uploading), and
+parcels made public earlier act and report as `internal`. Use `--internal`,
+or keep it private and share it.
+
+Sharing is by email and only the owner does it. Emails are matched
+case-insensitively against the address the person signs in with, so you can
+share before they have an account: access starts at their first sign-in.
+Roles: `viewer` (the default) sees the parcel, its comments and its data;
+`commenter` also comments. Neither can publish, change, share or write data.
+On an internal or public parcel everyone signed in is already a commenter.
+
+- `share` with an existing email changes that person's role. It refuses
+  malformed addresses (exit 2) before sending, your own address, and a
+  domain no sign-in provider of this server accepts.
+- `unshare` takes effect at once, including pages the person has open.
+  An email the parcel wasn't shared with gets a `note:` on stderr, not an
+  error.
+- Output after `share`/`unshare`, and from `shares`:
+
+```
+Shared with 2 people:
+EMAIL            ROLE       NAME
+ada@example.com  commenter  Ada Lovelace
+bob@example.com  viewer     not signed in yet
+```
+
 ### comments
 
 Comments come from the web viewer's comment mode (or from `comments add`). Threads are numbered per parcel, `#1`, `#2`, …; replies take numbers too, and numbers are never reused. Use a **thread's** number for `reply`, `resolve` and `reopen`.
 
-- Who can: see and add comments — the owner, plus any signed-in user when the parcel is public (signed-out viewers see none; the CLI needs a login for every `comments` command). Edit — the author. Resolve or reopen — the owner or the thread's author. Delete — the author or the owner.
+- Who can: see comments — the owner, the people the parcel is shared with, and anyone signed in when it is internal or public (signed-out viewers see none; the CLI needs a login for every `comments` command). Add them — all of those except people shared as `viewer`. Edit — the author. Resolve or reopen — the owner or the thread's author. Delete — the author or the owner.
 - `<TEXT>` and `--reply` accept `-` to read the text from stdin (handy for multi-line replies). Text is trimmed; 1–4000 characters.
 - `comments add` comments on the version in a `/v/<n>` URL, else `--version`, else the current one.
 - `comments resolve 1 3 --reply "Fixed in v4: …"` posts the reply to #1, resolves #1, then does #3. It stops at the first failure; threads already handled stay resolved and are listed on stdout.
@@ -120,7 +159,7 @@ A parcel's data is JSON its pages keep between visits (`window.parcel.data`), in
 `--json` prints the server's response unchanged. Timestamps are RFC 3339 UTC
 strings, sizes are bytes.
 
-**ParcelSummary** — one parcel (in lists, `publish`, `update`):
+**ParcelSummary** — one parcel (in lists, `publish`, `update`); `visibility` is `private`, `internal` or `public`:
 
 ```json
 {
@@ -147,7 +186,9 @@ strings, sizes are bytes.
 |---|---|
 | `publish`, `restore` | `PublishResult`: `{"parcel": ParcelSummary, "version": VersionDetail}` — the link is `.parcel.url`, the new version `.version.version` |
 | `list` | `ParcelList`: `{"parcels": [ParcelSummary], "total": N}` |
-| `info` | `ParcelDetail`: `{"parcel": ParcelSummary, "is_owner": bool, "versions": [VersionSummary], "files": [FileEntry]}` (files of the current version). With `--version N` or a `/v/<n>` URL: that version's `VersionDetail` |
+| `info` | `ParcelDetail`: `{"parcel": ParcelSummary, "is_owner": bool, "access": "owner"\|"commenter"\|"viewer"\|"public", "owner_name" (signed in only), "versions": [VersionSummary], "files": [FileEntry]}` (files of the current version). With `--version N` or a `/v/<n>` URL: that version's `VersionDetail` |
+| `list --shared` | `SharedParcelList`: `{"parcels": [{"parcel": ParcelSummary, "owner_name", "role": "viewer"\|"commenter", "shared_at"}], "total": N}` |
+| `shares`, `share`, `unshare` | `ShareList`: `{"shares": [{"email", "role", "name" (once they've signed in), "created_at"}]}` |
 | `versions` | `VersionList`: `{"versions": [VersionSummary]}`, newest first |
 | `update` | `ParcelSummary` |
 | `whoami` | `Me`: `{"id", "email", "name", "usage": {"parcel_count", "version_count", "stored_bytes"}, "limits": {"max_entry_bytes", "max_file_bytes", "max_upload_bytes", "max_files_per_upload", "max_files_per_version", "max_version_bytes", "user_quota_bytes", "max_data_bytes", "max_data_value_bytes"}}` (`user_quota_bytes` 0 = unlimited) |
@@ -200,6 +241,10 @@ parcel publish ./work --parcel "$url" --json
 
 # Pin a version for review
 parcel cat "$url/v/2" > v2.html
+
+# Show it to two colleagues, one of whom may comment
+parcel share "$url" ada@example.com
+parcel share "$url" bob@example.com --role commenter
 
 # Work through feedback: read, fix, republish to the same link, resolve
 parcel comments list "$url"

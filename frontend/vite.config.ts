@@ -21,6 +21,8 @@ export default defineConfig({
     allowedHosts: ['.local.stridelabs.ai'],
     proxy: {
       '/api': { target: BACKEND, changeOrigin: true },
+      // Server-side sign-in (login, callback, logout): redirects and cookies.
+      '/auth/': { target: BACKEND, changeOrigin: true },
       '/openapi.json': { target: BACKEND, changeOrigin: true },
       '/docs': { target: BACKEND, changeOrigin: true },
     },

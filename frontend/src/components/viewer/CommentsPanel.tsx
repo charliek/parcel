@@ -1,4 +1,4 @@
-import { Crosshair, MessageSquare, MousePointerClick, X } from 'lucide-react';
+import { Crosshair, Eye, MessageSquare, MousePointerClick, X } from 'lucide-react';
 import { type Ref, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -21,6 +21,8 @@ interface CommentsPanelProps {
   filter: CommentFilter;
   onFilterChange: (filter: CommentFilter) => void;
   isOwner: boolean;
+  /** False for people a parcel is shared with as viewers: threads are read-only. */
+  canComment: boolean;
   viewedVersion: number;
   framePath: string | null;
   /** Threads on this page whose spot the page couldn't find. */
@@ -46,7 +48,7 @@ interface CommentsPanelProps {
   composerRef: Ref<HTMLTextAreaElement>;
 }
 
-/** The comment threads on a parcel, with a composer for new ones. */
+/** The comment threads on a parcel, with a composer for new ones (when the caller may comment). */
 export function CommentsPanel({
   parcelId,
   threads,
@@ -55,6 +57,7 @@ export function CommentsPanel({
   filter,
   onFilterChange,
   isOwner,
+  canComment,
   viewedVersion,
   framePath,
   missing,
@@ -132,7 +135,7 @@ export function CommentsPanel({
       </div>
 
       <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto p-4">
-        {!commentMode && (
+        {canComment && !commentMode && (
           <Button variant="outline" size="sm" className="w-full" onClick={onStartCommenting}>
             <MousePointerClick />
             Comment on a spot in the page
@@ -175,6 +178,7 @@ export function CommentsPanel({
                   parcelId={parcelId}
                   thread={thread}
                   isOwner={isOwner}
+                  readOnly={!canComment}
                   viewedVersion={viewedVersion}
                   framePath={framePath}
                   missing={missing.has(thread.number)}
@@ -190,30 +194,43 @@ export function CommentsPanel({
       </div>
 
       <div className="shrink-0 border-t p-3">
-        <CommentComposer
-          value={composerText}
-          onChange={onComposerTextChange}
-          onSubmit={onSubmit}
-          onCancel={draftAnchor || composerText ? onCancelDraft : undefined}
-          pending={submitting}
-          label={draftAnchor ? 'Comment on this spot' : 'Add a comment'}
-          placeholder={
-            draftAnchor ? 'Comment on this spot…' : 'Add a comment about the whole page…'
-          }
-          submitLabel="Comment"
-          textareaRef={composerRef}
-          context={
-            draftAnchor ? (
-              <p className="flex items-start gap-1.5 text-muted-foreground text-xs">
-                <Crosshair className="mt-0.5 h-3 w-3 shrink-0 text-primary" aria-hidden="true" />
-                <span className="min-w-0 break-words">
-                  Commenting on {anchorLabel(draftAnchor, framePath)}
-                  {draftVersion !== null && draftVersion !== viewedVersion && ` (v${draftVersion})`}
-                </span>
-              </p>
-            ) : null
-          }
-        />
+        {canComment ? (
+          <CommentComposer
+            value={composerText}
+            onChange={onComposerTextChange}
+            onSubmit={onSubmit}
+            onCancel={draftAnchor || composerText ? onCancelDraft : undefined}
+            pending={submitting}
+            label={draftAnchor ? 'Comment on this spot' : 'Add a comment'}
+            placeholder={
+              draftAnchor ? 'Comment on this spot…' : 'Add a comment about the whole page…'
+            }
+            submitLabel="Comment"
+            textareaRef={composerRef}
+            context={
+              draftAnchor ? (
+                <p className="flex items-start gap-1.5 text-muted-foreground text-xs">
+                  <Crosshair className="mt-0.5 h-3 w-3 shrink-0 text-primary" aria-hidden="true" />
+                  <span className="min-w-0 break-words">
+                    Commenting on {anchorLabel(draftAnchor, framePath)}
+                    {draftVersion !== null &&
+                      draftVersion !== viewedVersion &&
+                      ` (v${draftVersion})`}
+                  </span>
+                </p>
+              ) : null
+            }
+          />
+        ) : (
+          <p
+            className="flex items-start gap-2 text-muted-foreground text-xs"
+            data-testid="view-only-note"
+          >
+            <Eye className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            You can view this parcel and its comments, but not comment. Ask the owner if you’d like
+            to.
+          </p>
+        )}
       </div>
 
       <DeleteCommentDialog

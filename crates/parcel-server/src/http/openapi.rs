@@ -23,10 +23,11 @@ use crate::state::AppState;
     info(
         title = "Parcel API",
         description = "Publish HTML pages (with optional supporting files) to private, \
-            sandboxed URLs, manage their versions and visibility, and read them back. \
-            Authenticate with a slauth access token (the web app) or a `pcl_` API token \
-            (the CLI and agents). Health probes, the sandboxed content origin \
-            (`/v/{token}/…`) and the web app itself are deliberately not part of this document.",
+            sandboxed URLs, manage their versions, visibility and sharing, and read them back. \
+            Authenticate with a `pcl_` API token (the CLI and agents); the web app uses the \
+            session cookie its server-side sign-in (`/auth/login`) sets. Health probes, \
+            sign-in, the sandboxed content origin (`/v/{token}/…`) and the web app itself are \
+            deliberately not part of this document.",
         contact(
             name = "Charlie Knudsen",
             url = "https://github.com/charliek/parcel",
@@ -39,6 +40,8 @@ use crate::state::AppState;
         (name = "account", description = "Server description and the signed-in user."),
         (name = "parcels", description = "Create, list, read, change and delete parcels."),
         (name = "versions", description = "A parcel's immutable versions and their files."),
+        (name = "sharing", description = "Who a parcel is shared with, and what is shared with \
+            you."),
         (name = "comments", description = "Feedback threads pinned to spots on a parcel's page."),
         (name = "data", description = "JSON data a parcel keeps between visits: readable by its \
             viewers, writable by its owner."),
@@ -59,7 +62,7 @@ impl Modify for BearerAuth {
                 HttpBuilder::new()
                     .scheme(HttpAuthScheme::Bearer)
                     .description(Some(
-                        "A slauth access token (JWT, audience `parcel`) or a `pcl_` API token.",
+                        "A `pcl_` API token. (The web app sends its session cookie instead.)",
                     ))
                     .build(),
             ),
@@ -94,6 +97,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(super::account::router())
         .merge(super::parcels::router())
         .merge(super::versions::router())
+        .merge(super::sharing::router())
         .merge(super::comments::router())
         .merge(super::data::router())
         .merge(super::tokens::router())

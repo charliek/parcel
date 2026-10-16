@@ -1,11 +1,11 @@
 ---
 name: parcel
-description: "Use when the user wants to see, share or hand off something as a web page rendered in a browser at a private link: an HTML page, report, dashboard, chart or data visualization, interactive prototype or mockup, diagram, slide-style summary, or a long document that reads better as a page than as chat. Triggers include 'publish this', 'share a link', 'make it a page', 'show it to me in the browser', 'put it on parcel', 'there's feedback / there are comments on the parcel', 'update the dashboard's data', and any parcel URL (…/p/<id>) or 12-character parcel id the user gives you to read, review, revise, act on comments for, restore or delete. Works through the `parcel` CLI (parcel publish, info, cat, pull, list, update, delete, comments, data). Do NOT use it for files that belong in the user's repository (write and commit those instead), for an answer that fits comfortably in chat, or for unrelated things named Parcel such as the parcel.js web bundler or package tracking."
+description: "Use when the user wants to see, share or hand off something as a web page rendered in a browser at a private link: an HTML page, report, dashboard, chart or data visualization, interactive prototype or mockup, diagram, slide-style summary, or a long document that reads better as a page than as chat. Triggers include 'publish this', 'share a link', 'make it a page', 'show it to me in the browser', 'put it on parcel', 'share it with ada@… / the team', 'there's feedback / there are comments on the parcel', 'update the dashboard's data', and any parcel URL (…/p/<id>) or 12-character parcel id the user gives you to read, review, revise, share, act on comments for or delete. Works through the `parcel` CLI (parcel publish, info, cat, pull, list, update, share, delete, comments, data). Do NOT use it for files that belong in the user's repository (write and commit those instead), for an answer that fits comfortably in chat, or for unrelated things named Parcel such as the parcel.js web bundler or package tracking."
 ---
 
 # Publishing pages with parcel
 
-Parcel turns an HTML page (plus any supporting files) into a URL that renders it in a sandboxed browser view. Parcels are **private by default**: only the signed-in owner can open them. Every publish is an immutable version; publishing again to the same parcel keeps the URL. The `parcel` CLI does everything below; `parcel <command> --help` is the authoritative flag reference.
+Parcel turns an HTML page (plus any supporting files) into a URL that renders it in a sandboxed browser view. Parcels are **private by default**: only the owner, and people the owner shares them with by email, can open them. Every publish is an immutable version; publishing again to the same parcel keeps the URL. The `parcel` CLI does everything below; `parcel <command> --help` is the authoritative flag reference.
 
 ## First: check the CLI and the login
 
@@ -14,6 +14,7 @@ parcel whoami        # exit 0 = signed in; exit 3 = not logged in
 ```
 
 - **Exit 3 (not logged in):** ask the user to run `parcel login` in their own terminal (in Claude Code they can type `! parcel login`). It opens a browser and waits for them to approve a code, so **do not run it yourself**. Continue once `parcel whoami` succeeds.
+- **Exit 3 with `this token is paused: sign in to Parcel on the web (<url>)`:** the user hasn't signed in to the web app for a while (by default tokens pause after 30 days without one). Ask them to open that URL and sign in; the same token then works again, no new `parcel login` needed.
 - **`parcel: command not found`:** ask the user to install it (`brew install charliek/tap/parcel`, or the `parcel` package from the charliek apt repository), then run `parcel skill install` to refresh this skill.
 - Never print or echo a token, and never put one on a command line. The CLI reads the saved login (or `PARCEL_TOKEN` from the environment) by itself.
 
@@ -66,7 +67,7 @@ parcel publish report.html --title "Q3 latency report" --json
 parcel publish ./site --title "Pricing prototype" --json     # a folder; index.html is the entry
 ```
 
-Read `.parcel.url` (the link to give the user), `.parcel.id` and `.version.version` from the JSON. Then tell the user the URL, that it is private to their account, and what is in it. Write the files somewhere temporary (a scratch directory), not into the user's repo, unless they asked for them there.
+Read `.parcel.url` (the link to give the user), `.parcel.id` and `.version.version` from the JSON. Then tell the user the URL, who can open it (private: only them, until shared), and what is in it. Write the files somewhere temporary (a scratch directory), not into the user's repo, unless they asked for them there.
 
 - `--description "…"` sets a description; `--label "…"` notes what changed in this version.
 - A folder publish skips dotfiles, dot-directories and `node_modules`, and skips symlinks with a warning. `--file PUBLISHED=LOCAL` adds a file from elsewhere (`--file data/q3.json=/tmp/out.json`).
@@ -99,7 +100,7 @@ parcel comments list <ref>     # open threads; --status all includes resolved on
 2. Make the changes in the source (`parcel pull <ref> ./work` if you don't have it), then publish a new version **to the same parcel** so the link stays the same: `parcel publish … --parcel <ref> --label "Address comments"`.
 3. Resolve what you fixed, saying what changed: `parcel comments resolve <ref> 3 5 --reply "Fixed in v4: bars are blue, axis labelled"`. For a question or something you didn't change, `parcel comments reply <ref> N "…"` and leave it open.
 
-`parcel info <ref>` shows the open-comment count. Commenting needs a login, even on public parcels.
+`parcel info <ref>` shows the open-comment count. Commenting needs a login, even on public parcels; someone shared as a `viewer` can read comments but not add them.
 
 ## Read an existing parcel
 
@@ -110,7 +111,7 @@ parcel cat <id-or-url> assets/app.js  # one file
 parcel pull <id-or-url> ./work        # every file, to edit locally and republish with --parcel
 ```
 
-A URL ending in `/v/<n>` reads that version. Public parcels are readable without logging in.
+A URL ending in `/v/<n>` reads that version. Public parcels are readable without logging in. For a parcel someone else owns, `parcel info` shows the owner and the user's access (`viewer` or `commenter`); only the owner can publish to it, change it or share it. `parcel list --shared` lists parcels shared with the user.
 
 ## The sandbox
 
@@ -134,7 +135,7 @@ if (window.parcel?.canWrite) await data.update("settings", "prefs", { theme: "da
 data?.subscribe(render);                             // live: call your render() when the data changes
 ```
 
-- **Only the owner's own viewing can write.** Visitors (anyone else on a public parcel) can read but not change it. Check `parcel.canWrite` and show a read-only view when it is `false`; writes would reject with status 403.
+- **Only the owner's own viewing can write.** Everyone else who can open the parcel (people it's shared with, anyone signed in on an internal one, visitors on a public one) can read but not change it. Check `parcel.canWrite` and show a read-only view when it is `false`; writes would reject with status 403.
 - **Agents can feed a page without republishing:** `parcel data set <ref> dashboard metrics @metrics.json` (or `parcel data update` to merge). A page that reads `parcel.data` and subscribes shows the new numbers live.
 - Limits: 256 KiB per value, 10 MiB per parcel. Names: letters, digits, `_ . : -`. Don't name your own global `parcel`; it hides the helper.
 
@@ -146,9 +147,32 @@ Full API, a complete example and the CLI commands: [references/authoring.md](ref
 - **Entry page:** `.html`, `.htm`, `.md`, `.markdown`.
 - **Supporting files:** `css js mjs map wasm json geojson txt csv tsv xml yaml yml svg png jpg jpeg gif webp avif ico bmp woff woff2 ttf otf mp3 wav ogg m4a mp4 webm pdf glb gltf`. Anything else is rejected; convert it or leave it out.
 
-## Visibility and safety
+## Who can see it: visibility and sharing
 
-- New parcels are **private**. Use `--public` (anyone with the link, no sign-in) only when the user explicitly asks to share it publicly; `parcel update <id> --public` / `--private` changes it later.
+| Visibility | Who can open it | Use when |
+|---|---|---|
+| `--private` (default) | The owner, plus the people it is shared with | Nearly always. To show named people, share it with them |
+| `--internal` | Anyone signed in to this Parcel server; all of them can comment | The user wants "the team" / "everyone here" to see it |
+| `--public` | Anyone with the link, no sign-in (comments stay hidden from them) | Only when the user explicitly asks for a public link |
+
+Pass the flag to `publish`, or change it later with `parcel update <ref> --internal` (or `--private`, `--public`).
+
+**Sharing** is by email, owner only, and works before the person has ever signed in (they get access on their first sign-in with that address):
+
+```bash
+parcel share <ref> ada@example.com bob@example.com              # as viewers (default)
+parcel share <ref> ada@example.com --role commenter             # or change someone's role
+parcel shares <ref>                                             # who has access
+parcel unshare <ref> bob@example.com                            # their open pages stop loading at once
+```
+
+A `viewer` sees the page, its comments and its data; a `commenter` can also comment. Nobody but the owner changes the parcel or its data. Sharing matters for private parcels: on an internal or public one everyone signed in can already view and comment.
+
+Some servers turn public links off: `public links are turned off on this server` means use `--internal` or share by email instead (tell the user which you did); don't retry `--public`.
+
+## Safety
+
+- Widen access only as asked: share with the addresses the user names, and make a parcel internal or public only when they ask for it.
 - **Never publish secrets**: API keys, tokens, passwords, `.env` contents, private keys, connection strings, or personal data the user did not ask to share. Check data files and inline JSON before publishing a folder, and publish a narrow folder rather than a project root. The same goes for `parcel data set`: anyone who can view the parcel can read its data.
 - `parcel delete <id> --yes` is permanent (every version). Only delete when the user asks, and confirm which parcel first; without a terminal the CLI refuses unless `--yes` is given.
 
@@ -157,16 +181,18 @@ Full API, a complete example and the CLI commands: [references/authoring.md](ref
 | Task | Command |
 |---|---|
 | List the user's parcels | `parcel list [--query TEXT] [--limit N] [--json]` |
-| Rename / re-describe / change visibility | `parcel update <ref> [--title …] [--description …] [--public\|--private]` |
+| Parcels shared with the user | `parcel list --shared [--json]` (owner and role per parcel) |
+| Rename / re-describe / change visibility | `parcel update <ref> [--title …] [--description …] [--private\|--internal\|--public]` |
+| Share by email / see / stop | `parcel share <ref> <email>… [--role viewer\|commenter]`, `parcel shares <ref>`, `parcel unshare <ref> <email>…` |
 | Open in the user's browser | `parcel open <ref>` |
 | Comments | `parcel comments list\|add\|reply\|resolve\|reopen\|delete <ref> …` |
 | A page's data | `parcel data list\|get\|set\|update\|delete\|clear <ref> …` |
 | Show config (server, profile, token set?) | `parcel config show` |
 
-`--json` prints the server's JSON response verbatim for `whoami`, `publish`, `list`, `info`, `update`, `versions`, `restore`, `comments list|add|reply` and `data list|get|set|update`. Exit codes: `0` ok, `1` error, `2` bad arguments, `3` not logged in or token rejected, `4` not found (a private parcel also looks like this when signed out). Errors print as `error: <message>` on stderr.
+`--json` prints the server's JSON response verbatim for `whoami`, `publish`, `list` (and `list --shared`), `info`, `update`, `versions`, `restore`, `shares`, `share`/`unshare` (the shares afterwards), `comments list|add|reply` and `data list|get|set|update`. Exit codes: `0` ok, `1` error, `2` bad arguments, `3` not logged in or token rejected (or paused), `4` not found (a private parcel also looks like this to anyone it isn't shared with, signed in or not). Errors print as `error: <message>` on stderr.
 
 ## References
 
 - [references/authoring.md](references/authoring.md) — design checklist, a chart example, multi-file layouts, sandbox-safe patterns, the `window.parcel` API
-- [references/cli.md](references/cli.md) — every command and flag (including `comments` and `data`), JSON shapes, config and environment
-- [references/troubleshooting.md](references/troubleshooting.md) — exit codes, error messages and fixes (comments and data too), blank-page debugging
+- [references/cli.md](references/cli.md) — every command and flag (including sharing, `comments` and `data`), JSON shapes, config and environment
+- [references/troubleshooting.md](references/troubleshooting.md) — exit codes, error messages and fixes (sharing, comments and data too), blank-page debugging

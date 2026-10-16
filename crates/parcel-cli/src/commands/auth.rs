@@ -63,16 +63,16 @@ fn verify_token(settings: &Settings, token: &str) -> Result<Me> {
     let api = Api::new(&settings.server, Some(token))?;
     match api.get::<Me>(api.endpoint(["me"])) {
         Ok(me) => Ok(me.value),
-        Err(e)
-            if e.downcast_ref::<ApiError>()
-                .is_some_and(|a| a.status == 401) =>
-        {
-            Err(error::auth(format!(
-                "{} rejected the token",
-                settings.server_display()
-            )))
-        }
-        Err(e) => Err(e),
+        // The server's reason matters: a paused token needs a web sign-in,
+        // not a different token.
+        Err(e) => match e.downcast_ref::<ApiError>().filter(|a| a.status == 401) {
+            Some(rejected) => Err(error::auth(format!(
+                "{} rejected the token: {}",
+                settings.server_display(),
+                rejected.message
+            ))),
+            None => Err(e),
+        },
     }
 }
 

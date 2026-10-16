@@ -36,7 +36,8 @@ export function LandingPage() {
         </h1>
         <p className="mt-5 max-w-xl text-pretty text-base text-muted-foreground sm:text-lg">
           Parcel hosts the HTML that you and your agents produce — a single file or a whole folder —
-          and renders it safely in a sandbox. Private by default, public with one click.
+          and renders it safely in a sandbox. Private by default; share it with people by email,
+          with everyone signed in, or with anyone who has the link.
         </p>
         <div className="mt-8 flex flex-wrap justify-center gap-3">
           <SignInButton size="lg" label="Sign in to Parcel" />

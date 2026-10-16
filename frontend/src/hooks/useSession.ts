@@ -1,5 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
+import { type SignInTarget, signInTarget } from '@/lib/sign-in';
 import { useAuthStore } from '@/stores/auth.store';
+import { useAuthProviders, useServerInfoStore } from '@/stores/server-info.store';
 
 /** Resolve the session (once, shared) and return its current state. */
 export function useSession() {
@@ -18,4 +20,11 @@ export function useSession() {
 /** The signed-in user (null when anonymous or still resolving). */
 export function useMe() {
   return useAuthStore((s) => s.me);
+}
+
+/** Where "Sign in" goes here: nowhere (dev mode), the only provider, or the chooser. */
+export function useSignInTarget(): SignInTarget {
+  const mode = useServerInfoStore((s) => s.info?.auth.mode);
+  const providers = useAuthProviders();
+  return useMemo(() => signInTarget(mode, providers), [mode, providers]);
 }

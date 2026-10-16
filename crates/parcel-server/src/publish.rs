@@ -48,6 +48,7 @@ pub struct Upload {
 pub async fn read_multipart<M: DeserializeOwned + Default>(
     mut multipart: Multipart,
     limits: &Limits,
+    check_metadata: impl Fn(&M) -> Result<(), AppError>,
 ) -> Result<(M, Vec<Upload>), AppError> {
     let mut metadata: Option<M> = None;
     let mut uploads: Vec<Upload> = Vec::new();
@@ -75,6 +76,8 @@ pub async fn read_multipart<M: DeserializeOwned + Default>(
                     serde_json::from_slice::<M>(&buf)
                         .map_err(|e| AppError::BadRequest(format!("invalid metadata JSON: {e}")))?
                 };
+                // Refuse as soon as the metadata says so, before buffering files.
+                check_metadata(&parsed)?;
                 metadata = Some(parsed);
             }
             "file" => {

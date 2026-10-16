@@ -27,5 +27,20 @@ services:
     ports:
       - "127.0.0.1:4447:4447"
 
+  # Optional second sign-in provider for trying multi-provider setups:
+  # `docker compose --profile keycloak up -d keycloak`. See dev/keycloak/.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1.4
+    container_name: parcel-keycloak
+    profiles: ["keycloak"]
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: localdev
+    ports:
+      - "127.0.0.1:4448:8080"
+    volumes:
+      - ./dev/keycloak/parcel-realm.json:/opt/keycloak/data/import/parcel-realm.json:ro
+
 volumes:
   postgres_data:

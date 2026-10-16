@@ -6,8 +6,19 @@
  * server rejects unknown fields and treats a missing field as "unchanged".
  */
 
-/** Who can open a parcel. */
-export type Visibility = 'private' | 'public';
+/**
+ * Who can open a parcel: the owner and the people it's shared with
+ * (`private`), anyone signed in to this Parcel (`internal`), or anyone with
+ * the link (`public`).
+ */
+export type Visibility = 'private' | 'internal' | 'public';
+
+/**
+ * What the caller may do with a parcel. `public` is a signed-out visitor of
+ * a public parcel (no comments); `viewer` reads comments; `commenter` also
+ * writes them; `owner` does everything.
+ */
+export type ParcelAccess = 'owner' | 'commenter' | 'viewer' | 'public';
 
 /** How a new version's file set is derived from the previous one. */
 export type PublishMode = 'merge' | 'replace';
@@ -61,6 +72,10 @@ export interface ParcelDetail {
   parcel: ParcelSummary;
   /** Whether the caller owns this parcel (and so may change it). */
   is_owner: boolean;
+  /** What the caller may do. */
+  access: ParcelAccess;
+  /** The owner's display name, for signed-in callers. */
+  owner_name?: string;
   /** Newest first. */
   versions: VersionSummary[];
   /** Files of the current version. */
@@ -123,6 +138,10 @@ export interface ViewGrant {
   parcel: ParcelSummary;
   version: VersionSummary;
   is_owner: boolean;
+  /** What the caller may do. */
+  access: ParcelAccess;
+  /** The owner's display name, for signed-in callers. */
+  owner_name?: string;
   /** Signed, expiring URL on the sandboxed content origin. */
   content_url: string;
   expires_at: string;
@@ -159,18 +178,27 @@ export interface Me {
   name: string;
   usage: Usage;
   limits: Limits;
+  /** Label of the provider this web session signed in with (absent for API tokens and dev mode). */
+  signed_in_with?: string | null;
 }
 
 /** The two auth modes the backend can run in. */
-export type AuthMode = 'slauth' | 'dev';
+export type AuthMode = 'oidc' | 'dev';
 
-/** slauth settings the SPA needs to start an OAuth flow. */
+/** A sign-in provider the web app can offer. */
+export interface AuthProvider {
+  /** Pass as `/auth/login?provider=<id>`. */
+  id: string;
+  /** Button text, e.g. `Acme Okta`. */
+  label: string;
+}
+
+/** How the web app signs in. */
 export interface AuthInfo {
-  /** `slauth` or `dev`. Typed as string on the wire; see {@link AuthMode}. */
+  /** `oidc` (sign in through a provider at `/auth/login`) or `dev` (every request is a fixed user). */
   mode: AuthMode | (string & {});
-  issuer: string;
-  client_id: string;
-  audience: string;
+  /** Empty in `dev` mode. */
+  providers: AuthProvider[];
 }
 
 /** `GET /api/v1/info` — unauthenticated server description. */
@@ -180,6 +208,8 @@ export interface ServerInfo {
   app_origin: string;
   content_origin: string;
   auth: AuthInfo;
+  /** Whether parcels may be made public; when false, `internal` is the widest visibility. */
+  allow_public: boolean;
   limits: Limits;
   allowed_extensions: string[];
 }
@@ -392,6 +422,47 @@ export interface DataSummary {
   writable: boolean;
   /** By name. */
   collections: DataCollection[];
+}
+
+// ---- sharing (crates/parcel-types/src/sharing.rs) ---------------------------
+
+/** What a person a parcel is shared with may do. */
+export type ShareRole = 'viewer' | 'commenter';
+
+/** One person a parcel is shared with. */
+export interface Share {
+  /** Lowercased. */
+  email: string;
+  role: ShareRole;
+  /** Their display name, once someone with this email has signed in. */
+  name?: string | null;
+  created_at: string;
+}
+
+/** `GET /api/v1/parcels/{id}/shares`. */
+export interface ShareList {
+  /** By email. */
+  shares: Share[];
+}
+
+/** `PUT /api/v1/parcels/{id}/shares/{email}`. */
+export interface PutShareRequest {
+  role: ShareRole;
+}
+
+/** A parcel someone shared with the caller by name. */
+export interface SharedParcel {
+  parcel: ParcelSummary;
+  owner_name: string;
+  role: ShareRole;
+  shared_at: string;
+}
+
+/** `GET /api/v1/shared`. */
+export interface SharedParcelList {
+  /** Most recently updated first. */
+  parcels: SharedParcel[];
+  total: number;
 }
 
 /** The error envelope every non-2xx JSON response uses. */

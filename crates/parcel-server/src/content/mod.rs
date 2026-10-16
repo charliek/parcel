@@ -35,7 +35,10 @@ use bytes::Bytes;
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use time::OffsetDateTime;
 
-use crate::db::parcels;
+use parcel_types::Visibility;
+
+use crate::db::{parcels, shares};
+use crate::http::views::{effective_visibility, resolve_access};
 use crate::state::AppState;
 use crate::storage::blob_key;
 use token::{ContentClaims, Scope, TokenError};
@@ -167,6 +170,26 @@ async fn redirect_to_entry(State(state): State<AppState>, Path(token): Path<Stri
     }
 }
 
+/// Whether a member grant's user may still see the parcel: still shared
+/// with them, or still internal/public, and their account still enabled.
+pub async fn member_still_allowed(
+    state: &AppState,
+    parcel_id: &str,
+    user: uuid::Uuid,
+) -> anyhow::Result<bool> {
+    let Some(check) = shares::member_check(&state.db, parcel_id, user).await? else {
+        return Ok(false);
+    };
+    Ok(!check.disabled
+        && resolve_access(
+            &state.config,
+            check.owner_id,
+            check.visibility,
+            Some((user, check.role)),
+        )
+        .is_some())
+}
+
 async fn serve(
     State(state): State<AppState>,
     Path((token, path)): Path<(String, String)>,
@@ -189,14 +212,23 @@ async fn serve(
         Ok(None) => return not_found(&state),
         Err(e) => return internal(&state, e),
     };
-    // A public grant stops working the moment the owner makes the parcel
-    // private, rather than lingering until the token expires.
-    if claims.scope == Scope::Public && row.visibility != "public" {
+    // A grant stops working the moment the owner changes who may see the
+    // parcel, rather than lingering until the token expires.
+    let visibility = Visibility::parse(&row.visibility).unwrap_or_default();
+    let holds = match claims.scope {
+        Scope::Owner => !row.owner_disabled,
+        Scope::Public => effective_visibility(&state.config, visibility) == Visibility::Public,
+        Scope::Member(user) => match member_still_allowed(&state, &claims.parcel_id, user).await {
+            Ok(holds) => holds,
+            Err(e) => return internal(&state, e),
+        },
+    };
+    if !holds {
         return error_page(
             &state,
             StatusCode::FORBIDDEN,
             "This parcel is private",
-            "The owner has made this parcel private.",
+            "The owner has changed who can see this parcel.",
         );
     }
 

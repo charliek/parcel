@@ -112,8 +112,10 @@ port to the other.
 
 ### Auth
 
-- **Web:** slauth OAuth2 + PKCE, public client `parcel`, `aud=parcel`. Verified with
-  `stridelabs_auth::Verifier`. Users are find-or-created by `sub`.
+- **Web:** server-side OIDC sign-in through one or more providers (slauth's public
+  client `parcel` by default; Okta, Keycloak… side by side), then a signed session
+  cookie. Users are found by `(provider, sub)`, else by email. Since v0.3; the MVP
+  had the SPA run slauth's PKCE flow itself. See "Sign-in providers and sharing (v0.3)".
 - **CLI:** **Assumption — device authorization flow** with app-local tokens rather
   than a loopback OAuth client: it works over SSH/remote boxes, needs no new Hydra
   client type, and the slauth registry test forbids loopback redirects for
@@ -126,8 +128,10 @@ port to the other.
 
 ### Visibility
 
-**Assumption:** two levels. `private` (default; owner only) and `public` (anyone with
-the link, no sign-in). Named-user sharing is a later feature.
+Three levels since v0.3: `private` (default; the owner and the people it is
+shared with by email), `internal` (anyone signed in) and `public` (anyone with
+the link, no sign-in; can be turned off per server). The MVP had only
+private and public.
 
 ## Environments and domains
 
@@ -161,32 +165,34 @@ the regenerated `hydra_seed_bodies.json` fixture. Done on a slauth branch
   the slaudio design, ported to Rust (likely `rmcp`). The API is shaped so MCP
   tools are thin wrappers over the same service layer.
 - Per-parcel origins (wildcard subdomain) to allow storage inside parcels.
-- Named-user sharing, comments, per-parcel shared data.
 - Publishing the repo to GitHub, then turning on CI / release / deploy workflows.
 
 ## HTTP surface (MVP)
 
 App host (`PARCEL_APP_ORIGIN`). JSON unless noted; errors are
-`{"error": {"message", "type"}}`. Auth is `Authorization: Bearer <slauth JWT | pcl_ token>`.
+`{"error": {"message", "type"}}`. Auth is the web session cookie or
+`Authorization: Bearer <pcl_ token>`. "Viewers" below means whoever the
+parcel is open to (the access table in "Sign-in providers and sharing").
 Types are in `crates/parcel-types/src/api.rs`.
 
 | Method | Path | Auth | Body → Response |
 |---|---|---|---|
 | GET | `/health/live`, `/health/ready` | — | plain, not in spec |
+| GET | `/auth/login`, `/auth/callback`; POST `/auth/logout` | — | browser sign-in redirects, not in spec (see v0.3) |
 | GET | `/openapi.json`; `/docs` (non-prod) | — | spec / Swagger UI |
 | GET | `/api/v1/info` | — | `ServerInfo` |
 | GET | `/api/v1/me` | required | `Me` |
 | GET | `/api/v1/parcels?q=&limit=&offset=` | required | `ParcelList` (owned) |
 | POST | `/api/v1/parcels` | required | multipart (`metadata` JSON part = `CreateParcelMetadata`, `file` parts whose *filename* is the published path) → 201 `PublishResult` |
-| GET | `/api/v1/parcels/{id}` | owner, or anyone if public | `ParcelDetail` |
+| GET | `/api/v1/parcels/{id}` | viewers | `ParcelDetail` (with `access`, `owner_name`) |
 | PATCH | `/api/v1/parcels/{id}` | owner | `UpdateParcelRequest` → `ParcelSummary` |
 | DELETE | `/api/v1/parcels/{id}` | owner | 204 |
-| GET | `/api/v1/parcels/{id}/view?version=N` | owner, or anyone if public | `ViewGrant` (signed content URL) |
-| GET | `/api/v1/parcels/{id}/versions` | owner/public | `VersionList` |
+| GET | `/api/v1/parcels/{id}/view?version=N` | viewers | `ViewGrant` (signed content URL) |
+| GET | `/api/v1/parcels/{id}/versions` | viewers | `VersionList` |
 | POST | `/api/v1/parcels/{id}/versions` | owner | multipart (`metadata` = `NewVersionMetadata`) → 201 `PublishResult` |
-| GET | `/api/v1/parcels/{id}/versions/{version}` | owner/public | `VersionDetail` (`version` = number or `latest`) |
+| GET | `/api/v1/parcels/{id}/versions/{version}` | viewers | `VersionDetail` (`version` = number or `latest`) |
 | POST | `/api/v1/parcels/{id}/versions/{version}/restore` | owner | 201 `PublishResult` (new version copying that one) |
-| GET | `/api/v1/parcels/{id}/versions/{version}/files/{path}` | owner/public | raw bytes, `Content-Disposition: attachment` |
+| GET | `/api/v1/parcels/{id}/versions/{version}/files/{path}` | viewers | raw bytes, `Content-Disposition: attachment` |
 | GET/POST | `/api/v1/tokens` | required | `TokenList` / `CreateTokenRequest` → 201 `CreatedToken` |
 | DELETE | `/api/v1/tokens/{id}` | required | 204 |
 | DELETE | `/api/v1/tokens/current` | pcl token | 204 (revokes the calling token: `parcel logout`) |
@@ -194,12 +200,15 @@ Types are in `crates/parcel-types/src/api.rs`.
 | POST | `/api/v1/cli/device/token` | — | `DevicePollRequest` → `DevicePollResponse` |
 | GET | `/api/v1/cli/device/{user_code}` | required | `DeviceInfo` (pending codes only) |
 | POST | `/api/v1/cli/device/{user_code}/approve` and `/deny` | required | 204 |
-| GET | `/api/v1/parcels/{id}/activity` | owner/public | `ParcelActivity` (the viewer's poll; `no-store`) |
-| GET/POST | `/api/v1/parcels/{id}/comments?status=open\|resolved\|all` | owner, or signed-in when public | `CommentList` / `NewComment` → 201 `Comment` (the thread) |
+| GET | `/api/v1/parcels/{id}/activity` | viewers | `ParcelActivity` (the viewer's poll; `no-store`) |
+| GET/POST | `/api/v1/parcels/{id}/comments?status=open\|resolved\|all` | signed-in viewers / commenters | `CommentList` / `NewComment` → 201 `Comment` (the thread) |
 | PATCH/DELETE | `/api/v1/parcels/{id}/comments/{number}` | author / owner (see below) | `UpdateComment` → `Comment` / 204 |
-| GET | `/api/v1/parcels/{id}/data` | owner/public | `DataSummary` |
-| GET/DELETE | `/api/v1/parcels/{id}/data/{collection}?limit=&after=` | read: owner/public; delete: owner | `DataItemList` / 204 |
-| GET/PUT/PATCH/DELETE | `/api/v1/parcels/{id}/data/{collection}/{key}` | read: owner/public; write: owner | any JSON → `DataItem` (PATCH = RFC 7386 merge) / 204 |
+| GET | `/api/v1/parcels/{id}/data` | viewers | `DataSummary` |
+| GET/DELETE | `/api/v1/parcels/{id}/data/{collection}?limit=&after=` | read: viewers; delete: owner | `DataItemList` / 204 |
+| GET/PUT/PATCH/DELETE | `/api/v1/parcels/{id}/data/{collection}/{key}` | read: viewers; write: owner | any JSON → `DataItem` (PATCH = RFC 7386 merge) / 204 |
+| GET | `/api/v1/parcels/{id}/shares` | owner | `ShareList` |
+| PUT/DELETE | `/api/v1/parcels/{id}/shares/{email}` | owner | `PutShareRequest` → `Share` / 204 |
+| GET | `/api/v1/shared?limit=&offset=` | required | `SharedParcelList` (shared with me by email) |
 | GET | anything else | — | SPA (`index.html` fallback) when `PARCEL_STATIC_DIR` is set |
 
 Content host (`PARCEL_CONTENT_ORIGIN`): `GET /v/{token}/{path}` serves a file
@@ -208,10 +217,10 @@ is the page's data (same verbs and bodies as the API above; writes need an
 owner-scope token; CORS `*`, `OPTIONS` preflight); `/_parcel/helper.<hash>.js`
 is the page helper. Nothing else.
 
-Web app routes: `/` (my parcels, or landing when signed out), `/p/:id` and
-`/p/:id/v/:version` (viewer; public parcels need no sign-in), `/new` (upload),
-`/tokens`, `/cli` (CLI + skill setup), `/device` (approve a CLI login),
-`/auth/callback`.
+Web app routes: `/` (my parcels and "shared with me", or landing when signed
+out), `/p/:id` and `/p/:id/v/:version` (viewer; public parcels need no
+sign-in), `/new` (upload), `/tokens`, `/cli` (CLI + skill setup), `/device`
+(approve a CLI login), `/signin` (pick a provider; sign-in errors).
 
 ## Comments, live updates and page data (v0.2)
 
@@ -281,6 +290,119 @@ Names are `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. Limits: one value
 (10 MiB), counting each item's compact JSON plus 128 bytes. Visitor writes
 (polls from anonymous viewers) are deliberately not supported yet.
 
+## Sign-in providers and sharing (v0.3)
+
+Goal: one Parcel can sign people in through several OIDC providers at once
+(slauth for personal use; Okta and Keycloak side by side for offices on
+different email domains), and parcels can be shared with named people or
+with everyone signed in. Keep server state minimal: low volume is assumed.
+
+**Sign-in is server-side.** The server is the OIDC client (authorization
+code + PKCE + nonce, `client_secret_basic`/`_post` when a secret is set,
+public client otherwise). It reads the provider's discovery document
+(`{issuer}/.well-known/openid-configuration`, whose `issuer` must match
+exactly), verifies the **ID token** (signature via the provider's JWKS,
+`iss`, `aud` ∋ client id, `azp` when several audiences, `exp`, `nonce`), and
+falls back to `userinfo` (same `sub`) when the ID token has no email. ID
+tokens are the standardized part of OIDC, so no provider needs custom
+access-token setup (Okta's org server works; Keycloak needs no audience
+mapper). The browser never holds a provider token, and none are stored.
+
+| Endpoint (app host, outside `/api/v1`) | What |
+|---|---|
+| `GET /auth/login?provider=&return_to=&login_hint=` | 303 to the provider. Sets a signed, 10-minute `__Host-parcel_login` cookie (`parcel_login` on http dev origins; `SameSite=Lax`; `__Host-` so a sibling subdomain can't plant one) holding provider, state, nonce, PKCE verifier and `return_to` (a same-site path). `provider` may be omitted when only one is configured. |
+| `GET /auth/callback?code=&state=` | Checks the cookie and state, redeems the code, applies the provider's policy, signs the user in, 303 to `return_to`. Failures 303 to `/signin?error=<code>` (`denied`, `expired`, `domain`, `unverified`, `failed`, `unavailable` — provider unreachable, `disabled`). |
+| `POST /auth/logout[?everywhere=true]` | Clears the session; `everywhere` also ends every other session of the user. Returns `{"redirect"}`: the provider's `end_session_endpoint` (with the ID token hint, kept in an `HttpOnly` cookie scoped to `Path=/auth/logout`) or `/`. |
+
+**Sessions are a signed cookie, not a table.** `__Host-parcel_session`
+(`parcel_session` on plain-http dev origins), `HttpOnly; Secure; SameSite=Lax;
+Path=/`, value = HMAC-signed `{user_id}.{epoch}.{issued}.{expires}.{provider}`
+under a key derived from `PARCEL_CONTENT_SIGNING_KEY` (domain-separated, so
+no new secret). Each request checks the signature, expiry, that the user
+exists and isn't disabled, and that `users.session_epoch` still matches
+(bumped by "sign out everywhere"). Lifetime `PARCEL_SESSION_TTL_SECS`
+(default 7 days); after it the provider is asked again (silently, when its
+own session is alive). A bad or expired cookie is a 401 that also clears it,
+never a silent downgrade to anonymous. The cost of keeping no session rows:
+plain sign-out only clears the browser's cookie, so a copied cookie keeps
+working until it expires or the user signs out everywhere.
+
+**CSRF.** A cookie only counts when `Sec-Fetch-Site` is absent, `same-origin`
+or `none`; unsafe methods (anything but GET/HEAD/OPTIONS) authenticated by
+cookie also need `Origin` = `PARCEL_APP_ORIGIN`. Bearer `pcl_` tokens (CLI,
+agents) are unaffected. The content origin is sandboxed (opaque origin), so
+its requests never carry the app's cookie.
+
+**Providers and policy (config).**
+
+| Var | Meaning |
+|---|---|
+| `AUTH_MODE` | `oidc` (default; `slauth` is accepted as an alias) or `dev` |
+| `AUTH_PROVIDERS` | comma list of ids (`[a-z][a-z0-9]{0,31}`), e.g. `okta,keycloak`; each reads `AUTH_<ID>_*` below |
+| `AUTH_<ID>_ISSUER`, `AUTH_<ID>_CLIENT_ID` | required |
+| `AUTH_<ID>_CLIENT_SECRET` | optional (absent = public client + PKCE) |
+| `AUTH_<ID>_LABEL` | button text (default: the id) |
+| `AUTH_<ID>_ALLOWED_DOMAINS` | comma list of email domains this provider may sign in; empty = any |
+| `AUTH_<ID>_TRUST_EMAIL` | `true` accepts emails the provider doesn't mark `email_verified` (default `false`) |
+| `AUTH_<ID>_SCOPES` | default `openid email profile` |
+| `PARCEL_SESSION_TTL_SECS` | default 604800 (7 days) |
+| `PARCEL_TOKEN_LOGIN_MAX_AGE_DAYS` | a `pcl_` token stops working when its owner hasn't signed in on the web for this long (default 30; 0 = never) — offboarding at the provider then reaches CLI tokens too |
+| `PARCEL_ALLOW_PUBLIC` | `false` turns off public links: setting `public` is refused and existing public parcels behave (and report) as `internal` until it's turned back on |
+
+Unset `AUTH_PROVIDERS` means one provider, `slauth`, from the existing
+`SLAUTH_ISSUER` / `SLAUTH_CLIENT_ID` with `TRUST_EMAIL` on (slauth issues no
+`email_verified`; its accounts are invite-only). `SLAUTH_JWKS_URL` and
+`SLAUTH_AUDIENCE` are no longer read. slauth's registered client (public,
+redirect `/auth/callback`, post-logout `/`) works unchanged.
+
+**Identities.** `user_identities (provider, subject) → user`. Every sign-in
+needs a trusted email (verified, or `TRUST_EMAIL`) in an allowed domain. A
+new identity links to the existing user with the same email (that's what
+makes a person one user across providers), else creates one. Existing users
+migrate as `slauth` identities (`dev:` ones as `dev`). `users.disabled_at`
+(set by an operator in SQL for now) blocks sessions and tokens at once.
+
+**Visibility.** `private` (owner and the people it's shared with),
+`internal` (anyone signed in to this Parcel), `public` (anyone with the
+link). Anonymous callers get 404 for private and internal parcels.
+
+| Caller | private | internal | public |
+|---|---|---|---|
+| owner | owner | owner | owner |
+| shared with (by email) | its role | commenter | commenter |
+| any other signed-in user | 404 | commenter | commenter |
+| anonymous | 404 | 404 | view (no comments) |
+
+Roles: `viewer` sees the parcel, its comments and its data; `commenter`
+also comments. Page data stays owner-write-only (invariant 8).
+
+**Shares** are `(parcel_id, email, role)`, matched against the signed-in
+user's (trusted) email at request time — so sharing with someone who hasn't
+signed in yet just works on their first sign-in, with no pending-invite
+state. At most 200 per parcel. An email no configured provider would accept
+(every provider restricts domains and none lists this one) is refused.
+
+**Content tokens** gain scope `m` (a signed-in non-owner) carrying the user
+id: `{id}.{version}.{exp}.m.{user_id}`. Every content and `/d/` request
+with it re-checks that the user still has access, as `p` re-checks that the
+parcel is still (effectively) public — so unsharing, going private, or
+turning public off cuts off open pages immediately.
+
+**API additions** (all in the spec): `GET /api/v1/parcels/{id}/shares` →
+`ShareList`; `PUT`/`DELETE /api/v1/parcels/{id}/shares/{email}` (`{role}` →
+`Share` / 204), owner only; `GET /api/v1/shared` → `SharedParcelList`
+(parcels shared with me by name). `ParcelDetail` and `ViewGrant` gain
+`access` (`owner|commenter|viewer|public`) and `owner_name` (signed-in
+callers). `ServerInfo.auth` becomes `{mode, providers: [{id, label}]}` plus
+`ServerInfo.allow_public`; `Me` gains `signed_in_with` (the provider label).
+
+After a provider refuses someone (wrong domain), its own session may still
+be signed in, so choosing it again refuses again until they sign out there.
+
+Not now (ROADMAP): groups from provider claims, an editor role, invite
+emails/notifications, an admin UI (disable users, see sign-ins), SCIM,
+discovery of internal parcels.
+
 ## Status (2026-10-16)
 
 The MVP is built and verified locally, end to end:
@@ -322,6 +444,29 @@ by the CLI); a slow auto-reload could swap the frame under a comment draft
 the frame bridge was hardened so a document navigated into the viewer's
 iframe can't pose as the parcel (token-verified `ready`, `bye` on unload,
 external links open in a new tab).
+
+### v0.3 (sign-in providers and sharing)
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` | 216 passed (20 sign-in tests against a mock provider, incl. five signature forgeries; 7 sharing/visibility) |
+| `pytest tests/functional` (in-process mock OIDC provider with two tenants) | 36 passed |
+| `bun test` / Playwright e2e on the production build | 160 / 43 passed |
+| clippy (both feature sets), fmt, Spectral, biome/eslint, tsc | clean |
+| Real Keycloak 26 (`dev/keycloak`), scripted | confidential client + PKCE + `iss` check; verified user signs in; unverified email → `unverified`; other domain → `domain` |
+| Browser walkthrough, slauth **and** Keycloak side by side (playwright-cli) | provider picker; Keycloak user publishes a private parcel and shares it by email with the slauth user as commenter; the slauth user finds it under "Shared with me" and pins a comment; downgraded to viewer, comments go read-only; unshared, their open viewer turns into "not found" within one poll; made internal, they can open and comment while anonymous callers get 404; a refused sign-in names the provider |
+| Existing dev database migrated (slauth + dev users become identities) | works |
+
+A Codex review of v0.3 found 8 issues, all fixed with tests: the login
+cookie could be planted from a sibling subdomain (now `__Host-`); a
+disabled owner's open page kept owner authority over files and data; an
+https issuer could advertise plain-http endpoints (now refused, and OIDC
+calls never follow redirects); an ended session could still "sign out
+everywhere"; concurrent first sign-ins could split one email into two users
+(now serialized per email); a stale logout hint could reach another
+provider; the migration dropped `users.sub` under a still-running old
+revision (now kept, nullable); and signature forgery wasn't tested. Not
+verified live: Okta (no account here; its setup is in `deploy/README.md`).
 
 Deviations from the original brief, by design:
 - CLI auth is a device flow + app-local `pcl_` tokens rather than slauth PATs or

@@ -45,14 +45,14 @@ export function removeStorage(kind: StorageKind, key: string): void {
 
 /** All storage keys used by the app, in one place. */
 export const STORAGE_KEYS = {
-  /** sessionStorage: the pending PKCE transaction (verifier, state, return path). */
-  pkceTx: 'parcel_pkce_tx',
-  /** sessionStorage: set once a silent prompt=none re-auth was tried this session. */
-  silentReauth: 'parcel_silent_reauth',
-  /** localStorage: bumped on logout so other tabs drop their in-memory tokens. */
+  /** localStorage: bumped on sign-out so other tabs forget the user too. */
   authSync: 'parcel_auth_sync',
-  /** localStorage: this browser has signed in before (lets `/` try silent re-auth). */
+  /** localStorage: this browser has signed in before (lets account pages go straight to the provider). */
   signedInHint: 'parcel_signed_in',
+  /** localStorage: id of the sign-in provider used last, offered first. */
+  lastProvider: 'parcel_last_provider',
+  /** sessionStorage: when an account page last sent this tab to sign in on its own (loop guard). */
+  autoSignIn: 'parcel_auto_sign_in',
   /** localStorage: `light` | `dark` | `system`. Also read by public/theme-init.js. */
   theme: 'parcel_theme',
   /** localStorage: dashboard layout, `grid` | `list`. */

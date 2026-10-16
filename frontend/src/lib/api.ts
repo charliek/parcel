@@ -2,14 +2,14 @@
  * Typed client for the Parcel JSON API (`/api/v1`).
  *
  * The SPA talks to the backend over relative URLs, proxied to the Rust server
- * by Vite in dev and served from the same origin in production. A slauth
- * bearer token is attached when this tab has one; in dev auth mode there is
- * none and the backend authenticates every request as the dev user. Public
- * parcels are readable with no token at all.
+ * by Vite in dev and served from the same origin in production. Sign-in is a
+ * server-side session: the HttpOnly cookie rides along on every same-origin
+ * request, so nothing here holds or sends a token (a non-`pcl_` bearer would
+ * be refused). In dev auth mode the backend treats every request as the dev
+ * user. Public parcels are readable signed out.
  */
 
 import { ApiError, errorFromBody, parseResponse } from './http';
-import { useTokenStore } from './token-store';
 import type {
   Comment,
   CommentList,
@@ -25,6 +25,10 @@ import type {
   ParcelList,
   ParcelSummary,
   PublishResult,
+  Share,
+  SharedParcelList,
+  ShareList,
+  ShareRole,
   TokenList,
   UpdateComment,
   UpdateParcelRequest,
@@ -35,7 +39,10 @@ import type {
 
 let onUnauthorized: (() => void) | null = null;
 
-/** Called whenever the API answers 401 (the auth store downgrades the session). */
+/**
+ * Called whenever the API answers 401: the session ended (the server also
+ * cleared its cookie in that response). The auth store signs the tab out.
+ */
 export function setUnauthorizedHandler(handler: (() => void) | null): void {
   onUnauthorized = handler;
 }
@@ -46,37 +53,24 @@ interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
   body?: BodyInit;
 }
 
-async function send(path: string, options: ApiFetchOptions, token: string | null) {
+/** Send an API request; the caller checks the status (see {@link apiFetch}). */
+async function rawFetch(path: string, options: ApiFetchOptions = {}): Promise<Response> {
   const { json, headers, body, ...rest } = options;
-  return fetch(path, {
+  const response = await fetch(path, {
     ...rest,
     credentials: 'same-origin',
     headers: {
       Accept: 'application/json',
       ...(json !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...headers,
     },
     body: json !== undefined ? JSON.stringify(json) : body,
   });
-}
-
-/**
- * Perform an API request. Retries once with a refreshed token if the server
- * rejects the current one. Throws {@link ApiError} on any non-2xx response.
- */
-async function rawFetch(path: string, options: ApiFetchOptions = {}): Promise<Response> {
-  const tokens = useTokenStore.getState();
-  const token = await tokens.getValidToken();
-  let response = await send(path, options, token);
-  if (response.status === 401 && token) {
-    const fresh = await useTokenStore.getState().refresh();
-    if (fresh) response = await send(path, options, fresh);
-  }
   if (response.status === 401) onUnauthorized?.();
   return response;
 }
 
+/** Perform an API request. Throws {@link ApiError} on any non-2xx response. */
 export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
   const response = await rawFetch(path, options);
   return parseResponse<T>(response);
@@ -88,12 +82,13 @@ async function apiUpload<T>(
   form: FormData,
   onProgress?: (fraction: number) => void,
 ): Promise<T> {
-  const attempt = (token: string | null) =>
-    new Promise<{ status: number; statusText: string; text: string }>((resolve, reject) => {
+  // Same-origin XHR sends the session cookie (and `Origin`, which the
+  // server's CSRF check wants on writes) without being asked.
+  const result = await new Promise<{ status: number; statusText: string; text: string }>(
+    (resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', path);
       xhr.setRequestHeader('Accept', 'application/json');
-      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
       };
@@ -102,14 +97,8 @@ async function apiUpload<T>(
       xhr.onerror = () => reject(errorFromBody(undefined, 0));
       xhr.onabort = () => reject(new ApiError('Upload cancelled', 0));
       xhr.send(form);
-    });
-
-  const token = await useTokenStore.getState().getValidToken();
-  let result = await attempt(token);
-  if (result.status === 401 && token) {
-    const fresh = await useTokenStore.getState().refresh();
-    if (fresh) result = await attempt(fresh);
-  }
+    },
+  );
   if (result.status === 401) onUnauthorized?.();
 
   let body: unknown;
@@ -216,6 +205,22 @@ export const api = {
     apiFetch<void>(`/api/v1/parcels/${enc(id)}/comments/${number}`, { method: 'DELETE' }),
 
   dataSummary: (id: string) => apiFetch<DataSummary>(`/api/v1/parcels/${enc(id)}/data`),
+
+  listShares: (id: string) => apiFetch<ShareList>(`/api/v1/parcels/${enc(id)}/shares`),
+
+  /** Share with someone, or change their role. */
+  putShare: (id: string, email: string, role: ShareRole) =>
+    apiFetch<Share>(`/api/v1/parcels/${enc(id)}/shares/${enc(email)}`, {
+      method: 'PUT',
+      json: { role },
+    }),
+
+  deleteShare: (id: string, email: string) =>
+    apiFetch<void>(`/api/v1/parcels/${enc(id)}/shares/${enc(email)}`, { method: 'DELETE' }),
+
+  /** Parcels other people shared with the caller by email. */
+  listShared: (params: { limit?: number; offset?: number } = {}) =>
+    apiFetch<SharedParcelList>(`/api/v1/shared${query(params)}`),
 
   listTokens: () => apiFetch<TokenList>('/api/v1/tokens'),
 

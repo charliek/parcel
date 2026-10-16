@@ -9,7 +9,7 @@ react-router v7 and Radix UI, the same stack as slauth.
 
 ```bash
 bun install          # dependencies
-bun run dev          # Vite on :5178; proxies /api, /openapi.json, /docs to :8106
+bun run dev          # Vite on :5178; proxies /api, /auth, /openapi.json, /docs to :8106
 bun run build        # typecheck + production build into dist/
 bun run lint         # biome check + eslint (must be clean)
 bun run typecheck    # tsc -b (app, unit tests, configs and e2e)
@@ -29,40 +29,55 @@ In production the Rust backend serves `dist/` (`PARCEL_STATIC_DIR`) with an
 Nothing is baked in at build time. On boot the app fetches `GET /api/v1/info`
 and uses it for:
 
-- **Auth mode.** In `slauth` mode it runs OAuth2 Authorization Code + PKCE
-  against `auth.issuer`, with `auth.client_id` and `audience=auth.audience`.
-  In `dev` mode the backend treats every request as the dev user, so the app
-  never starts OAuth and hides "Sign out".
+- **Auth mode and providers.** In `oidc` mode `auth.providers` lists the
+  sign-in providers (`{id, label}`) to offer. In `dev` mode the backend treats
+  every request as the dev user, so the app shows no sign-in or sign-out.
+- **`allow_public`.** When false, "Anyone with the link" is disabled (with the
+  reason) wherever visibility is set.
 - **Upload limits and allowed extensions**, which `/new` checks before upload.
 
 ## Auth behavior
 
-- Access and refresh tokens live in memory only. After a reload the app
-  re-authenticates with one silent `prompt=none` attempt per browser session.
-  Token refreshes are deduped, and signing out in one tab signs out every tab.
-- Sign-in is optional where it can be. The viewer first requests
-  `/api/v1/parcels/{id}/view` with whatever token it already has (often none),
-  so public parcels render for anonymous visitors. It falls back to silent
-  re-auth and then a "Sign in to view" screen only after a 401/403/404.
-- `/new`, `/tokens`, `/cli` and `/device` need an account. On these pages the
-  app calls `/api/v1/me`, tries silent re-auth once if that returns 401, then
-  shows a sign-in screen. The return path, including `?code=` on `/device`, is
-  kept through the login redirect.
-- `/` shows the dashboard when signed in and the landing page otherwise. It
-  only tries silent re-auth if this browser has signed in before, so
-  first-time visitors don't bounce through slauth.
+- Sign-in is server-side. The SPA never runs OAuth and never holds a provider
+  token: "Sign in" is a full-page navigation to
+  `/auth/login?provider=<id>&return_to=<path>`, the server sets an HttpOnly
+  session cookie and lands back on `return_to`. API calls send no
+  `Authorization` header; the cookie rides along on same-origin requests.
+- With one provider, "Sign in" goes straight to it. With several, it opens
+  `/signin`, which has one button per provider (the last one used first,
+  remembered in `localStorage`). The server also sends failed sign-ins there
+  (`/signin?error=<code>&return_to=<path>`), and the page explains each code.
+- Sign-out is `POST /auth/logout` (or `?everywhere=true`, on the Tokens page),
+  then the browser follows the returned `redirect`: the provider's logout page,
+  or `/`. Other tabs are told through `localStorage` and drop the user too.
+- A 401 from the API means the session ended (the server clears the cookie in
+  that response). The app forgets the user and refetches what is on screen
+  signed out, so a public parcel keeps showing.
+- Sign-in is optional where it can be. The viewer requests
+  `/api/v1/parcels/{id}/view` with whatever session it has (often none), so
+  public parcels render for anonymous visitors, and drives its UI from the
+  grant's `access`: `owner`, `commenter` (comment mode and composer), `viewer`
+  (comments read-only) or `public` (signed out: no comments, a sign-in offer).
+- `/new`, `/tokens`, `/cli` and `/device` need an account. Signed out, they
+  show the sign-in options. A browser that has signed in before (and didn't
+  sign out) goes straight to a single provider instead, at most once every two
+  minutes per tab, so a session cookie that doesn't stick can't loop. The
+  return path, including `?code=` on `/device`, is kept.
 - Browser storage keys all start with `parcel_`, and every storage access is
   wrapped in try/catch.
 
-The pure decision logic is in `src/lib/auth/policy.ts` and is unit-tested.
+The pure decision logic is in `src/lib/sign-in.ts` and `src/lib/access.ts`,
+and is unit-tested.
 
 ## End-to-end tests
 
 The specs in `e2e/` expect a parcel-server running in dev auth mode
 (`AUTH_MODE=dev`). They cover the dashboard and search, creating a parcel by
-file and folder upload, rendering in the sandboxed iframe, public/private,
-versions and restore, editing, deletion, tokens, and device-login
-approve/deny.
+file and folder upload, rendering in the sandboxed iframe, visibility,
+sharing, versions and restore, editing, deletion, comments, live updates,
+page data, tokens, and device-login approve/deny. Sign-in, the viewer as a
+viewer or commenter, and public links turned off are covered by rewriting
+`/api/v1/info`, `/api/v1/me` and view grants with Playwright routing.
 
 ```bash
 bunx playwright install chromium   # once
@@ -78,10 +93,10 @@ example `http://localhost:5178`). Otherwise the content host's
 
 ```
 src/
-  lib/          api client, OAuth/PKCE, token store, types (mirror of parcel-types),
-                formatting, upload-path rules, auth policy (+ *.test.ts)
+  lib/          api client, types (mirror of parcel-types), sign-in and access
+                decisions, formatting, upload-path rules (+ *.test.ts)
   stores/       zustand: server info, session, theme
-  hooks/        React Query hooks, session and silent re-auth hooks
+  hooks/        React Query hooks, session hooks
   components/   ui/ (shadcn-style primitives), layout/, viewer/, upload/, tokens/, auth/
   pages/        one component per route
 e2e/            Playwright specs

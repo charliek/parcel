@@ -15,7 +15,11 @@
 - Per-parcel origins (wildcard subdomain + certificate) so parcels can use a
   real, persistent `localStorage`/`IndexedDB` (today's stand-ins reset on
   reload).
-- Sharing with named users (view / comment / edit roles).
+- Sharing extras: an editor role (page data and new versions), sharing with
+  a provider group (Okta/Keycloak `groups` claim), invite emails and "shared
+  with you" notifications, a browsable list of internal parcels.
+- An admin page: users, sign-ins, disabling people (today: SQL), and SCIM
+  deprovisioning from Okta/Keycloak.
 - Visitor writes to page data (opt-in "collect responses" for polls and
   sign-up sheets, with rate limits), and per-viewer private data.
 - Comment notifications (email/webhook) and `parcel comments --watch` so an

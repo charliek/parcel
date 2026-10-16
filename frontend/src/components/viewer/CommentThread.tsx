@@ -34,11 +34,16 @@ import { cn } from '@/lib/utils';
 import { CommentComposer } from './CommentComposer';
 import type { DeleteTarget } from './DeleteCommentDialog';
 
+/** What a read-only caller may do with any comment: nothing. */
+const NO_PERMISSIONS: ThreadPermissions = { canEdit: false, canResolve: false, canDelete: false };
+
 interface CommentThreadProps {
   parcelId: string;
   thread: Comment;
   /** The viewer owns the parcel. */
   isOwner: boolean;
+  /** The caller may only read (shared as a viewer): no replies, edits or resolving. */
+  readOnly?: boolean;
   /** The version in the frame. */
   viewedVersion: number;
   /** The page in the frame, once it has said. */
@@ -58,6 +63,7 @@ export function CommentThread({
   parcelId,
   thread,
   isOwner,
+  readOnly = false,
   viewedVersion,
   framePath,
   missing,
@@ -80,7 +86,7 @@ export function CommentThread({
   }, [onComposingChange, key, composing]);
   useEffect(() => () => onComposingChange(key, false), [onComposingChange, key]);
 
-  const perms = threadPermissions(thread.author, isOwner);
+  const perms = readOnly ? NO_PERMISSIONS : threadPermissions(thread.author, isOwner);
   const anchor = thread.anchor ? summarizeAnchor(thread.anchor, framePath) : null;
   const onThisPage = thread.anchor !== undefined && thread.anchor.path === framePath;
 
@@ -274,7 +280,7 @@ export function CommentThread({
                 r.body,
                 r.created_at,
                 r.updated_at,
-                replyPermissions(r.author, isOwner),
+                readOnly ? NO_PERMISSIONS : replyPermissions(r.author, isOwner),
                 false,
               )}
             </li>
@@ -282,49 +288,51 @@ export function CommentThread({
         </ol>
       )}
 
-      <div className="pl-8">
-        {replying ? (
-          <CommentComposer
-            value={replyText}
-            onChange={setReplyText}
-            onSubmit={sendReply}
-            onCancel={() => {
-              setReplying(false);
-              setReplyText('');
-            }}
-            pending={createReply.isPending}
-            label={`Reply to #${thread.number}`}
-            placeholder="Reply…"
-            submitLabel="Reply"
-            autoFocus
-          />
-        ) : (
-          <div className="flex gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-muted-foreground text-xs"
-              onClick={() => setReplying(true)}
-              aria-label={`Reply to #${thread.number}`}
-            >
-              Reply
-            </Button>
-            {perms.canResolve && (
+      {!readOnly && (
+        <div className="pl-8">
+          {replying ? (
+            <CommentComposer
+              value={replyText}
+              onChange={setReplyText}
+              onSubmit={sendReply}
+              onCancel={() => {
+                setReplying(false);
+                setReplyText('');
+              }}
+              pending={createReply.isPending}
+              label={`Reply to #${thread.number}`}
+              placeholder="Reply…"
+              submitLabel="Reply"
+              autoFocus
+            />
+          ) : (
+            <div className="flex gap-1">
               <Button
                 variant="ghost"
                 size="sm"
                 className="h-7 px-2 text-muted-foreground text-xs"
-                onClick={() => setResolved(!thread.resolved)}
-                disabled={update.isPending}
-                aria-label={`${thread.resolved ? 'Reopen' : 'Resolve'} #${thread.number}`}
+                onClick={() => setReplying(true)}
+                aria-label={`Reply to #${thread.number}`}
               >
-                {thread.resolved ? <RotateCcw /> : <Check />}
-                {thread.resolved ? 'Reopen' : 'Resolve'}
+                Reply
               </Button>
-            )}
-          </div>
-        )}
-      </div>
+              {perms.canResolve && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-muted-foreground text-xs"
+                  onClick={() => setResolved(!thread.resolved)}
+                  disabled={update.isPending}
+                  aria-label={`${thread.resolved ? 'Reopen' : 'Resolve'} #${thread.number}`}
+                >
+                  {thread.resolved ? <RotateCcw /> : <Check />}
+                  {thread.resolved ? 'Reopen' : 'Resolve'}
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </article>
   );
 }

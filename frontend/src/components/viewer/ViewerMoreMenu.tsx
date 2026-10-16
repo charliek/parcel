@@ -1,9 +1,7 @@
 import {
   Download,
   ExternalLink,
-  Globe,
   Link2,
-  Lock,
   MoreHorizontal,
   Pencil,
   RotateCcw,
@@ -14,15 +12,20 @@ import {
 } from 'lucide-react';
 import type { MouseEvent } from 'react';
 import { IconButton } from '@/components/common/IconButton';
+import { VISIBILITY_ICON } from '@/components/common/VisibilityBadge';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import type { Visibility } from '@/lib/types';
+import { visibilityOptions } from '@/lib/visibility';
 
 export interface ViewerActions {
   reload: () => void;
@@ -33,7 +36,7 @@ export interface ViewerActions {
   share: () => void;
   edit: () => void;
   uploadVersion: () => void;
-  toggleVisibility: () => void;
+  setVisibility: (visibility: Visibility) => void;
   restore: () => void;
   remove: () => void;
 }
@@ -41,13 +44,15 @@ export interface ViewerActions {
 /**
  * Overflow menu. On phones it also carries the actions that sit in the top
  * bar on wider screens; owners get the parcel's settings; everyone gets the
- * viewer preferences.
+ * viewer preferences. Public links are left out where the server refuses
+ * them (the share dialog says why).
  */
 export function ViewerMoreMenu({
   actions,
   isOwner,
   isCurrent,
   visibility,
+  allowPublic,
   autoReload,
   onAutoReloadChange,
 }: {
@@ -55,6 +60,7 @@ export function ViewerMoreMenu({
   isOwner: boolean;
   isCurrent: boolean;
   visibility: Visibility;
+  allowPublic: boolean;
   /** Reload the frame when a new version is published. */
   autoReload: boolean;
   onAutoReloadChange: (on: boolean) => void;
@@ -99,10 +105,24 @@ export function ViewerMoreMenu({
               <Share2 />
               Share…
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={actions.toggleVisibility}>
-              {visibility === 'public' ? <Lock /> : <Globe />}
-              {visibility === 'public' ? 'Make private' : 'Make public'}
-            </DropdownMenuItem>
+            <DropdownMenuLabel>General access</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={visibility}
+              onValueChange={(value) => actions.setVisibility(value as Visibility)}
+            >
+              {visibilityOptions(allowPublic)
+                .filter((option) => option.disabledReason === null)
+                .map(({ value, label }) => {
+                  const Icon = VISIBILITY_ICON[value];
+                  return (
+                    <DropdownMenuRadioItem key={value} value={value}>
+                      <Icon className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                      {label}
+                    </DropdownMenuRadioItem>
+                  );
+                })}
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={actions.edit}>
               <Pencil />
               Edit details…

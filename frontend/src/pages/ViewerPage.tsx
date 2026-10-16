@@ -53,27 +53,20 @@ import { useActivity } from '@/hooks/useActivity';
 import { useComments, useCreateComment } from '@/hooks/useComments';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { useFrameBridge } from '@/hooks/useFrameBridge';
-import {
-  useParcelDetail,
-  useRestoreVersion,
-  useUpdateParcel,
-  useVersionDetail,
-} from '@/hooks/useParcels';
-import { useSession } from '@/hooks/useSession';
-import { useSilentReauth } from '@/hooks/useSilentReauth';
+import { useParcelDetail, useRestoreVersion, useVersionDetail } from '@/hooks/useParcels';
+import { useSession, useSignInTarget } from '@/hooks/useSession';
+import { useChangeVisibility } from '@/hooks/useVisibility';
+import { viewerAbilities, viewerPageState } from '@/lib/access';
 import { api, downloadFile } from '@/lib/api';
-import { hasSignedInHint } from '@/lib/auth';
-import { viewerAccess } from '@/lib/auth/policy';
 import { type CommentDraft, newThread, pinsForPage } from '@/lib/comments';
 import { isExpiringSoon } from '@/lib/format';
 import { contentToken, toPage } from '@/lib/frame-protocol';
 import { errorMessage, errorStatus } from '@/lib/http';
 import { isValidParcelId, parseVersionParam } from '@/lib/ids';
 import { decideLiveUpdate, parseAutoReload, shouldApplyFreshGrant } from '@/lib/live-update';
-import { silentReauthTried } from '@/lib/oauth';
 import { readStorage, STORAGE_KEYS, writeStorage } from '@/lib/storage';
 import type { Comment, Me, ViewGrant } from '@/lib/types';
-import { useServerInfoStore } from '@/stores/server-info.store';
+import { useAllowPublic } from '@/stores/server-info.store';
 
 /** Refetch a content URL that expires within this window before reusing it. */
 const GRANT_REFRESH_WINDOW_MS = 5 * 60_000;
@@ -89,35 +82,41 @@ export function ViewerPage() {
   const version = parsedVersion === 'invalid' ? null : parsedVersion;
 
   const session = useSession();
-  const mode = useServerInfoStore((s) => s.info?.auth.mode);
+  const canSignIn = useSignInTarget().kind !== 'none';
 
-  // Anonymous first: a public parcel renders without any sign-in. A token is
-  // attached only if this tab already has one.
+  // Signed in or not: the session cookie rides along when there is one, and
+  // a public parcel renders without. What the caller may do comes back in
+  // the grant (`access`).
   const view = useQuery({
     queryKey: queryKeys.view(id, version),
     queryFn: () => api.view(id, version ?? undefined),
     enabled: valid,
     staleTime: Number.POSITIVE_INFINITY,
+    // A 401 here means the session cookie stopped working, and the server
+    // cleared it in that same answer: asking again is signed out, so a
+    // public parcel still shows. Otherwise the app-wide rule (no 4xx).
+    retry: (failureCount, error) => {
+      const status = errorStatus(error);
+      return failureCount < 1 && (status === 401 || status === undefined || status >= 500);
+    },
+    retryDelay: (_attempt, error) => (errorStatus(error) === 401 ? 0 : 1000),
     // Keep showing the previous version of the same parcel while switching.
     placeholderData: (previous, previousQuery) =>
       previousQuery?.queryKey[1] === id ? keepPreviousData(previous) : undefined,
   });
 
-  const access = valid
-    ? viewerAccess({
+  const state = valid
+    ? viewerPageState({
         view: view.status,
         errorStatus: errorStatus(view.error),
         session: session.status,
-        mode,
-        silentTried: silentReauthTried(),
-        signedInHint: hasSignedInHint(),
+        canSignIn,
       })
     : 'not-found';
-  const silent = useSilentReauth(access === 'silent-reauth');
 
-  useDocumentTitle(view.data?.parcel.title ?? (access === 'ready' ? null : 'Parcel'));
+  useDocumentTitle(view.data?.parcel.title ?? (state === 'ready' ? null : 'Parcel'));
 
-  if (access === 'ready' && view.data) {
+  if (state === 'ready' && view.data) {
     return (
       <ParcelViewer
         // Comment drafts, pins and poll state belong to one parcel.
@@ -127,25 +126,22 @@ export function ViewerPage() {
         switching={view.isPlaceholderData}
         refetchGrant={async () => (await view.refetch()).data}
         me={session.me}
-        signInAvailable={mode === 'slauth' && session.status !== 'authenticated'}
+        // The server saw no session (`public`); the tab may be about to learn the same.
+        signInAvailable={
+          canSignIn && view.data.access === 'public' && session.status !== 'authenticated'
+        }
       />
     );
   }
 
-  if (
-    access === 'loading' ||
-    silent === 'redirecting' ||
-    (access === 'silent-reauth' && silent === 'idle')
-  ) {
-    return <ViewerSkeleton />;
-  }
+  if (state === 'loading') return <ViewerSkeleton />;
 
-  if (access === 'sign-in' || access === 'silent-reauth') {
+  if (state === 'sign-in') {
     return (
       <FullPageMessage
         icon={Lock}
         title="Sign in to view this parcel"
-        description="This parcel is private, or it doesn't exist. If it's yours, sign in to open it."
+        description="It’s private, open only to people signed in, or it doesn’t exist. Sign in to open it if it’s yours or was shared with you."
         actions={
           <>
             <SignInButton />
@@ -158,7 +154,7 @@ export function ViewerPage() {
     );
   }
 
-  if (access === 'not-found') {
+  if (state === 'not-found') {
     const versionMissing = valid && version !== null;
     return (
       <FullPageMessage
@@ -167,7 +163,7 @@ export function ViewerPage() {
         description={
           versionMissing
             ? 'This version does not exist, or the parcel is not shared with you.'
-            : 'It may have been deleted, or it is private to someone else. Check the link and try again.'
+            : 'It may have been deleted, or it isn’t shared with you. Check the link, or ask its owner to share it.'
         }
         actions={
           <>
@@ -265,7 +261,9 @@ function ParcelViewer({
 }: ParcelViewerProps) {
   const navigate = useNavigate();
   const client = useQueryClient();
-  const { parcel, version, is_owner: isOwner } = grant;
+  const { parcel, version } = grant;
+  const { isOwner, canReadComments, canComment } = viewerAbilities(grant.access);
+  const allowPublic = useAllowPublic();
   const [panel, setPanel] = useState<Panel>(readPanel);
   const [frameNonce, setFrameNonce] = useState(0);
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -273,6 +271,18 @@ function ParcelViewer({
   // ---- live updates: the poll, and what the frame should do about it
 
   const activity = useActivity(parcel.id, true);
+  // Losing access (unshared, made private, deleted) shows up as a 404 on the
+  // poll. Asking for the grant again turns the page into the not-found state
+  // instead of leaving the old page and comments on screen; the server has
+  // already stopped serving it anything more.
+  const lostAccess = errorStatus(activity.error) === 404;
+  const askedAgain = useRef(false);
+  useEffect(() => {
+    if (lostAccess && !askedAgain.current) {
+      askedAgain.current = true;
+      void refetchGrant();
+    }
+  }, [lostAccess, refetchGrant]);
   // The grant can be newer than the last poll (a publish from this tab).
   const latest = Math.max(parcel.current_version, activity.data?.current_version ?? 0);
   const pinned = pinnedVersion !== null;
@@ -285,15 +295,14 @@ function ParcelViewer({
 
   const detail = useParcelDetail(parcel.id, true);
   const versionDetail = useVersionDetail(parcel.id, version.version, !isCurrent);
-  const update = useUpdateParcel(parcel.id);
   const restore = useRestoreVersion(parcel.id);
 
   // ---- comments
 
-  // The owner, and signed-in viewers of a public parcel (the only other
-  // people who can open it), may read and write comments. Anonymous viewers
-  // see none; where sign-in is possible they are offered it instead.
-  const canComment = me !== null;
+  // The server says who may do what (`grant.access`): owners and commenters
+  // read and write comments, viewers only read them, and signed-out visitors
+  // of a public parcel see none (where sign-in is possible they are offered
+  // it instead).
   const [commentMode, setCommentMode] = useState(false);
   const [filter, setFilter] = useState<CommentFilter>('open');
   const [active, setActive] = useState<number | null>(null);
@@ -307,7 +316,7 @@ function ParcelViewer({
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const commentModeOn = canComment && commentMode;
-  const commentsPanelOpen = canComment && panel === 'comments';
+  const commentsPanelOpen = canReadComments && panel === 'comments';
   const commentsOn = commentModeOn || commentsPanelOpen;
   const comments = useComments(parcel.id, commentsOn);
   const threads = comments.data?.comments ?? null;
@@ -503,7 +512,9 @@ function ParcelViewer({
 
   const startCommenting = () => {
     if (!canComment) {
-      if (signInAvailable) setSignInPrompt(true);
+      // Viewers get the threads, read-only.
+      if (canReadComments) setPanel('comments');
+      else if (signInAvailable) setSignInPrompt(true);
       return;
     }
     setCommentMode(true);
@@ -555,7 +566,7 @@ function ParcelViewer({
     keyHandler.current = (event) => {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
       if (isTypingTarget(event.target) || overlayOpen()) return;
-      if (event.key === 'c' && (canComment || signInAvailable)) {
+      if (event.key === 'c' && (canReadComments || signInAvailable)) {
         event.preventDefault();
         toggleComments();
       } else if (event.key === 'Escape' && commentModeOn) {
@@ -575,6 +586,7 @@ function ParcelViewer({
   const versions = detail.data?.versions ?? null;
   const baseUrl = parcel.url || `${window.location.origin}/p/${parcel.id}`;
   const link = pinnedVersion !== null ? `${baseUrl}/v/${pinnedVersion}` : baseUrl;
+  const visibility = useChangeVisibility(parcel, link);
   // The grant's summary predates the poll; show the newest current version.
   const shownParcel =
     parcel.current_version === latest ? parcel : { ...parcel, current_version: latest };
@@ -629,27 +641,7 @@ function ParcelViewer({
     edit: () => setDialog('edit'),
     uploadVersion: () => setDialog('upload'),
     remove: () => setDialog('delete'),
-    toggleVisibility: () => {
-      const next = parcel.visibility === 'public' ? 'private' : 'public';
-      update.mutate(
-        { visibility: next },
-        {
-          onSuccess: () =>
-            toast.success(next === 'public' ? 'Parcel is now public' : 'Parcel is now private', {
-              description:
-                next === 'public'
-                  ? 'Anyone with the link can view it.'
-                  : 'Only you can view it now.',
-              action:
-                next === 'public'
-                  ? { label: 'Copy link', onClick: () => void copyText(link) }
-                  : undefined,
-            }),
-          onError: (err) =>
-            toast.error('Could not change visibility', { description: errorMessage(err) }),
-        },
-      );
-    },
+    setVisibility: visibility.change,
     restore: () => {
       restore.mutate(version.version, {
         onSuccess: (result) => {
@@ -661,7 +653,10 @@ function ParcelViewer({
     },
   };
 
-  const commentLabel = canComment && openCount > 0 ? `Comment (${openCount} open)` : 'Comment';
+  // Viewers open the threads to read; everyone else who sees the button comments.
+  const commentNoun = canReadComments && !canComment ? 'Comments' : 'Comment';
+  const commentLabel =
+    canReadComments && openCount > 0 ? `${commentNoun} (${openCount} open)` : commentNoun;
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background">
@@ -687,6 +682,15 @@ function ParcelViewer({
             {parcel.title}
           </h1>
           <VisibilityBadge visibility={parcel.visibility} className="hidden sm:inline-flex" />
+          {!isOwner && grant.owner_name && (
+            <span
+              className="hidden min-w-0 max-w-48 shrink truncate text-muted-foreground text-xs lg:inline"
+              title={`Shared by ${grant.owner_name}`}
+              data-testid="shared-by"
+            >
+              Shared by {grant.owner_name}
+            </span>
+          )}
           {versions && versions.length > 0 ? (
             <VersionMenu
               parcelId={parcel.id}
@@ -729,7 +733,7 @@ function ParcelViewer({
               <Download />
             </IconButton>
           </div>
-          {(canComment || signInAvailable) && (
+          {(canReadComments || signInAvailable) && (
             <IconButton
               label={commentLabel}
               aria-pressed={commentsOn}
@@ -739,7 +743,7 @@ function ParcelViewer({
               onClick={toggleComments}
             >
               <MessageSquare />
-              {canComment && openCount > 0 && (
+              {canReadComments && openCount > 0 && (
                 <span
                   className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 font-semibold text-[10px] text-primary-foreground tabular-nums"
                   aria-hidden="true"
@@ -772,7 +776,8 @@ function ParcelViewer({
             actions={actions}
             isOwner={isOwner}
             isCurrent={isCurrent || !pinned}
-            visibility={parcel.visibility}
+            visibility={visibility.shown}
+            allowPublic={allowPublic}
             autoReload={autoReload}
             onAutoReloadChange={changeAutoReload}
           />
@@ -876,6 +881,8 @@ function ParcelViewer({
             versions={versions}
             files={files}
             isOwner={isOwner}
+            access={grant.access}
+            ownerName={grant.owner_name}
             onEdit={actions.edit}
             onClose={toggleDetails}
           />
@@ -889,6 +896,7 @@ function ParcelViewer({
             filter={filter}
             onFilterChange={setFilter}
             isOwner={isOwner}
+            canComment={canComment}
             viewedVersion={version.version}
             framePath={framePath}
             missing={missing}
@@ -911,7 +919,7 @@ function ParcelViewer({
         )}
       </div>
 
-      {!canComment && signInAvailable && (
+      {!canReadComments && signInAvailable && (
         <SignInToCommentDialog open={signInPrompt} onOpenChange={setSignInPrompt} />
       )}
 

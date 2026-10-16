@@ -7,10 +7,11 @@ import { VisibilityBadge } from '@/components/common/VisibilityBadge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useDataSummary } from '@/hooks/useParcelData';
+import { accessLabel } from '@/lib/access';
 import { downloadFile } from '@/lib/api';
 import { formatBytes, percentOf, pluralize } from '@/lib/format';
 import { errorMessage } from '@/lib/http';
-import type { FileEntry, ParcelSummary, VersionSummary } from '@/lib/types';
+import type { FileEntry, ParcelAccess, ParcelSummary, VersionSummary } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { versionPath } from './VersionMenu';
 
@@ -22,6 +23,10 @@ interface InfoPanelProps {
   /** Files of the version being viewed; null while loading. */
   files: FileEntry[] | null;
   isOwner: boolean;
+  /** What the caller may do (shown to everyone but the owner). */
+  access: ParcelAccess;
+  /** The owner's display name, for signed-in callers. */
+  ownerName?: string;
   onEdit: () => void;
   onClose: () => void;
 }
@@ -85,6 +90,8 @@ export function InfoPanel({
   versions,
   files,
   isOwner,
+  access,
+  ownerName,
   onEdit,
   onClose,
 }: InfoPanelProps) {
@@ -148,6 +155,12 @@ export function InfoPanel({
           <Meta label="Visibility">
             <VisibilityBadge visibility={parcel.visibility} />
           </Meta>
+          {!isOwner && ownerName && (
+            <Meta label="Owner">
+              <span title={ownerName}>{ownerName}</span>
+            </Meta>
+          )}
+          {!isOwner && <Meta label="Your access">{accessLabel(access)}</Meta>}
           <Meta label="Version">
             v{version.version}
             {version.version !== parcel.current_version && (

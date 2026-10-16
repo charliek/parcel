@@ -7,7 +7,8 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use parcel_types::paths::validate_path;
 use parcel_types::{
-    FileEntry, ParcelDetail, ParcelList, VersionDetail, VersionList, VersionSummary,
+    FileEntry, ParcelAccess, ParcelDetail, ParcelList, SharedParcelList, VersionDetail,
+    VersionList, VersionSummary, Visibility,
 };
 
 use super::{api, authed_api, open_in_browser, parse_ref, version_segment};
@@ -16,14 +17,14 @@ use crate::client::{Api, Fetched};
 use crate::config::Settings;
 use crate::error::{self, ApiError};
 use crate::files::plural;
-use crate::output::{self, age, format_size, table, truncate};
+use crate::output::{self, age, format_size, printable, table, truncate};
 
 /// Versions shown by `info` before pointing at `parcel versions`.
 const INFO_VERSIONS: usize = 10;
 
-pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
-    let api = authed_api(settings)?;
-    let mut url = api.endpoint(["parcels"]);
+/// `<base>/api/v1/<path>` with the paging (and search) options that are set.
+fn list_url(api: &Api, path: &str, args: &ListArgs) -> reqwest::Url {
+    let mut url = api.endpoint([path]);
     {
         let mut query = url.query_pairs_mut();
         if let Some(q) = &args.query {
@@ -39,7 +40,30 @@ pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
     if url.query() == Some("") {
         url.set_query(None);
     }
-    let list = api.get::<ParcelList>(url)?;
+    url
+}
+
+/// `Showing 3–4 of 9; …` when the page doesn't hold everything.
+fn more_hint(shown: usize, offset: Option<u32>, total: i64) -> String {
+    let shown = i64::try_from(shown).unwrap_or(i64::MAX);
+    let skipped = i64::from(offset.unwrap_or(0));
+    if total > shown + skipped {
+        format!(
+            "Showing {}–{} of {total}; use --offset/--limit for more.\n",
+            skipped + 1,
+            skipped + shown
+        )
+    } else {
+        String::new()
+    }
+}
+
+pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
+    let api = authed_api(settings)?;
+    if args.shared {
+        return list_shared(&api, &args);
+    }
+    let list = api.get::<ParcelList>(list_url(&api, "parcels", &args))?;
     if args.json.json {
         return output::print_json(&list.raw);
     }
@@ -78,16 +102,49 @@ pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
         ],
         &rows,
     );
-    let shown = i64::try_from(parcels.len()).unwrap_or(i64::MAX);
-    let skipped = i64::from(args.offset.unwrap_or(0));
-    if total > shown + skipped {
-        out.push_str(&format!(
-            "Showing {}–{} of {total}; use --offset/--limit for more.\n",
-            skipped + 1,
-            skipped + shown
-        ));
-    }
+    out.push_str(&more_hint(parcels.len(), args.offset, total));
     output::print(&out)
+}
+
+/// `list --shared`: parcels other people shared with the caller by email.
+fn list_shared(api: &Api, args: &ListArgs) -> Result<()> {
+    let list = api.get::<SharedParcelList>(list_url(api, "shared", args))?;
+    if args.json.json {
+        return output::print_json(&list.raw);
+    }
+    let SharedParcelList { parcels, total } = list.value;
+    if parcels.is_empty() {
+        let message = if total == 0 {
+            "Nothing has been shared with you yet.\n".to_string()
+        } else {
+            format!("No parcels on this page ({total} in total).\n")
+        };
+        return output::print(&message);
+    }
+    let rows: Vec<Vec<String>> = parcels
+        .iter()
+        .map(|s| {
+            let p = &s.parcel;
+            vec![
+                p.id.clone(),
+                truncate(&p.title, 40),
+                truncate(&s.owner_name, 24),
+                s.role.as_str().to_string(),
+                format!("v{}", p.current_version),
+                age(p.updated_at),
+                open_comments(p.open_comments),
+            ]
+        })
+        .collect();
+    let mut out = table(
+        &[
+            "ID", "TITLE", "OWNER", "ROLE", "VERSION", "UPDATED", "COMMENTS",
+        ],
+        &rows,
+    );
+    out.push_str(&more_hint(parcels.len(), args.offset, total));
+    // Titles and names are other people's.
+    output::print(&printable(&out))
 }
 
 /// `2 open`, or blank when there are none (so the column stays quiet).
@@ -146,6 +203,8 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
     let ParcelDetail {
         parcel,
         is_owner,
+        access,
+        owner_name,
         versions,
         files,
     } = detail.value;
@@ -160,12 +219,14 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
         None => parcel.url.clone(),
     };
     field("url", url);
-    let visibility = if is_owner {
-        parcel.visibility.as_str().to_string()
-    } else {
-        format!("{} (owned by someone else)", parcel.visibility.as_str())
-    };
-    field("visibility", visibility);
+    field("visibility", visibility_note(parcel.visibility).to_string());
+    if !is_owner {
+        field(
+            "owner",
+            owner_name.unwrap_or_else(|| "someone else".to_string()),
+        );
+        field("access", access_note(access).to_string());
+    }
     if !parcel.description.trim().is_empty() {
         field("description", parcel.description.trim().to_string());
     }
@@ -206,7 +267,27 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
     };
     out.push_str(&format!("\nFiles in v{shown_version}:\n"));
     out.push_str(&indent(&files_table(shown_files)));
-    output::print(&out)
+    // Someone else's parcel: its title, description and owner are theirs.
+    output::print(&printable(&out))
+}
+
+/// The visibility, and whom it reaches.
+fn visibility_note(visibility: Visibility) -> &'static str {
+    match visibility {
+        Visibility::Private => "private (the owner and the people it's shared with)",
+        Visibility::Internal => "internal (anyone signed in to this server)",
+        Visibility::Public => "public (anyone with the link)",
+    }
+}
+
+/// What the caller may do with someone else's parcel.
+fn access_note(access: ParcelAccess) -> &'static str {
+    match access {
+        ParcelAccess::Owner => "owner",
+        ParcelAccess::Commenter => "commenter (you can view and comment)",
+        ParcelAccess::Viewer => "viewer (you can view and read comments, not comment)",
+        ParcelAccess::Public => "public link (view only; sign in to see or add comments)",
+    }
 }
 
 fn indent(text: &str) -> String {

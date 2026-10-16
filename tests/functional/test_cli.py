@@ -10,7 +10,7 @@ from pathlib import Path
 
 import httpx
 
-from conftest import CLI_BIN, MAX_DATA_VALUE_BYTES, ROOT, Cli, Server, content_token
+from conftest import CLI_BIN, MAX_DATA_VALUE_BYTES, ROOT, Browser, Cli, Server, content_token
 
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>CLI report</title>
@@ -19,8 +19,9 @@ PAGE = """<!doctype html>
 """
 
 
-def device_login(cli: Cli, server: Server, approver_token: str) -> None:
-    """Run `parcel login` for real and approve it the way the web app does."""
+def device_login(cli: Cli, server: Server, approver: Browser) -> None:
+    """Run `parcel login` for real and approve it the way the web app does:
+    from the approver's signed-in browser."""
     process = subprocess.Popen(
         [str(CLI_BIN), "login", "--no-browser"],
         env=cli.env(None),
@@ -42,21 +43,20 @@ def device_login(cli: Cli, server: Server, approver_token: str) -> None:
     while url not in seen and time.time() < deadline:
         seen += process.stderr.readline()
     assert url in seen, seen
-    with server.client(approver_token) as api:
-        assert api.get(f"/api/v1/cli/device/{code}").json()["user_code"] == code
-        assert api.post(f"/api/v1/cli/device/{code}/approve").status_code == 204
+    assert approver.get(f"/api/v1/cli/device/{code}").json()["user_code"] == code
+    assert approver.post(f"/api/v1/cli/device/{code}/approve").status_code == 204
     stdout, stderr = process.communicate(timeout=30)
     assert process.returncode == 0, stderr
     assert "Logged in" in stdout + stderr
 
 
-def test_device_login_whoami_and_logout(cli: Cli, server: Server):
-    approver = server.issuer.token(email="cli-user@example.com")
+def test_device_login_whoami_and_logout(cli: Cli, server: Server, people):
+    approver = people("CLI User")
     assert cli.run("whoami", check=False).returncode == 3
 
     device_login(cli, server, approver)
     me = cli.json("whoami")
-    assert me["email"] == "cli-user@example.com"
+    assert me["email"] == approver.email
 
     config = cli.home / ".config" / "parcel" / "config.toml"
     assert config.stat().st_mode & 0o077 == 0, "config holds a token: must be 0600"
@@ -194,11 +194,10 @@ def test_json_output_is_the_api_shape(cli: Cli, server: Server, user: str, tmp_p
     assert json.dumps(via_cli, sort_keys=True) == json.dumps(via_api, sort_keys=True)
 
 
-def test_comments_feedback_loop(cli: Cli, server: Server, user: str, tmp_path: Path):
+def test_comments_feedback_loop(cli: Cli, server: Server, user: str, people, tmp_path: Path):
     """What the skill teaches: list the feedback, fix, republish, resolve with a note."""
     # The owner's CLI holds a pcl_ token, as after `parcel login`.
-    with server.client(user) as owner_api:
-        secret = owner_api.post("/api/v1/tokens", json={"name": "cli"}).json()["secret"]
+    secret = user
     page = tmp_path / "index.html"
     page.write_text(PAGE)
     created = cli.json("publish", str(page), "--public", token=secret)
@@ -206,12 +205,12 @@ def test_comments_feedback_loop(cli: Cli, server: Server, user: str, tmp_path: P
 
     # A reviewer comments in the web viewer, pinned to the heading.
     anchor = {"path": "index.html", "selector": "html > body > h1", "text": "Numbers"}
-    with server.client(server.issuer.token(name="Rita Reviewer")) as reviewer:
-        made = reviewer.post(
-            f"/api/v1/parcels/{pid}/comments",
-            json={"body": "Say which quarter these are for", "anchor": anchor},
-        )
-        assert made.status_code == 201, made.text
+    reviewer = people("Rita Reviewer")
+    made = reviewer.post(
+        f"/api/v1/parcels/{pid}/comments",
+        json={"body": "Say which quarter these are for", "anchor": anchor},
+    )
+    assert made.status_code == 201, made.text
 
     assert "comments:    1 open" in cli.run("info", pid, token=secret).stdout
     assert "1 open" in cli.run("list", token=secret).stdout
@@ -264,7 +263,9 @@ def test_comments_feedback_loop(cli: Cli, server: Server, user: str, tmp_path: P
     assert blank.returncode == 2
 
 
-def test_data_commands(cli: Cli, server: Server, user: str, tmp_path: Path):
+def test_data_commands(
+    cli: Cli, server: Server, user: str, stranger: Browser, tmp_path: Path
+):
     page = tmp_path / "board.html"
     page.write_text("<title>Board</title><h1>Board</h1>")
     pid = cli.json("publish", str(page), token=user)["parcel"]["id"]
@@ -320,7 +321,7 @@ def test_data_commands(cli: Cli, server: Server, user: str, tmp_path: Path):
     assert json.loads(cli.run("data", "get", pid, "metrics", "count").stdout) == 3
     assert "Read-only" in cli.run("data", "list", pid).stdout
     denied = cli.run(
-        "data", "set", pid, "metrics", "count", "4", token=server.issuer.token(), check=False
+        "data", "set", pid, "metrics", "count", "4", token=stranger.token(), check=False
     )
     assert denied.returncode == 1 and "only the owner" in denied.stderr
     assert cli.run("data", "set", pid, "metrics", "count", "4", check=False).returncode == 3

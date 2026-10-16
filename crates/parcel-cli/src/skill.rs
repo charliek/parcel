@@ -190,6 +190,39 @@ mod tests {
     }
 
     #[test]
+    fn skill_teaches_visibility_and_sharing() {
+        let md = skill_md();
+        for needle in [
+            "--internal",
+            "parcel share <ref>",
+            "--role commenter",
+            "parcel shares <ref>",
+            "parcel unshare <ref>",
+            "parcel list --shared",
+            "public links are turned off",
+            "this token is paused",
+        ] {
+            assert!(
+                md.contains(needle),
+                "SKILL.md no longer mentions {needle:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn skill_description_fits_loaders() {
+        // Agent skill loaders cap the description at 1024 characters.
+        let md = skill_md();
+        let line = md
+            .lines()
+            .find(|l| l.starts_with("description: "))
+            .expect("a description line");
+        let description = line.trim_start_matches("description: ").trim_matches('"');
+        let chars = description.chars().count();
+        assert!(chars <= 1024, "description is {chars} characters");
+    }
+
+    #[test]
     fn installs_and_refuses_to_clobber_edits() {
         let home = tempfile::tempdir().unwrap();
         let dir = claude_skill_dir(home.path());

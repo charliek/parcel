@@ -20,7 +20,7 @@ pub fn update(settings: &Settings, args: UpdateArgs) -> Result<()> {
     };
     if request == UpdateParcelRequest::default() {
         return Err(error::usage(
-            "nothing to change: pass --title, --description, --public or --private",
+            "nothing to change: pass --title, --description, --private, --internal or --public",
         ));
     }
     let api = authed_api(settings)?;

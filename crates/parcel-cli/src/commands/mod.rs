@@ -8,6 +8,7 @@ mod local;
 mod manage;
 mod publish;
 mod read;
+mod sharing;
 
 use std::io::Read;
 
@@ -61,6 +62,9 @@ fn dispatch(settings: Settings, command: Command) -> Result<()> {
         Command::Update(args) => manage::update(&settings, args),
         Command::Restore(args) => manage::restore(&settings, args),
         Command::Delete(args) => manage::delete(&settings, args),
+        Command::Share(args) => sharing::share(&settings, args),
+        Command::Unshare(args) => sharing::unshare(&settings, args),
+        Command::Shares(args) => sharing::shares(&settings, &args.parcel, args.json.json),
         Command::Comments(cmd) => comments::run(&settings, cmd),
         Command::Data(cmd) => data::run(&settings, cmd),
         Command::Config(cmd) => local::config(settings, cmd),

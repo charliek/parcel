@@ -6,9 +6,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use sqlx::PgPool;
-use stridelabs_auth::{SlauthConfig, Verifier};
 use tokio::sync::Semaphore;
 
+use crate::auth::oidc::Provider;
 use crate::config::Config;
 use crate::storage::{self, BlobStore};
 use crate::{content, db};
@@ -22,8 +22,12 @@ pub struct AppState {
     /// Immutable blob bytes keyed by SHA-256, weighed by size. Content
     /// addressing means an entry can never go stale.
     pub blob_cache: moka::future::Cache<String, Bytes>,
-    /// slauth access-token verifier. Built once: it owns the JWKS cache.
-    pub verifier: Verifier,
+    /// For OIDC providers: never follows redirects, so a provider endpoint
+    /// can't bounce a code exchange or userinfo call somewhere else.
+    pub oidc_http: reqwest::Client,
+    /// Sign-in providers, in config order. Built once: each caches its
+    /// discovery document and keys.
+    pub providers: Arc<Vec<Provider>>,
     /// Bounds concurrent publishes, since each holds its upload in memory.
     pub upload_permits: Arc<Semaphore>,
     /// The script added to every HTML page on the content origin.
@@ -50,15 +54,19 @@ impl AppState {
         http: reqwest::Client,
         blobs: Arc<dyn BlobStore>,
     ) -> Self {
-        let verifier = Verifier::new(
-            SlauthConfig {
-                issuer: config.slauth.issuer.clone(),
-                jwks_url: config.slauth.jwks_url.clone(),
-                audience: config.slauth.audience.clone(),
-                pat_validate_url: None,
-            },
-            http.clone(),
+        let providers = Arc::new(
+            config
+                .providers
+                .iter()
+                .cloned()
+                .map(Provider::new)
+                .collect(),
         );
+        let oidc_http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("building the OIDC HTTP client");
         let blob_cache = moka::future::Cache::builder()
             .max_capacity(config.blob_cache_max_bytes)
             .weigher(|_key: &String, value: &Bytes| u32::try_from(value.len()).unwrap_or(u32::MAX))
@@ -71,9 +79,14 @@ impl AppState {
             http,
             blobs,
             blob_cache,
-            verifier,
+            oidc_http,
+            providers,
             upload_permits,
             helper,
         }
+    }
+
+    pub fn provider(&self, id: &str) -> Option<&Provider> {
+        self.providers.iter().find(|p| p.config.id == id)
     }
 }

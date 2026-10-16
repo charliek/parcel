@@ -11,6 +11,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use parcel_types::{
     validate_data_name, DataCollection, DataItem, DataItemList, DataSummary, ErrorBody,
+    ParcelAccess,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -214,8 +215,10 @@ async fn get_data_summary(
     MaybeAuthUser(caller): MaybeAuthUser,
     Path(id): Path<String>,
 ) -> AppResult<Json<DataSummary>> {
-    let (_, is_owner) = readable(&state, &id, caller.as_ref()).await?;
-    Ok(Json(summary(&state, &id, is_owner).await?))
+    let (_, access) = readable(&state, &id, caller.as_ref()).await?;
+    Ok(Json(
+        summary(&state, &id, access == ParcelAccess::Owner).await?,
+    ))
 }
 
 #[utoipa::path(

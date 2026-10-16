@@ -1,26 +1,39 @@
 /**
- * Authentication boundary: sign-in, sign-out and the signed-in hint.
+ * Authentication boundary: starting sign-in, signing out, and the few
+ * browser-side hints that make them smooth.
  *
- * In dev mode (`ServerInfo.auth.mode === 'dev'`) the backend authenticates every
- * request as the dev user, so `/api/v1/me` succeeds with no token, sign-in is
- * never started and sign-out is hidden. Under slauth, unauthenticated calls
- * return 401 and {@link beginLogin} starts the OAuth2 + PKCE flow.
+ * Sign-in belongs to the server (`/auth/login` → provider → `/auth/callback`
+ * → back to `return_to`, with an HttpOnly session cookie), so starting it is
+ * a full-page navigation. In dev mode (`ServerInfo.auth.mode === 'dev'`)
+ * every request is the dev user: there is nothing to start, and the UI hides
+ * sign-in and sign-out.
  */
 
-import { queryClient } from '@/lib/query-client';
-import { authConfig } from '@/stores/server-info.store';
-import { markSilentReauthTried, oauthEnabled, startAuthorize } from '../oauth';
+import { parseResponse } from '../http';
 import { currentReturnTo } from '../return-to';
+import { loginHref, parseAttempt, safeLogoutRedirect } from '../sign-in';
 import { readStorage, removeStorage, STORAGE_KEYS, writeStorage } from '../storage';
-import { useTokenStore } from '../token-store';
 
-/** Start the slauth Authorization Code + PKCE flow, returning to `returnTo` afterward. */
-export function beginLogin(returnTo: string = currentReturnTo()): Promise<void> {
-  if (!oauthEnabled()) return Promise.resolve();
-  return startAuthorize(returnTo);
+/**
+ * Go to the provider (a full-page navigation); the server signs the user in
+ * and lands back on `returnTo`. `providerId` may be omitted when the server
+ * has only one.
+ */
+export function startSignIn(providerId?: string, returnTo: string = currentReturnTo()): void {
+  if (providerId) rememberProvider(providerId);
+  window.location.assign(loginHref(returnTo, providerId));
 }
 
-/** Remember that this browser has signed in (lets `/` try a silent re-auth). */
+/** Remember the provider picked, so the sign-in page offers it first next time. */
+export function rememberProvider(id: string): void {
+  writeStorage('local', STORAGE_KEYS.lastProvider, id);
+}
+
+export function lastProvider(): string | null {
+  return readStorage('local', STORAGE_KEYS.lastProvider);
+}
+
+/** Remember that this browser has signed in (lets account pages go straight to the provider). */
 export function rememberSignedIn(): void {
   writeStorage('local', STORAGE_KEYS.signedInHint, '1');
 }
@@ -30,33 +43,38 @@ export function hasSignedInHint(): boolean {
 }
 
 /**
- * Revoke, clear, then OIDC RP-initiated logout (global SSO logout via slauth).
- * A no-op in dev mode, where there is no session to end.
+ * Note that an account page is sending this tab to sign in by itself (the
+ * loop guard in `shouldAutoSignIn`). Returns false when it can't be noted
+ * (storage blocked): then it mustn't go, or nothing would stop a loop.
  */
-export async function logout(): Promise<void> {
-  if (!oauthEnabled()) return;
-  const { issuer, client_id } = authConfig();
-  const { refreshToken, idToken } = useTokenStore.getState();
-  if (refreshToken) {
-    try {
-      await fetch(`${issuer}/oauth2/revoke`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ token: refreshToken, client_id }),
-      });
-    } catch {
-      // Best-effort: proceed with the logout redirect even if this fails.
-    }
-  }
-  useTokenStore.getState().clearTokens();
-  removeStorage('local', STORAGE_KEYS.signedInHint);
-  // Coming back to `/` must not immediately sign in again.
-  markSilentReauthTried();
-  queryClient.clear();
+export function recordAutoSignIn(now: number = Date.now()): boolean {
+  writeStorage('session', STORAGE_KEYS.autoSignIn, String(now));
+  return readStorage('session', STORAGE_KEYS.autoSignIn) === String(now);
+}
 
-  // post_logout_redirect_uri must be registered for this client (origin root);
-  // id_token_hint lets Hydra validate it and skip a prompt.
-  const params = new URLSearchParams({ post_logout_redirect_uri: `${window.location.origin}/` });
-  if (idToken) params.set('id_token_hint', idToken);
-  window.location.assign(`${issuer}/oauth2/sessions/logout?${params.toString()}`);
+export function lastAutoSignIn(): number | null {
+  return parseAttempt(readStorage('session', STORAGE_KEYS.autoSignIn));
+}
+
+export function clearAutoSignIn(): void {
+  removeStorage('session', STORAGE_KEYS.autoSignIn);
+}
+
+/**
+ * Sign out: the server clears this session (and with `everywhere`, every
+ * other session of the user too), then the browser goes where it says:
+ * the provider's logout page, or `/`.
+ */
+export async function logout({ everywhere = false }: { everywhere?: boolean } = {}): Promise<void> {
+  const response = await fetch(`/auth/logout${everywhere ? '?everywhere=true' : ''}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  });
+  const body = await parseResponse<{ redirect?: unknown } | undefined>(response);
+  // Coming back to an account page must not sign straight in again.
+  removeStorage('local', STORAGE_KEYS.signedInHint);
+  // Other tabs share the cookie that was just cleared; tell them.
+  writeStorage('local', STORAGE_KEYS.authSync, Date.now().toString());
+  window.location.assign(safeLogoutRedirect(body?.redirect, window.location.origin));
 }

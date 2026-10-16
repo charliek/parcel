@@ -2,12 +2,12 @@ import { useEffect } from 'react';
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { BootGate } from '@/components/auth/BootGate';
 import { RequireAuth } from '@/components/auth/RequireAuth';
-import { AuthCallbackPage } from '@/pages/AuthCallbackPage';
 import { CliPage } from '@/pages/CliPage';
 import { DevicePage } from '@/pages/DevicePage';
 import { HomePage } from '@/pages/HomePage';
 import { NewParcelPage } from '@/pages/NewParcelPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
+import { SignInPage } from '@/pages/SignInPage';
 import { TokensPage } from '@/pages/TokensPage';
 import { ViewerPage } from '@/pages/ViewerPage';
 
@@ -27,8 +27,9 @@ export default function App() {
       <ScrollToTop />
       <BootGate>
         <Routes>
-          {/* OAuth2 callback runs outside any auth gate (no session yet). */}
-          <Route path="/auth/callback" element={<AuthCallbackPage />} />
+          {/* Sign-in itself is the server's (/auth/*); it sends people here to
+              pick a provider, or when a sign-in failed. */}
+          <Route path="/signin" element={<SignInPage />} />
 
           {/* Optional auth: the landing page or the dashboard. */}
           <Route path="/" element={<HomePage />} />

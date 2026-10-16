@@ -77,3 +77,70 @@ export async function viewerAction(page: Page, item: string | RegExp): Promise<v
   await page.getByRole('button', { name: 'More actions' }).click();
   await page.getByRole('menuitem', { name: item }).click();
 }
+
+/** Pick who can open the parcel from the viewer's overflow menu. */
+export async function chooseGeneralAccess(page: Page, label: string): Promise<void> {
+  await page.getByRole('button', { name: 'More actions' }).click();
+  await page.getByRole('menuitemradio', { name: label }).click();
+}
+
+/** Rewrite a JSON API response on its way to the page (the request still reaches the server). */
+export async function patchJson(
+  page: Page,
+  url: string | RegExp,
+  patch: (body: any) => unknown,
+): Promise<void> {
+  await page.route(url, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: patch(body) });
+  });
+}
+
+export interface StubProvider {
+  id: string;
+  label: string;
+}
+
+/**
+ * Make the SPA believe the server signs people in through these providers
+ * (the e2e stack itself runs in dev auth mode), optionally with public
+ * links turned off. Call before the first `page.goto`: the app reads
+ * `/api/v1/info` once at boot.
+ */
+export async function stubServerInfo(
+  page: Page,
+  { providers, allowPublic }: { providers?: StubProvider[]; allowPublic?: boolean },
+): Promise<void> {
+  await patchJson(page, '**/api/v1/info', (info) => ({
+    ...info,
+    ...(providers ? { auth: { mode: 'oidc', providers } } : {}),
+    ...(allowPublic !== undefined ? { allow_public: allowPublic } : {}),
+  }));
+}
+
+/** Make `/api/v1/me` answer as it does for a signed-out browser. */
+export async function stubSignedOut(page: Page): Promise<void> {
+  await page.route('**/api/v1/me', (route) =>
+    route.fulfill({
+      status: 401,
+      json: { error: { message: 'sign in or pass a bearer token', type: 'Unauthorized' } },
+    }),
+  );
+}
+
+/**
+ * Answer navigations to `/auth/login` with a stand-in page (the provider)
+ * and collect the URLs asked for.
+ */
+export async function catchSignIn(page: Page): Promise<URL[]> {
+  const seen: URL[] = [];
+  await page.route('**/auth/login**', async (route) => {
+    seen.push(new URL(route.request().url()));
+    await route.fulfill({
+      contentType: 'text/html',
+      body: '<!doctype html><title>Provider</title><h1>At the provider</h1>',
+    });
+  });
+  return seen;
+}

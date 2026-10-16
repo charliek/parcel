@@ -10,15 +10,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { logout } from '@/lib/auth';
+import { useSignOut } from '@/hooks/useSignOut';
 import { initials } from '@/lib/format';
 import type { Me } from '@/lib/types';
 import { useIsDevAuth } from '@/stores/server-info.store';
 import { ThemeRadioItems } from './ThemeMenu';
 
-/** Avatar button with navigation, theme and sign-out. */
+/** Avatar button with navigation, theme and sign-out ("sign out everywhere" is on the Tokens page). */
 export function UserMenu({ me, compact }: { me: Me; compact?: boolean }) {
   const devAuth = useIsDevAuth();
+  const { signOut } = useSignOut();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -41,6 +42,11 @@ export function UserMenu({ me, compact }: { me: Me; compact?: boolean }) {
         <div className="flex flex-col gap-0.5 px-2 py-2">
           <span className="truncate font-medium text-sm">{me.name || me.email}</span>
           {me.name && <span className="truncate text-muted-foreground text-xs">{me.email}</span>}
+          {me.signed_in_with && (
+            <span className="truncate text-muted-foreground text-xs" data-testid="signed-in-with">
+              Signed in with {me.signed_in_with}
+            </span>
+          )}
           {devAuth && (
             <Badge variant="accent" className="mt-1 w-fit">
               Dev auth mode
@@ -78,7 +84,7 @@ export function UserMenu({ me, compact }: { me: Me; compact?: boolean }) {
         {!devAuth && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => void logout()}>
+            <DropdownMenuItem onSelect={() => signOut()}>
               <LogOut />
               Sign out
             </DropdownMenuItem>

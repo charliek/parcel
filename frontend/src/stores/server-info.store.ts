@@ -1,14 +1,14 @@
 /**
  * `GET /api/v1/info`, fetched once at boot.
  *
- * Auth settings (slauth issuer, client id, audience, or dev mode) and upload
- * limits come from the server at runtime instead of VITE_* build variables,
- * so one built bundle works in every environment.
+ * Auth settings (the sign-in providers, or dev mode), whether public links
+ * are allowed, and upload limits come from the server at runtime instead of
+ * VITE_* build variables, so one built bundle works in every environment.
  */
 
 import { create } from 'zustand';
 import { parseResponse } from '@/lib/http';
-import type { AuthInfo, ServerInfo } from '@/lib/types';
+import type { AuthProvider, ServerInfo } from '@/lib/types';
 
 type InfoStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -51,24 +51,6 @@ export const useServerInfoStore = create<ServerInfoState>((set, get) => ({
   },
 }));
 
-/** The loaded server info. Throws if called before the boot gate resolved it. */
-export function requireServerInfo(): ServerInfo {
-  const info = useServerInfoStore.getState().info;
-  if (!info) throw new Error('Server settings are not loaded yet');
-  return info;
-}
-
-/** The auth block with a normalized (no trailing slash) issuer. */
-export function authConfig(): AuthInfo {
-  const { auth } = requireServerInfo();
-  return { ...auth, issuer: auth.issuer.replace(/\/+$/, '') };
-}
-
-/** The current auth mode, or null before server info loads. */
-export function currentAuthMode(): string | null {
-  return useServerInfoStore.getState().info?.auth.mode ?? null;
-}
-
 /** Hook: the loaded server info (non-null inside the boot gate). */
 export function useServerInfo(): ServerInfo {
   const info = useServerInfoStore((s) => s.info);
@@ -79,4 +61,18 @@ export function useServerInfo(): ServerInfo {
 /** Hook: whether the backend authenticates everyone as a dev user. */
 export function useIsDevAuth(): boolean {
   return useServerInfoStore((s) => s.info?.auth.mode === 'dev');
+}
+
+const NO_PROVIDERS: AuthProvider[] = [];
+
+/** Hook: the sign-in providers to offer (none in dev mode). */
+export function useAuthProviders(): AuthProvider[] {
+  return useServerInfoStore((s) =>
+    s.info?.auth.mode === 'dev' ? NO_PROVIDERS : (s.info?.auth.providers ?? NO_PROVIDERS),
+  );
+}
+
+/** Hook: whether parcels may be made public on this server. */
+export function useAllowPublic(): boolean {
+  return useServerInfoStore((s) => s.info?.allow_public ?? false);
 }

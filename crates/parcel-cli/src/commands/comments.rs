@@ -21,7 +21,7 @@ use crate::client::Api;
 use crate::config::Settings;
 use crate::error;
 use crate::files::plural;
-use crate::output::{self, format_age, truncate};
+use crate::output::{self, format_age, printable, truncate};
 
 /// How much of an anchored element's text `list` shows.
 const ANCHOR_TEXT_CHARS: usize = 60;
@@ -93,29 +93,13 @@ pub fn list(settings: &Settings, args: CommentsListArgs) -> Result<()> {
     if args.json.json {
         return output::print_json(&list.raw);
     }
+    // Comments and author names come from other people.
     output::print(&printable(&render(
         &list.value,
         &id,
         status,
         OffsetDateTime::now_utc(),
     )))
-}
-
-/// Comments and author names come from other people (any signed-in visitor
-/// on a public parcel). Spell out control characters other than line breaks
-/// and tabs, so a comment can't drive the terminal (ESC/OSC sequences that
-/// rewrite the screen or the clipboard). The server refuses them in bodies;
-/// this also covers names and anything an older server let through.
-fn printable(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if c.is_control() && c != '\n' && c != '\t' {
-            out.extend(c.escape_unicode());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// The `list` text: a header with the counts, then each thread.
@@ -477,14 +461,6 @@ mod tests {
         };
         assert!(render(&one, "abcdefghijkm", CommentStatus::Open, now())
             .starts_with("1 open thread on abcdefghijkm\n"));
-    }
-
-    #[test]
-    fn control_characters_are_spelled_out() {
-        assert_eq!(
-            printable("hi\u{1b}]52;c;SGVsbG8=\u{7}\r\n\tok\u{9b}2J"),
-            "hi\\u{1b}]52;c;SGVsbG8=\\u{7}\\u{d}\n\tok\\u{9b}2J"
-        );
     }
 
     #[test]

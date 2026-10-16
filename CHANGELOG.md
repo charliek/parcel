@@ -4,6 +4,32 @@
 
 First cut of Parcel, built and verified locally.
 
+### Added (v0.3: sign-in providers and sharing)
+- Server-side OIDC sign-in through one or more providers at once (slauth, Okta,
+  Keycloak, …): `AUTH_PROVIDERS` + `AUTH_<ID>_*`, per-provider allowed email
+  domains, verified emails required (or `TRUST_EMAIL`), optional provider
+  logout. The browser holds a signed session cookie; no provider tokens are
+  stored. A person signing in through two providers with one email is one user.
+- Sharing: `private` parcels can be shared with people by email as viewer or
+  commenter (even before they first sign in); new `internal` visibility for
+  everyone signed in; `PARCEL_ALLOW_PUBLIC=false` turns public links off.
+  Unsharing or narrowing visibility stops open pages at once. "Shared with me"
+  (`GET /api/v1/shared`). `parcel share`/`unshare`/`shares`, `parcel list
+  --shared`, `--internal`.
+- Sign out everywhere; `users.disabled_at` blocks a person at once;
+  `PARCEL_TOKEN_LOGIN_MAX_AGE_DAYS` pauses API tokens of people who haven't
+  signed in on the web lately (so offboarding at the provider reaches them);
+  `PARCEL_SESSION_TTL_SECS`.
+- A local Keycloak (`docker compose --profile keycloak`) for trying several
+  providers.
+
+### Changed (v0.3)
+- `AUTH_MODE=slauth` is now `oidc` (the old value still works);
+  `SLAUTH_JWKS_URL` and `SLAUTH_AUDIENCE` are no longer read. The API no
+  longer accepts slauth access tokens as bearers: the web app uses its
+  session cookie, the CLI and agents `pcl_` tokens.
+- `/api/v1/info`'s `auth` is now `{mode, providers}`, plus `allow_public`.
+
 ### Added (v0.2: comments, live updates, page data)
 - Live updates: the viewer polls `/api/v1/parcels/{id}/activity` and reloads
   the page when a new version is published.

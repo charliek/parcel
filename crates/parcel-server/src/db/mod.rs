@@ -9,6 +9,7 @@ pub mod comments;
 pub mod data;
 pub mod device;
 pub mod parcels;
+pub mod shares;
 pub mod tokens;
 pub mod users;
 

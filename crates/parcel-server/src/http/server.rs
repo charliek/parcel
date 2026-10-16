@@ -29,7 +29,7 @@ use tracing::Level;
 
 use crate::config::Config;
 use crate::error::AppError;
-use crate::http::{health, openapi, spa};
+use crate::http::{auth, health, openapi, spa};
 use crate::state::AppState;
 use crate::{content, db, gc};
 
@@ -111,7 +111,8 @@ fn app_router(state: AppState) -> Router {
                 async move { ([(CONTENT_TYPE, "application/json")], spec_json.to_string()) }
             }),
         )
-        .merge(api_v1);
+        .merge(api_v1)
+        .merge(auth::router());
     let app = install_swagger_ui(app, &state.config, &api_doc);
     let app = match state.config.static_dir.clone() {
         Some(dir) => spa::install(app, &dir, &state.config),

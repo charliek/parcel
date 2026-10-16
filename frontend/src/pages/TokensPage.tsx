@@ -1,6 +1,7 @@
-import { AlertCircle, KeyRound, Plus, Trash2 } from 'lucide-react';
+import { AlertCircle, KeyRound, LogOut, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { SignOutEverywhereDialog } from '@/components/auth/SignOutEverywhereDialog';
 import { EmptyState } from '@/components/common/EmptyState';
 import { RelativeTime } from '@/components/common/RelativeTime';
 import { AppShell, PageHeader } from '@/components/layout/AppShell';
@@ -11,16 +12,54 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { useMe } from '@/hooks/useSession';
 import { useTokens } from '@/hooks/useTokens';
 import { formatDateTime, formatExpiry } from '@/lib/format';
 import { errorMessage } from '@/lib/http';
 import type { ApiToken, CreatedToken } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import { useIsDevAuth } from '@/stores/server-info.store';
 
 function createdViaLabel(via: string): string {
   if (via === 'device') return 'CLI login';
   if (via === 'web') return 'Web';
   return via;
+}
+
+/** Who this browser is signed in as, and a way to end every web session. */
+function WebSignIn() {
+  const me = useMe();
+  const devAuth = useIsDevAuth();
+  const [confirm, setConfirm] = useState(false);
+  // Dev mode has no sessions to end.
+  if (devAuth || !me) return null;
+  return (
+    <section
+      className="mt-10 flex flex-col gap-4 rounded-xl border bg-card p-5 sm:flex-row sm:items-center"
+      aria-labelledby="web-sign-in"
+    >
+      <div className="min-w-0 flex-1 space-y-1">
+        <h2 id="web-sign-in" className="font-medium text-base">
+          Web sign-in
+        </h2>
+        <p className="text-muted-foreground text-sm">
+          Signed in as <span className="font-medium text-foreground">{me.email}</span>
+          {me.signed_in_with && (
+            <>
+              {' '}
+              with <span className="font-medium text-foreground">{me.signed_in_with}</span>
+            </>
+          )}
+          . Lost a laptop, or signed in on a shared computer? End every web session at once.
+        </p>
+      </div>
+      <Button variant="outline" className="shrink-0" onClick={() => setConfirm(true)}>
+        <LogOut />
+        Sign out everywhere
+      </Button>
+      <SignOutEverywhereDialog open={confirm} onOpenChange={setConfirm} />
+    </section>
+  );
 }
 
 function Expiry({ value }: { value: string | null }) {
@@ -159,6 +198,8 @@ export function TokensPage() {
           </table>
         </div>
       )}
+
+      <WebSignIn />
 
       <CreateTokenDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={setCreated} />
       <TokenCreatedDialog created={created} onDone={() => setCreated(null)} />

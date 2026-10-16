@@ -4,7 +4,8 @@
 //! The page's own capability token authorizes these requests, exactly as it
 //! does its files: any valid token reads, an owner-scope token (minted only
 //! for the parcel's owner) writes. A public-scope token stops working once
-//! the parcel goes private. Requests come from the sandbox's opaque `null`
+//! the parcel stops being (effectively) public, a member-scope one once its
+//! user loses access. Requests come from the sandbox's opaque `null`
 //! origin without credentials, so plain `Access-Control-Allow-Origin: *`
 //! CORS is all the browser needs.
 
@@ -21,11 +22,13 @@ use parcel_types::{DataItem, DataItemList, DataSummary, Visibility};
 use time::OffsetDateTime;
 use tower_http::set_header::SetResponseHeaderLayer;
 
+use super::member_still_allowed;
 use super::token::{self, ContentClaims, Scope, TokenError};
 use crate::db::data::Write;
 use crate::db::parcels;
 use crate::error::{not_found, AppError, AppResult};
 use crate::http::data::{self as shared, ListQuery};
+use crate::http::views::effective_visibility;
 use crate::state::AppState;
 
 pub fn router(state: &AppState) -> Router<AppState> {
@@ -83,12 +86,17 @@ async fn authorize(state: &AppState, raw: &str) -> Result<ContentClaims, AppErro
             ),
             TokenError::Malformed | TokenError::BadSignature => not_found(),
         })?;
-    let visibility = parcels::visibility(&state.db, &claims.parcel_id)
+    let (visibility, owner_disabled) = parcels::grant_state(&state.db, &claims.parcel_id)
         .await?
         .ok_or_else(not_found)?;
-    if claims.scope == Scope::Public && visibility != Visibility::Public {
+    let holds = match claims.scope {
+        Scope::Owner => !owner_disabled,
+        Scope::Public => effective_visibility(&state.config, visibility) == Visibility::Public,
+        Scope::Member(user) => member_still_allowed(state, &claims.parcel_id, user).await?,
+    };
+    if !holds {
         return Err(AppError::Forbidden(
-            "the owner has made this parcel private".into(),
+            "the owner has changed who can see this parcel".into(),
         ));
     }
     Ok(claims)

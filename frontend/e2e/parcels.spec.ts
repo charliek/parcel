@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import {
+  chooseGeneralAccess,
   deleteParcelViaApi,
   htmlPage,
   PARCEL_URL,
@@ -74,17 +75,22 @@ test('the parcel is listed on the dashboard', async ({ page }) => {
   await expect(card).toContainText('v1');
 });
 
-test('toggle public and private', async ({ page }) => {
+test('change who can open it from the menu', async ({ page, request }) => {
   await page.goto(`/p/${parcelId}`);
   const header = page.getByRole('banner');
   await expect(header.getByText('Private', { exact: true })).toBeVisible();
 
-  await viewerAction(page, 'Make public');
+  await chooseGeneralAccess(page, 'Anyone with the link');
   await expect(header.getByText('Public', { exact: true })).toBeVisible();
   // The frame is not reloaded by a metadata change.
   await expect(parcelFrame(page).getByRole('heading', { name: markerV1 })).toBeVisible();
 
-  await viewerAction(page, 'Make private');
+  await chooseGeneralAccess(page, 'Everyone signed in');
+  await expect(header.getByText('Internal', { exact: true })).toBeVisible();
+  const body = await (await request.get(`/api/v1/parcels/${parcelId}`)).json();
+  expect(body.parcel.visibility).toBe('internal');
+
+  await chooseGeneralAccess(page, 'Private');
   await expect(header.getByText('Private', { exact: true })).toBeVisible();
 });
 

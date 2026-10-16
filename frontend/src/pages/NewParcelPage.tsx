@@ -19,6 +19,7 @@ import { errorMessage } from '@/lib/http';
 import { queryClient } from '@/lib/query-client';
 import type { Visibility } from '@/lib/types';
 import { buildPublishForm } from '@/lib/upload';
+import { useAllowPublic } from '@/stores/server-info.store';
 
 function Section({
   step,
@@ -57,6 +58,7 @@ export function NewParcelPage() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [visibility, setVisibility] = useState<Visibility>('private');
+  const allowPublic = useAllowPublic();
   const [label, setLabel] = useState('');
   const [progress, setProgress] = useState<number | null>(null);
   const submitting = progress !== null;
@@ -163,8 +165,19 @@ export function NewParcelPage() {
               />
             </div>
             <div className="space-y-2">
-              <span className="font-medium text-sm">Visibility</span>
-              <VisibilityPicker value={visibility} onChange={setVisibility} disabled={submitting} />
+              <span className="font-medium text-sm" aria-hidden="true">
+                Who can open it
+              </span>
+              <VisibilityPicker
+                legend="Who can open it"
+                value={visibility}
+                onChange={setVisibility}
+                allowPublic={allowPublic}
+                disabled={submitting}
+              />
+              <p className="text-muted-foreground text-xs">
+                You can share it with people by email once it’s published.
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="label">Version note</Label>

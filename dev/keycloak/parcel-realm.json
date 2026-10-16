@@ -1,0 +1,68 @@
+{
+  "realm": "parcel",
+  "displayName": "Parcel (local Keycloak)",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "clients": [
+    {
+      "clientId": "parcel",
+      "name": "Parcel (local)",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "parcel-local-keycloak-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "https://parcel.local.stridelabs.ai/auth/callback",
+        "http://localhost:18110/auth/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "https://parcel.local.stridelabs.ai/##http://localhost:18110/"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "email": "alice@eu.example.com",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Europe",
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "alice", "temporary": false }]
+    },
+    {
+      "username": "bruno",
+      "email": "bruno@eu.example.com",
+      "emailVerified": true,
+      "firstName": "Bruno",
+      "lastName": "Europe",
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "bruno", "temporary": false }]
+    },
+    {
+      "username": "mallory",
+      "email": "mallory@eu.example.com",
+      "emailVerified": false,
+      "firstName": "Mallory",
+      "lastName": "Unverified",
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "mallory", "temporary": false }]
+    },
+    {
+      "username": "olga",
+      "email": "olga@elsewhere.example",
+      "emailVerified": true,
+      "firstName": "Olga",
+      "lastName": "Elsewhere",
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "olga", "temporary": false }]
+    }
+  ]
+}

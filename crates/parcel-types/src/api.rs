@@ -11,9 +11,11 @@ use time::OffsetDateTime;
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
-    /// Only the owner (the default).
+    /// The owner and the people it is shared with (the default).
     #[default]
     Private,
+    /// Anyone signed in to this Parcel.
+    Internal,
     /// Anyone with the link, signed in or not.
     Public,
 }
@@ -22,6 +24,7 @@ impl Visibility {
     pub fn as_str(self) -> &'static str {
         match self {
             Visibility::Private => "private",
+            Visibility::Internal => "internal",
             Visibility::Public => "public",
         }
     }
@@ -29,9 +32,36 @@ impl Visibility {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "private" => Some(Visibility::Private),
+            "internal" => Some(Visibility::Internal),
             "public" => Some(Visibility::Public),
             _ => None,
         }
+    }
+}
+
+/// What the caller may do with a parcel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum ParcelAccess {
+    /// Signed out, on a public parcel: view only, no comments.
+    Public,
+    /// Shared as a viewer: view, and read comments.
+    Viewer,
+    /// View, read and write comments.
+    Commenter,
+    /// Everything.
+    Owner,
+}
+
+impl ParcelAccess {
+    /// Comments are for signed-in people the parcel is open to.
+    pub fn can_read_comments(self) -> bool {
+        self >= ParcelAccess::Viewer
+    }
+
+    pub fn can_comment(self) -> bool {
+        self >= ParcelAccess::Commenter
     }
 }
 
@@ -116,6 +146,11 @@ pub struct ParcelDetail {
     pub parcel: ParcelSummary,
     /// Whether the caller owns this parcel (and so may change it).
     pub is_owner: bool,
+    /// What the caller may do.
+    pub access: ParcelAccess,
+    /// The owner's display name, for signed-in callers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_name: Option<String>,
     /// Newest first.
     pub versions: Vec<VersionSummary>,
     /// Files of the current version.
@@ -211,6 +246,11 @@ pub struct ViewGrant {
     pub parcel: ParcelSummary,
     pub version: VersionSummary,
     pub is_owner: bool,
+    /// What the caller may do.
+    pub access: ParcelAccess,
+    /// The owner's display name, for signed-in callers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_name: Option<String>,
     /// Signed, expiring URL on the sandboxed content origin.
     pub content_url: String,
     #[serde(with = "time::serde::rfc3339")]
@@ -257,17 +297,31 @@ pub struct Me {
     pub name: String,
     pub usage: Usage,
     pub limits: Limits,
+    /// Label of the provider this web session signed in with (absent for
+    /// API tokens and dev mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_in_with: Option<String>,
 }
 
-/// slauth settings the SPA needs to start an OAuth flow.
+/// A sign-in provider the web app can offer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AuthProvider {
+    /// Pass as `/auth/login?provider=<id>`.
+    pub id: String,
+    /// Button text, e.g. `Acme Okta`.
+    pub label: String,
+}
+
+/// How the web app signs in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuthInfo {
-    /// `slauth` or `dev`.
+    /// `oidc` (sign in through a provider at `/auth/login`) or `dev`
+    /// (every request is a fixed local user).
     pub mode: String,
-    pub issuer: String,
-    pub client_id: String,
-    pub audience: String,
+    /// Empty in `dev` mode.
+    pub providers: Vec<AuthProvider>,
 }
 
 /// `GET /api/v1/info` — unauthenticated server description.
@@ -279,6 +333,9 @@ pub struct ServerInfo {
     pub app_origin: String,
     pub content_origin: String,
     pub auth: AuthInfo,
+    /// Whether parcels may be made public; when false, `internal` is the
+    /// widest visibility.
+    pub allow_public: bool,
     pub limits: Limits,
     pub allowed_extensions: Vec<String>,
 }

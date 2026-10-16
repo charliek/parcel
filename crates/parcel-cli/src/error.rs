@@ -86,7 +86,10 @@ impl ApiError {
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)?;
-        if self.status == 401 {
+        // A 401 that already says how to sign in is its own instruction: a
+        // paused token ("sign in to Parcel on the web …") works again after
+        // a web sign-in, with no new token needed.
+        if self.status == 401 && !self.message.to_ascii_lowercase().contains("sign in") {
             f.write_str(" (run `parcel login` to sign in)")?;
         }
         Ok(())
@@ -169,6 +172,21 @@ mod tests {
             err.to_string(),
             "invalid token (run `parcel login` to sign in)"
         );
+    }
+
+    #[test]
+    fn a_paused_token_keeps_the_servers_advice() {
+        let message = "this token is paused: sign in to Parcel on the web \
+                       (https://parcel.example) to keep using it \
+                       (tokens need a web sign-in at least every 30 days)";
+        let err = ApiError::from_response(
+            401,
+            serde_json::json!({"error": {"message": message, "type": "Unauthorized"}})
+                .to_string()
+                .as_bytes(),
+        );
+        assert_eq!(err.exit_code(), EXIT_AUTH);
+        assert_eq!(err.to_string(), message);
     }
 
     #[test]

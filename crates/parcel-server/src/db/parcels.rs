@@ -58,14 +58,29 @@ impl From<FileRow> for FileEntry {
     }
 }
 
-const PARCEL_SELECT: &str = "SELECT p.id, p.owner_id, p.title, p.description, p.visibility,
+macro_rules! parcel_columns {
+    () => {
+        "p.id, p.owner_id, p.title, p.description, p.visibility,
             p.current_version, p.created_at, p.updated_at,
             v.entry, v.file_count, v.total_bytes,
             (SELECT count(*) FROM comments c
               WHERE c.parcel_id = p.id AND c.parent_number IS NULL
-                AND c.resolved_at IS NULL) AS open_comments
-     FROM parcels p
-     JOIN parcel_versions v ON v.parcel_id = p.id AND v.version = p.current_version";
+                AND c.resolved_at IS NULL) AS open_comments"
+    };
+}
+macro_rules! parcel_from {
+    () => {
+        "FROM parcels p
+     JOIN parcel_versions v ON v.parcel_id = p.id AND v.version = p.current_version"
+    };
+}
+
+/// The columns of a [`ParcelRow`] (over `p` and `v`), for queries that
+/// select more alongside them.
+pub const PARCEL_COLUMNS: &str = parcel_columns!();
+/// The `FROM` that [`PARCEL_COLUMNS`] reads, ready for more joins.
+pub const PARCEL_FROM: &str = parcel_from!();
+const PARCEL_SELECT: &str = concat!("SELECT ", parcel_columns!(), "\n     ", parcel_from!());
 
 pub async fn get(pool: &PgPool, id: &str) -> Result<Option<ParcelRow>> {
     sqlx::query_as::<_, ParcelRow>(&format!("{PARCEL_SELECT} WHERE p.id = $1"))
@@ -182,6 +197,8 @@ pub async fn find_file(
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ContentRow {
     pub visibility: String,
+    /// The owner's account is disabled: their own grants stop working.
+    pub owner_disabled: bool,
     pub entry: String,
     pub path: String,
     pub blob_sha256: String,
@@ -195,8 +212,10 @@ pub async fn content_lookup(
     path: &str,
 ) -> Result<Option<ContentRow>> {
     sqlx::query_as::<_, ContentRow>(
-        "SELECT p.visibility, v.entry, f.path, f.blob_sha256, f.content_type
+        "SELECT p.visibility, o.disabled_at IS NOT NULL AS owner_disabled,
+                v.entry, f.path, f.blob_sha256, f.content_type
          FROM parcels p
+         JOIN users o ON o.id = p.owner_id
          JOIN parcel_versions v ON v.parcel_id = p.id AND v.version = $2
          JOIN version_files f ON f.parcel_id = p.id AND f.version = v.version AND f.path = $3
          WHERE p.id = $1",
@@ -209,14 +228,18 @@ pub async fn content_lookup(
     .context("content lookup")
 }
 
-/// A parcel's visibility, when it exists.
-pub async fn visibility(pool: &PgPool, id: &str) -> Result<Option<Visibility>> {
-    let raw: Option<String> = sqlx::query_scalar("SELECT visibility FROM parcels WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .context("loading parcel visibility")?;
-    Ok(raw.map(|v| Visibility::parse(&v).unwrap_or_default()))
+/// What a content grant needs re-checked: the parcel's visibility and
+/// whether its owner's account is disabled. `None` if the parcel is gone.
+pub async fn grant_state(pool: &PgPool, id: &str) -> Result<Option<(Visibility, bool)>> {
+    let row: Option<(String, bool)> = sqlx::query_as(
+        "SELECT p.visibility, o.disabled_at IS NOT NULL
+         FROM parcels p JOIN users o ON o.id = p.owner_id WHERE p.id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("loading parcel grant state")?;
+    Ok(row.map(|(v, disabled)| (Visibility::parse(&v).unwrap_or_default(), disabled)))
 }
 
 /// The entry path of a version, when the parcel still exists.

@@ -1,10 +1,10 @@
 //! `parcel publish`.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use parcel_types::media::is_entry_candidate;
 use parcel_types::paths::validate_path;
 use parcel_types::{
-    CreateParcelMetadata, NewVersionMetadata, PublishMode, PublishResult, ServerInfo,
+    CreateParcelMetadata, NewVersionMetadata, PublishMode, PublishResult, ServerInfo, Visibility,
 };
 use reqwest::blocking::multipart::{Form, Part};
 
@@ -46,6 +46,14 @@ pub fn publish(settings: &Settings, args: PublishArgs) -> Result<()> {
             Target::Update { metadata, .. } => metadata.entry.as_deref(),
         };
         files::check_limits(&upload, files::likely_entry(&upload, entry), &info.limits)?;
+        // The server refuses this too, but only after the whole upload.
+        if args.visibility.visibility() == Some(Visibility::Public) && !info.allow_public {
+            bail!(
+                "public links are turned off on {}; publish with --internal (everyone \
+                 signed in can view) or keep it private and share it with `parcel share`",
+                settings.server_display()
+            );
+        }
     }
 
     let total: u64 = upload.iter().map(|f| f.size).sum();

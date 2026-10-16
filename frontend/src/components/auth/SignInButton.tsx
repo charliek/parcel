@@ -1,13 +1,17 @@
 import { LogIn } from 'lucide-react';
-import { type ComponentProps, useState } from 'react';
-import { toast } from 'sonner';
+import type { ComponentProps } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { beginLogin } from '@/lib/auth';
-import { errorMessage } from '@/lib/http';
+import { useSignInTarget } from '@/hooks/useSession';
+import { startSignIn } from '@/lib/auth';
 import { currentReturnTo } from '@/lib/return-to';
-import { useIsDevAuth } from '@/stores/server-info.store';
+import { signInPageHref } from '@/lib/sign-in';
 
-/** Starts the slauth OAuth flow, returning to `returnTo` (default: here). */
+/**
+ * "Sign in", returning to `returnTo` (default: here). With one provider it
+ * goes straight there; with several, to the `/signin` page to pick one.
+ * Renders nothing in dev auth mode.
+ */
 export function SignInButton({
   returnTo,
   label = 'Sign in',
@@ -16,19 +20,16 @@ export function SignInButton({
   ComponentProps<typeof Button>,
   'onClick' | 'children'
 >) {
-  const [pending, setPending] = useState(false);
-  const devAuth = useIsDevAuth();
-  if (devAuth) return null;
+  const target = useSignInTarget();
+  const navigate = useNavigate();
+  if (target.kind === 'none') return null;
   return (
     <Button
       {...props}
-      disabled={pending || props.disabled}
       onClick={() => {
-        setPending(true);
-        beginLogin(returnTo ?? currentReturnTo()).catch((err) => {
-          setPending(false);
-          toast.error(errorMessage(err, 'Could not start sign-in'));
-        });
+        const back = returnTo ?? currentReturnTo();
+        if (target.kind === 'provider') startSignIn(target.provider.id, back);
+        else navigate(signInPageHref(back));
       }}
     >
       <LogIn />

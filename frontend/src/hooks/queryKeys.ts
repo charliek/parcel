@@ -10,6 +10,10 @@ export const queryKeys = {
   /** Every thread on a parcel (`status=all`); the panel filters client-side. */
   comments: (id: string) => ['comments', id] as const,
   data: (id: string) => ['data', id] as const,
+  /** The people a parcel is shared with (owner only). */
+  shares: (id: string) => ['shares', id] as const,
+  /** Parcels other people shared with the caller. */
+  shared: ['shared'] as const,
   tokens: ['tokens'] as const,
   device: (code: string) => ['device', code] as const,
 };

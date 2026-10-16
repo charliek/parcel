@@ -45,16 +45,31 @@ pub struct ListQuery {
     pub status: Option<CommentStatus>,
 }
 
-/// A parcel the caller may comment on: readable, and signed in.
+/// What a comment request needs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Need {
+    Read,
+    Write,
+}
+
+/// A parcel whose comments the caller may read (or write). Comments are for
+/// signed-in people the parcel is open to; anonymous viewers of a public
+/// parcel see none.
 async fn commentable(
     state: &AppState,
     id: &str,
     caller: Option<&AuthUser>,
+    need: Need,
 ) -> Result<ParcelRow, AppError> {
-    let (row, _) = readable(state, id, caller).await?;
-    if caller.is_none() {
+    let (row, access) = readable(state, id, caller).await?;
+    if !access.can_read_comments() {
         return Err(AppError::Unauthorized(
             "sign in to see and add comments".into(),
+        ));
+    }
+    if need == Need::Write && !access.can_comment() {
+        return Err(AppError::Forbidden(
+            "this parcel is shared with you to view, not to comment on".into(),
         ));
     }
     Ok(row)
@@ -142,7 +157,7 @@ async fn list_comments(
     Path(id): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<CommentList>> {
-    let parcel = commentable(&state, &id, caller.as_ref()).await?;
+    let parcel = commentable(&state, &id, caller.as_ref(), Need::Read).await?;
     let caller = caller.expect("commentable requires a caller");
     let rows = comments::list(&state.db, &id, q.status.unwrap_or_default()).await?;
     let open = comments::count_open(&state.db, &id).await?;
@@ -175,7 +190,7 @@ async fn create_comment(
     Path(id): Path<String>,
     Json(body): Json<NewComment>,
 ) -> AppResult<(StatusCode, Json<Comment>)> {
-    let parcel = commentable(&state, &id, Some(&caller)).await?;
+    let parcel = commentable(&state, &id, Some(&caller), Need::Write).await?;
     let text = validate_body(&body.body).map_err(AppError::BadRequest)?;
     if body.reply_to.is_some() && body.anchor.is_some() {
         return Err(AppError::BadRequest(
@@ -198,7 +213,7 @@ async fn create_comment(
 
     let via = match caller.via {
         AuthVia::Token(_) => CommentVia::Cli,
-        AuthVia::Jwt | AuthVia::Dev => CommentVia::Web,
+        AuthVia::Session | AuthVia::Dev => CommentVia::Web,
     };
     let inserted = comments::insert(
         &state.db,
@@ -262,7 +277,7 @@ async fn update_comment(
     Path((id, number)): Path<(String, i32)>,
     Json(body): Json<UpdateComment>,
 ) -> AppResult<Json<Comment>> {
-    let parcel = commentable(&state, &id, Some(&caller)).await?;
+    let parcel = commentable(&state, &id, Some(&caller), Need::Write).await?;
     let comment = comments::get(&state.db, &id, number)
         .await?
         .ok_or_else(|| comment_not_found(number))?;
@@ -330,7 +345,8 @@ async fn delete_comment(
     caller: AuthUser,
     Path((id, number)): Path<(String, i32)>,
 ) -> AppResult<StatusCode> {
-    let parcel = commentable(&state, &id, Some(&caller)).await?;
+    // Taking back one's own words needs only read access.
+    let parcel = commentable(&state, &id, Some(&caller), Need::Read).await?;
     let comment = comments::get(&state.db, &id, number)
         .await?
         .ok_or_else(|| comment_not_found(number))?;

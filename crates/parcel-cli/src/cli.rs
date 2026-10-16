@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use parcel_types::{CommentStatus, PublishMode, Visibility};
+use parcel_types::{CommentStatus, PublishMode, ShareRole, Visibility};
 
 use crate::files::parse_file_arg;
 
@@ -55,7 +55,7 @@ pub enum Command {
     Whoami(JsonArg),
     /// Publish a file or folder as a new parcel, or as a new version of one
     Publish(PublishArgs),
-    /// List your parcels
+    /// List your parcels, or (with --shared) the ones shared with you
     List(ListArgs),
     /// Show a parcel's metadata, versions and files
     Info(InfoArgs),
@@ -65,6 +65,15 @@ pub enum Command {
     Pull(PullArgs),
     /// Change a parcel's title, description or visibility
     Update(UpdateArgs),
+    /// Share a parcel with people by email
+    #[command(after_help = SHARING_HELP)]
+    Share(ShareArgs),
+    /// Stop sharing a parcel with people
+    #[command(after_help = SHARING_HELP)]
+    Unshare(UnshareArgs),
+    /// List the people a parcel is shared with
+    #[command(after_help = SHARING_HELP)]
+    Shares(RefJsonArgs),
     /// List a parcel's versions
     Versions(RefJsonArgs),
     /// Publish an old version again as the newest one
@@ -123,23 +132,32 @@ pub struct LoginArgs {
     pub no_browser: bool,
 }
 
-/// `--public` / `--private`.
+/// `--private` / `--internal` / `--public`.
 #[derive(Debug, Args)]
+#[group(multiple = false)]
 pub struct VisibilityArgs {
-    /// Anyone with the link can view it
-    #[arg(long, conflicts_with = "private")]
-    pub public: bool,
-    /// Only you can view it (the default for new parcels)
+    /// Only you and the people you share it with (the default for new parcels)
     #[arg(long)]
     pub private: bool,
+    /// Anyone signed in to this Parcel server can view and comment
+    #[arg(long)]
+    pub internal: bool,
+    /// Anyone with the link can view it, signed in or not (servers can turn
+    /// this off)
+    #[arg(long)]
+    pub public: bool,
 }
 
 impl VisibilityArgs {
     pub fn visibility(&self) -> Option<Visibility> {
-        match (self.public, self.private) {
-            (true, _) => Some(Visibility::Public),
-            (_, true) => Some(Visibility::Private),
-            _ => None,
+        if self.public {
+            Some(Visibility::Public)
+        } else if self.internal {
+            Some(Visibility::Internal)
+        } else if self.private {
+            Some(Visibility::Private)
+        } else {
+            None
         }
     }
 }
@@ -222,6 +240,9 @@ pub struct ListArgs {
     /// Only parcels whose title or description matches
     #[arg(long, short = 'q', value_name = "TEXT")]
     pub query: Option<String>,
+    /// List parcels other people shared with you by email, instead of yours
+    #[arg(long, conflicts_with = "query")]
+    pub shared: bool,
     /// Maximum number of parcels to show
     #[arg(long, value_name = "N")]
     pub limit: Option<u32>,
@@ -286,6 +307,62 @@ pub struct UpdateArgs {
     pub json: JsonArg,
 }
 
+const SHARING_HELP: &str = "\
+Sharing is by email. Someone you share with gets access the next time they
+open the parcel signed in with that address, including their first sign-in,
+so you can share before they have an account. Only the owner shares.
+
+Roles: a viewer sees the parcel, its comments and its data; a commenter can
+also comment. Only you change the parcel or its data.
+
+Sharing matters for private parcels: on an internal or public one everyone
+signed in can already view and comment. Unsharing cuts off pages the person
+has open at once.";
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum RoleArg {
+    /// See the parcel, its comments and its data
+    Viewer,
+    /// Also comment
+    Commenter,
+}
+
+impl From<RoleArg> for ShareRole {
+    fn from(role: RoleArg) -> Self {
+        match role {
+            RoleArg::Viewer => ShareRole::Viewer,
+            RoleArg::Commenter => ShareRole::Commenter,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct ShareArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    /// Their email addresses
+    #[arg(value_name = "EMAIL", required = true)]
+    pub emails: Vec<String>,
+    /// What they may do (re-sharing with someone changes their role)
+    #[arg(long, value_enum, default_value = "viewer")]
+    pub role: RoleArg,
+    /// Print the API's JSON for the parcel's shares afterwards
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct UnshareArgs {
+    #[command(flatten)]
+    pub parcel: RefArg,
+    /// Their email addresses
+    #[arg(value_name = "EMAIL", required = true)]
+    pub emails: Vec<String>,
+    /// Print the API's JSON for the parcel's shares afterwards
+    #[arg(long)]
+    pub json: bool,
+}
+
 #[derive(Debug, Args)]
 pub struct RestoreArgs {
     #[command(flatten)]
@@ -311,10 +388,11 @@ Comments are left in the web viewer's comment mode, usually pinned to an
 element of a page, and numbered per parcel (#1, #2, …; replies take numbers
 too). `list` shows which page and element each thread is about.
 
-Seeing and adding comments needs a login: on a private parcel only its owner
-can; on a public one, any signed-in user. Only a comment's author can edit
-it; its thread's author or the parcel's owner can resolve it; its author or
-the owner can delete it.";
+Seeing and adding comments needs a login. On a private parcel, its owner and
+the people it is shared with see them (viewers read, commenters also add);
+on an internal or public one, anyone signed in. Only a comment's author can
+edit it; its thread's author or the parcel's owner can resolve it; its
+author or the owner can delete it.";
 
 const DATA_HELP: &str = "\
 Data is JSON a parcel's pages keep between visits (window.parcel.data),
@@ -664,5 +742,68 @@ mod tests {
         let err = Cli::try_parse_from(["parcel", "publish", "x.html", "--public", "--private"])
             .unwrap_err();
         assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn visibility_flags_are_exclusive() {
+        let cli = Cli::try_parse_from(["parcel", "update", "abcdefghijkm", "--internal"]).unwrap();
+        let Command::Update(args) = cli.command else {
+            panic!("expected update")
+        };
+        assert_eq!(args.visibility.visibility(), Some(Visibility::Internal));
+        for pair in [
+            ["--internal", "--public"],
+            ["--internal", "--private"],
+            ["--private", "--public"],
+        ] {
+            let err =
+                Cli::try_parse_from(["parcel", "publish", "x.html", pair[0], pair[1]]).unwrap_err();
+            assert_eq!(err.exit_code(), 2, "{pair:?}");
+        }
+    }
+
+    #[test]
+    fn parses_sharing_commands() {
+        let cli = Cli::try_parse_from([
+            "parcel",
+            "share",
+            "abcdefghijkm",
+            "ada@example.com",
+            "bob@example.com",
+            "--role",
+            "commenter",
+        ])
+        .unwrap();
+        let Command::Share(args) = cli.command else {
+            panic!("expected share")
+        };
+        assert_eq!(args.emails, vec!["ada@example.com", "bob@example.com"]);
+        assert_eq!(ShareRole::from(args.role), ShareRole::Commenter);
+
+        let cli = Cli::try_parse_from(["parcel", "share", "abcdefghijkm", "a@x.com"]).unwrap();
+        let Command::Share(args) = cli.command else {
+            panic!("expected share")
+        };
+        assert_eq!(ShareRole::from(args.role), ShareRole::Viewer);
+
+        for bad in [
+            &["parcel", "share", "abcdefghijkm"][..],
+            &["parcel", "unshare", "abcdefghijkm"],
+            &[
+                "parcel",
+                "share",
+                "abcdefghijkm",
+                "a@x.com",
+                "--role",
+                "editor",
+            ],
+            &["parcel", "list", "--shared", "--query", "x"],
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(bad).unwrap_err().exit_code(),
+                2,
+                "{bad:?}"
+            );
+        }
     }
 }

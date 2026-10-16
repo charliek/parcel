@@ -40,7 +40,7 @@ def new_version(api: httpx.Client, parcel_id: str, files: dict, metadata: dict |
 
 def test_info_and_me(server: Server, api: httpx.Client):
     info = httpx.get(f"{server.app_url}/api/v1/info").json()
-    assert info["auth"]["mode"] == "slauth"
+    assert info["auth"]["mode"] == "oidc"
     assert info["content_origin"] == server.content_url
     me = api.get("/api/v1/me").json()
     assert me["usage"]["parcel_count"] == 0
@@ -102,18 +102,18 @@ def test_publish_view_and_serve_multi_file_parcel(server: Server, api: httpx.Cli
         assert stored.text == PAGE
 
 
-def test_origins_are_isolated(server: Server, api: httpx.Client):
+def test_origins_are_isolated(server: Server, api: httpx.Client, user: str):
     parcel = publish(api, {"index.html": PAGE}).json()["parcel"]
     grant = api.get(f"/api/v1/parcels/{parcel['id']}/view").json()
     path = urlsplit(grant["content_url"]).path
     # Content paths 404 on the app origin…
     assert httpx.get(f"{server.app_url}{path}").status_code == 404
-    # …and the API 404s on the content origin.
-    token = server.issuer.token()
+    # …and the API and sign-in 404 on the content origin.
     on_content = httpx.get(
-        f"{server.content_url}/api/v1/me", headers={"Authorization": f"Bearer {token}"}
+        f"{server.content_url}/api/v1/me", headers={"Authorization": f"Bearer {user}"}
     )
     assert on_content.status_code == 404
+    assert httpx.get(f"{server.content_url}/auth/login").status_code == 404
     # Raw files on the app origin are inert attachments.
     raw = api.get(f"/api/v1/parcels/{parcel['id']}/versions/latest/files/index.html")
     assert raw.status_code == 200
@@ -122,7 +122,9 @@ def test_origins_are_isolated(server: Server, api: httpx.Client):
     assert raw.text == PAGE
 
 
-def test_versions_visibility_and_delete(server: Server, api: httpx.Client):
+def test_versions_visibility_and_delete(
+    server: Server, api: httpx.Client, stranger: httpx.Client
+):
     parcel = publish(api, {"index.html": PAGE, "assets/site.css": "a{}"}).json()["parcel"]
     pid = parcel["id"]
 
@@ -139,7 +141,6 @@ def test_versions_visibility_and_delete(server: Server, api: httpx.Client):
     old_css = api.get(f"/api/v1/parcels/{pid}/versions/1/files/assets/site.css")
     assert old_css.text == "a{}"
 
-    stranger = server.client(server.issuer.token())
     anonymous = server.client()
     assert stranger.get(f"/api/v1/parcels/{pid}").status_code == 404
     assert anonymous.get(f"/api/v1/parcels/{pid}/view").status_code == 404

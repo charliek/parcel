@@ -146,6 +146,15 @@ impl Api {
         self.decode(response)
     }
 
+    pub fn put<B: Serialize, T: DeserializeOwned>(&self, url: Url, body: &B) -> Result<Fetched<T>> {
+        let response = self.send(
+            self.request(Method::PUT, url)
+                .json(body)
+                .timeout(REQUEST_TIMEOUT),
+        )?;
+        self.decode(response)
+    }
+
     /// PUT/PATCH a body that is already JSON text (a data value, kept exactly
     /// as the user wrote it rather than re-serialized with sorted keys).
     pub fn send_json_text<T: DeserializeOwned>(

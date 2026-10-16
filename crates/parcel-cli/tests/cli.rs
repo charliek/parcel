@@ -190,7 +190,8 @@ fn server_info(server: &str, limits: Value) -> Value {
         "version": "0.1.0",
         "app_origin": server,
         "content_origin": "http://content.invalid",
-        "auth": {"mode": "dev", "issuer": "", "client_id": "parcel", "audience": "parcel"},
+        "auth": {"mode": "oidc", "providers": [{"id": "okta", "label": "Acme Okta"}]},
+        "allow_public": true,
         "limits": limits,
         "allowed_extensions": ["html", "js", "css"],
     })
@@ -524,6 +525,8 @@ async fn info_reports_metadata_versions_and_files() {
     let detail = json!({
         "parcel": summary(&server.uri(), 2),
         "is_owner": true,
+        "access": "owner",
+        "owner_name": "Ada",
         "versions": [
             {"version": 2, "entry": "index.html", "label": "final", "file_count": 2,
              "total_bytes": 2048, "created_at": "2026-10-15T12:00:00Z"},
@@ -579,6 +582,7 @@ async fn cat_streams_raw_bytes() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "parcel": summary(&server.uri(), 3),
             "is_owner": false,
+            "access": "public",
             "versions": [],
             "files": [],
         })))
@@ -1670,6 +1674,518 @@ async fn data_delete_and_clear() {
         .args(["data", "clear", ID, "votes"]));
     assert_code(&out, 0);
     assert_eq!(stdout(&out), format!("Cleared votes on {ID}\n"));
+}
+
+// ---------------------------------------------------------------- sharing
+
+fn share_json(email: &str, role: &str, name: Option<&str>) -> Value {
+    let mut share = json!({
+        "email": email,
+        "role": role,
+        "created_at": "2026-10-15T12:00:00Z",
+    });
+    if let Some(name) = name {
+        share["name"] = json!(name);
+    }
+    share
+}
+
+fn shares_path() -> String {
+    format!("/api/v1/parcels/{ID}/shares")
+}
+
+async fn mount_shares(server: &MockServer, shares: Value, times: Option<u64>) {
+    let mock = Mock::given(method("GET"))
+        .and(path(shares_path()))
+        .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"shares": shares})));
+    match times {
+        Some(n) => mock.up_to_n_times(n).mount(server).await,
+        None => mock.mount(server).await,
+    }
+}
+
+#[tokio::test]
+async fn share_puts_each_email_then_shows_who_has_access() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    for (email, times) in [("ada@example.com", 2), ("bob@example.com", 1)] {
+        Mock::given(method("PUT"))
+            .and(path(format!("{}/{email}", shares_path())))
+            .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
+            .and(body_json(json!({"role": "commenter"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(share_json(
+                email,
+                "commenter",
+                None,
+            )))
+            .expect(times)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("PUT"))
+        .and(path(format!("{}/x@nowhere.test", shares_path())))
+        .respond_with(ResponseTemplate::new(400).set_body_json(error_body(
+            "nobody at @nowhere.test can sign in to this Parcel, so sharing with them would do nothing",
+            "Bad Request",
+        )))
+        .mount(&server)
+        .await;
+    // The name is the person's own (from their provider): never raw to the terminal.
+    let raw = format!(
+        r#"{{"shares":[{},{}]}}"#,
+        share_json("ada@example.com", "commenter", Some("Ada \u{1b}[2J")),
+        share_json("bob@example.com", "commenter", None),
+    );
+    Mock::given(method("GET"))
+        .and(path(shares_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(raw.clone(), "application/json"))
+        .mount(&server)
+        .await;
+
+    // Emails are normalized and deduplicated before anything is sent.
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args([
+            "share",
+            ID,
+            " Ada@Example.COM",
+            "bob@example.com",
+            "ada@example.com",
+        ])
+        .args(["--role", "commenter"]));
+    assert_code(&out, 0);
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "Shared {ID} with ada@example.com (commenter)\n\
+             Shared {ID} with bob@example.com (commenter)\n\
+             \n\
+             Shared with 2 people:\n\
+             EMAIL            ROLE       NAME\n\
+             ada@example.com  commenter  Ada \\u{{1b}}[2J\n\
+             bob@example.com  commenter  not signed in yet\n"
+        )
+    );
+
+    // --json prints only the shares as they now stand, as the server sent them.
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args([
+            "share",
+            ID,
+            "ada@example.com",
+            "--role",
+            "commenter",
+            "--json",
+        ]));
+    assert_code(&out, 0);
+    let printed: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(printed, serde_json::from_str::<Value>(&raw).unwrap());
+
+    // A malformed email is a usage error before any request.
+    let before = server.received_requests().await.unwrap().len();
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["share", ID, "ada@example.com", "not-an-email"]));
+    assert_code(&out, 2);
+    assert!(
+        stderr(&out).contains("is not an email address"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), before);
+
+    // The server's refusal reaches the user as it was written.
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["share", ID, "x@nowhere.test"]));
+    assert_code(&out, 1);
+    assert_eq!(
+        stderr(&out),
+        "error: sharing with x@nowhere.test: nobody at @nowhere.test can sign in to this \
+         Parcel, so sharing with them would do nothing\n"
+    );
+
+    // Sharing needs a login.
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .args(["share", ID, "a@example.com"]));
+    assert_code(&out, 3);
+}
+
+#[tokio::test]
+async fn unshare_removes_shared_people_and_notes_the_rest() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    // Before, then after.
+    mount_shares(
+        &server,
+        json!([
+            share_json("ada@example.com", "viewer", Some("Ada")),
+            share_json("bob@example.com", "commenter", None),
+        ]),
+        Some(1),
+    )
+    .await;
+    mount_shares(
+        &server,
+        json!([share_json("bob@example.com", "commenter", None)]),
+        None,
+    )
+    .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{}/ada@example.com", shares_path())))
+        .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["unshare", ID, "ADA@example.com", "carol@example.com"]));
+    assert_code(&out, 0);
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "Unshared {ID} with ada@example.com\n\
+             \n\
+             Shared with 1 person:\n\
+             EMAIL            ROLE       NAME\n\
+             bob@example.com  commenter  not signed in yet\n"
+        )
+    );
+    assert_eq!(
+        stderr(&out),
+        format!("note: {ID} was not shared with carol@example.com\n")
+    );
+    // Nothing is deleted for someone who wasn't on the list.
+    let deletes = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "DELETE")
+        .count();
+    assert_eq!(deletes, 1);
+}
+
+#[tokio::test]
+async fn sharing_is_for_the_owner() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    Mock::given(method("GET"))
+        .and(path(shares_path()))
+        .respond_with(ResponseTemplate::new(403).set_body_json(error_body(
+            "only the owner can change this parcel",
+            "Forbidden",
+        )))
+        .mount(&server)
+        .await;
+    for args in [&["unshare", ID, "ada@example.com"][..], &["shares", ID]] {
+        let out = run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .args(args));
+        assert_code(&out, 1);
+        assert_eq!(
+            stderr(&out),
+            "error: only the owner can change this parcel\n",
+            "{args:?}"
+        );
+    }
+    assert!(requests_to(
+        &server,
+        "DELETE",
+        &format!("{}/ada@example.com", shares_path())
+    )
+    .await
+    .is_empty());
+}
+
+#[tokio::test]
+async fn shares_lists_people_or_says_there_are_none() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    mount_shares(&server, json!([]), Some(1)).await;
+    mount_shares(
+        &server,
+        json!([share_json(
+            "ada@example.com",
+            "viewer",
+            Some("Ada Lovelace")
+        )]),
+        None,
+    )
+    .await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["shares", ID]));
+    assert_code(&out, 0);
+    assert_eq!(
+        stdout(&out),
+        format!("{ID} is not shared with anyone. Share it with `parcel share {ID} <email>`.\n")
+    );
+
+    let url = format!("{}/p/{ID}", server.uri());
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["shares", &url]));
+    assert_code(&out, 0);
+    assert_eq!(
+        stdout(&out),
+        "Shared with 1 person:\n\
+         EMAIL            ROLE    NAME\n\
+         ada@example.com  viewer  Ada Lovelace\n"
+    );
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["shares", ID, "--json"]));
+    assert_code(&out, 0);
+    let printed: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(printed["shares"][0]["email"], "ada@example.com");
+}
+
+#[tokio::test]
+async fn list_shared_shows_the_owner_and_role() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let mut parcel = summary(&server.uri(), 4);
+    parcel["title"] = json!("Q3 \u{1b}]52;c;aGk=\u{7}report");
+    let raw = format!(
+        r#"{{"total":3,"parcels":[{}]}}"#,
+        json!({
+            "parcel": parcel,
+            "owner_name": "Ada Lovelace",
+            "role": "commenter",
+            "shared_at": "2026-10-14T12:00:00Z",
+        })
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/v1/shared"))
+        .and(query_param("limit", "1"))
+        .and(query_param_is_missing("q"))
+        .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(raw.clone(), "application/json"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/shared"))
+        .and(query_param_is_missing("limit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"parcels": [], "total": 0})))
+        .mount(&server)
+        .await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["list", "--shared", "--limit", "1"]));
+    assert_code(&out, 0);
+    let text = stdout(&out);
+    let mut lines = text.lines();
+    let header_line = lines.next().unwrap();
+    for column in [
+        "ID", "TITLE", "OWNER", "ROLE", "VERSION", "UPDATED", "COMMENTS",
+    ] {
+        assert!(
+            header_line.contains(column),
+            "missing {column:?} in {header_line:?}"
+        );
+    }
+    let row = lines.next().unwrap();
+    for cell in [ID, "Ada Lovelace", "commenter", "v4", "2 open"] {
+        assert!(row.contains(cell), "missing {cell:?} in {row:?}");
+    }
+    // A title someone else wrote can't drive the terminal.
+    assert!(row.contains(r"Q3 \u{1b}]52;c;aGk=\u{7}report"), "{row:?}");
+    assert!(!text.contains('\u{1b}'));
+    assert!(text.contains("Showing 1–1 of 3"), "{text}");
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["list", "--shared", "--limit", "1", "--json"]));
+    assert_code(&out, 0);
+    assert!(
+        stdout(&out).starts_with("{\n  \"total\": 3,\n"),
+        "{}",
+        stdout(&out)
+    );
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["list", "--shared"]));
+    assert_code(&out, 0);
+    assert_eq!(stdout(&out), "Nothing has been shared with you yet.\n");
+    assert!(requests_to(&server, "GET", "/api/v1/parcels")
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn info_shows_the_owner_and_your_access_on_others_parcels() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let mut parcel = summary(&server.uri(), 1);
+    parcel["visibility"] = json!("internal");
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/parcels/{ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parcel": parcel,
+            "is_owner": false,
+            "access": "viewer",
+            "owner_name": "Ada Lovelace",
+            "versions": [],
+            "files": [],
+        })))
+        .mount(&server)
+        .await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["info", ID]));
+    assert_code(&out, 0);
+    let text = stdout(&out);
+    for needle in [
+        "visibility:  internal (anyone signed in to this server)",
+        "owner:       Ada Lovelace",
+        "access:      viewer (you can view and read comments, not comment)",
+    ] {
+        assert!(text.contains(needle), "missing {needle:?}\n{text}");
+    }
+}
+
+#[tokio::test]
+async fn internal_visibility_reaches_the_api() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let page = sandbox.write("work/report.html", b"<title>Q3</title>");
+    mount_info(&server, limits()).await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/parcels"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(publish_result(&server.uri(), 1)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut internal = summary(&server.uri(), 1);
+    internal["visibility"] = json!("internal");
+    Mock::given(method("PATCH"))
+        .and(path(format!("/api/v1/parcels/{ID}")))
+        .and(body_json(json!({"visibility": "internal"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(internal))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .arg("publish")
+        .arg(&page)
+        .arg("--internal"));
+    assert_code(&out, 0);
+    let posts = requests_to(&server, "POST", "/api/v1/parcels").await;
+    let metadata: Value = serde_json::from_slice(&parse_multipart(&posts[0])[0].body).unwrap();
+    assert_eq!(metadata["visibility"], "internal");
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["update", ID, "--internal"]));
+    assert_code(&out, 0);
+    assert!(stdout(&out).contains("(internal)"), "{}", stdout(&out));
+}
+
+#[tokio::test]
+async fn public_links_turned_off_are_explained() {
+    const OFF: &str = "public links are turned off on this server; use \"internal\" \
+                       (everyone signed in) or share with people by email";
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let page = sandbox.write("work/report.html", b"<title>Q3</title>");
+    let mut info = server_info(&server.uri(), limits());
+    info["allow_public"] = json!(false);
+    Mock::given(method("GET"))
+        .and(path("/api/v1/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(info))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(format!("/api/v1/parcels/{ID}")))
+        .respond_with(ResponseTemplate::new(400).set_body_json(error_body(OFF, "Bad Request")))
+        .mount(&server)
+        .await;
+
+    // `update` gets the server's own words.
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["update", ID, "--public"]));
+    assert_code(&out, 1);
+    assert_eq!(stderr(&out), format!("error: {OFF}\n"));
+
+    // `publish` knows from /info and refuses before uploading anything.
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .arg("publish")
+        .arg(&page)
+        .arg("--public"));
+    assert_code(&out, 1);
+    let err = stderr(&out);
+    assert!(err.contains("public links are turned off on"), "{err}");
+    assert!(
+        err.contains("--internal") && err.contains("parcel share"),
+        "{err}"
+    );
+    assert!(requests_to(&server, "POST", "/api/v1/parcels")
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_paused_token_says_to_sign_in_on_the_web() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let paused = format!(
+        "this token is paused: sign in to Parcel on the web ({}) to keep using it \
+         (tokens need a web sign-in at least every 30 days)",
+        server.uri()
+    );
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(error_body(&paused, "Unauthorized")))
+        .mount(&server)
+        .await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .arg("list"));
+    assert_code(&out, 3);
+    assert_eq!(stderr(&out), format!("error: {paused}\n"));
+
+    // Logging in with such a token passes the reason along too.
+    let out = run_with_stdin(
+        sandbox
+            .parcel(&server.uri())
+            .args(["login", "--with-token"]),
+        TOKEN,
+    );
+    assert_code(&out, 3);
+    assert!(stderr(&out).contains(&paused), "{}", stderr(&out));
 }
 
 // ---------------------------------------------------------------- skill

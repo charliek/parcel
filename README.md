@@ -5,8 +5,10 @@ and fonts — and get back a private link that renders it in a sandbox. Parcel
 is a self-hosted take on "artifacts": made for coding agents (Claude Code,
 craze, opencode) as much as for people.
 
-- **Private by default.** Sign in with StrideLabs (slauth); only you can open
-  your parcels unless you make one public.
+- **Private by default, easy to share.** Sign in through slauth, Okta,
+  Keycloak or any OIDC provider (several at once, e.g. one per office). Share
+  a parcel with people by email as viewer or commenter, open it to everyone
+  signed in, or make it public (which a server can turn off).
 - **Versioned.** Every publish is an immutable version; republishing keeps the
   URL. Restore any old version.
 - **Sandboxed.** User HTML runs on a separate content origin with an opaque
@@ -27,6 +29,7 @@ parcel login                              # opens the browser, approve the code
 parcel publish report.html                # → https://parcel.stridelabs.ai/p/k3m9x2qtw8ra
 parcel publish ./site --parcel k3m9x2qtw8ra --label "v2 copy"
 parcel cat k3m9x2qtw8ra                   # read it back
+parcel share k3m9x2qtw8ra ada@acme.com --role commenter
 parcel comments list k3m9x2qtw8ra         # feedback left in the viewer
 parcel data set k3m9x2qtw8ra stats today '{"visits": 42}'
 parcel skill install                      # teach Claude Code / craze / opencode
@@ -44,7 +47,8 @@ cargo install --locked --path crates/parcel-cli   # from source, today
 
 Requires Docker, [mise](https://mise.jdx.dev), [bun](https://bun.sh),
 [uv](https://docs.astral.sh/uv/) and [prox](https://github.com/charliek/prox),
-plus a running [slauth](../slauth) with parcel registered.
+plus a running [slauth](../slauth) with parcel registered. For a second
+sign-in provider, run the local Keycloak in [dev/keycloak](dev/keycloak/README.md).
 
 ```bash
 docker compose up -d                 # Postgres :5439, GCS emulator :4447

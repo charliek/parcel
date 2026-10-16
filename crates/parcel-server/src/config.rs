@@ -39,27 +39,57 @@ impl AppEnv {
 /// `APP_ENV=production`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
-    Slauth,
+    /// People sign in through the configured OIDC providers.
+    Oidc,
     Dev,
 }
 
 impl AuthMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            AuthMode::Slauth => "slauth",
+            AuthMode::Oidc => "oidc",
             AuthMode::Dev => "dev",
         }
     }
 }
 
-/// slauth (Ory Hydra) settings. `issuer`/`jwks_url`/`audience` are the
-/// resource-server half; `client_id` is handed to the SPA for its PKCE flow.
+/// A value that must never reach logs (`Debug` prints a placeholder).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
+/// One OIDC provider people can sign in with (`AUTH_<ID>_*`).
 #[derive(Debug, Clone)]
-pub struct SlauthSettings {
+pub struct ProviderConfig {
+    /// `[a-z][a-z0-9]{0,31}`; stored with each identity, so renaming one
+    /// relinks its users by email on their next sign-in.
+    pub id: String,
+    pub label: String,
+    /// Exactly as the provider's discovery document states it.
     pub issuer: String,
-    pub jwks_url: String,
-    pub audience: String,
     pub client_id: String,
+    /// Absent: a public client (PKCE only), as slauth's `parcel` client is.
+    pub client_secret: Option<Secret>,
+    /// Lowercase email domains this provider may sign in; empty = any.
+    pub allowed_domains: Vec<String>,
+    /// Accept emails the provider doesn't mark `email_verified`.
+    pub trust_email: bool,
+    pub scopes: String,
+    /// Signing out of Parcel also signs out of the provider (its
+    /// `end_session_endpoint`). Off by default: leaving Parcel shouldn't end
+    /// someone's company-wide SSO session. On for `slauth`.
+    pub provider_logout: bool,
+}
+
+impl ProviderConfig {
+    pub fn allows_domain(&self, domain: &str) -> bool {
+        self.allowed_domains.is_empty() || self.allowed_domains.iter().any(|d| d == domain)
+    }
 }
 
 /// Where blob bytes live.
@@ -100,7 +130,16 @@ pub struct Config {
     pub auth_mode: AuthMode,
     pub dev_auth_email: String,
     pub dev_auth_name: String,
-    pub slauth: SlauthSettings,
+    /// In `AUTH_PROVIDERS` order (the sign-in page's order).
+    pub providers: Vec<ProviderConfig>,
+    /// How long a web session lasts before the provider is asked again.
+    pub session_ttl: Duration,
+    /// API tokens stop working when their owner's last web sign-in is older
+    /// than this; `None` = never.
+    pub token_login_max_age: Option<Duration>,
+    /// Whether parcels may be public. When false, stored `public` parcels
+    /// behave and report as `internal`.
+    pub allow_public: bool,
 
     pub blob_backend: BlobBackend,
     /// In-memory cache of blob bytes for the content server (immutable,
@@ -122,6 +161,8 @@ pub struct Config {
     pub run_migrations: bool,
 }
 
+pub const DEFAULT_SCOPES: &str = "openid email profile";
+
 const DEV_SIGNING_KEY: &str = "parcel-dev-content-signing-key-not-for-production";
 
 const MIB: i64 = 1024 * 1024;
@@ -140,15 +181,23 @@ impl Default for Config {
                 .expect("valid url"),
             content_signing_key: DEV_SIGNING_KEY.as_bytes().to_vec(),
             content_token_ttl: Duration::from_secs(12 * 3600),
-            auth_mode: AuthMode::Slauth,
+            auth_mode: AuthMode::Oidc,
             dev_auth_email: "dev@example.com".into(),
             dev_auth_name: "Dev User".into(),
-            slauth: SlauthSettings {
+            providers: vec![ProviderConfig {
+                id: "slauth".into(),
+                label: "slauth".into(),
                 issuer: "https://auth.local.stridelabs.ai".into(),
-                jwks_url: "https://auth.local.stridelabs.ai/.well-known/jwks.json".into(),
-                audience: "parcel".into(),
                 client_id: "parcel".into(),
-            },
+                client_secret: None,
+                allowed_domains: Vec::new(),
+                trust_email: true,
+                scopes: DEFAULT_SCOPES.into(),
+                provider_logout: true,
+            }],
+            session_ttl: Duration::from_secs(7 * 24 * 3600),
+            token_login_max_age: Some(Duration::from_secs(30 * 24 * 3600)),
+            allow_public: true,
             blob_backend: BlobBackend::Fs {
                 root: "./data/blobs".into(),
             },
@@ -252,20 +301,27 @@ impl Config {
             }
         };
 
-        let auth_mode = match env.or("AUTH_MODE", "slauth").to_ascii_lowercase().as_str() {
-            "slauth" => AuthMode::Slauth,
+        // `slauth` was the only mode before providers became configurable.
+        let auth_mode = match env.or("AUTH_MODE", "oidc").to_ascii_lowercase().as_str() {
+            "oidc" | "slauth" => AuthMode::Oidc,
             "dev" => AuthMode::Dev,
             other => {
-                errs.push("AUTH_MODE", format!("expected slauth|dev, got {other:?}"));
-                AuthMode::Slauth
+                errs.push("AUTH_MODE", format!("expected oidc|dev, got {other:?}"));
+                AuthMode::Oidc
             }
         };
         if auth_mode == AuthMode::Dev && app_env == AppEnv::Production {
             errs.push(
                 "AUTH_MODE",
-                "AUTH_MODE=dev is forbidden when APP_ENV=production; use AUTH_MODE=slauth",
+                "AUTH_MODE=dev is forbidden when APP_ENV=production; use AUTH_MODE=oidc",
             );
         }
+        let providers = parse_providers(&env, app_env, auth_mode, &mut errs);
+        let token_login_max_age_days: u64 = env.parse(
+            "PARCEL_TOKEN_LOGIN_MAX_AGE_DAYS",
+            d.token_login_max_age.map_or(0, |a| a.as_secs() / 86400),
+            &mut errs,
+        );
 
         // Cloud Run injects PORT; an explicit BIND_ADDR wins over it.
         let bind_addr = match (env.get("BIND_ADDR"), env.get("PORT")) {
@@ -388,12 +444,15 @@ impl Config {
             auth_mode,
             dev_auth_email: env.or("DEV_AUTH_EMAIL", &d.dev_auth_email),
             dev_auth_name: env.or("DEV_AUTH_NAME", &d.dev_auth_name),
-            slauth: SlauthSettings {
-                issuer: env.or("SLAUTH_ISSUER", &d.slauth.issuer),
-                jwks_url: env.or("SLAUTH_JWKS_URL", &d.slauth.jwks_url),
-                audience: env.or("SLAUTH_AUDIENCE", &d.slauth.audience),
-                client_id: env.or("SLAUTH_CLIENT_ID", &d.slauth.client_id),
-            },
+            providers,
+            session_ttl: Duration::from_secs(env.parse(
+                "PARCEL_SESSION_TTL_SECS",
+                d.session_ttl.as_secs(),
+                &mut errs,
+            )),
+            token_login_max_age: (token_login_max_age_days > 0)
+                .then(|| Duration::from_secs(token_login_max_age_days.saturating_mul(86400))),
+            allow_public: env.parse("PARCEL_ALLOW_PUBLIC", d.allow_public, &mut errs),
             blob_backend,
             blob_cache_max_bytes: env.parse(
                 "BLOB_CACHE_MAX_BYTES",
@@ -444,6 +503,151 @@ impl Config {
     pub fn viewer_url(&self, parcel_id: &str) -> String {
         format!("{}/p/{parcel_id}", self.app_origin_str())
     }
+
+    /// Where providers send people back after sign-in.
+    pub fn auth_callback_url(&self) -> String {
+        format!("{}/auth/callback", self.app_origin_str())
+    }
+
+    pub fn provider(&self, id: &str) -> Option<&ProviderConfig> {
+        self.providers.iter().find(|p| p.id == id)
+    }
+
+    /// Whether some configured provider could sign in an address at
+    /// `domain` (always true in dev mode).
+    pub fn domain_can_sign_in(&self, domain: &str) -> bool {
+        self.auth_mode == AuthMode::Dev || self.providers.iter().any(|p| p.allows_domain(domain))
+    }
+
+    /// The key for one kind of signed cookie, derived from the content
+    /// signing key with a per-purpose label, so there is one secret to
+    /// manage and a value signed for one purpose never verifies as another.
+    pub fn cookie_key(&self, purpose: &str) -> Vec<u8> {
+        use hmac::{Hmac, Mac};
+        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(&self.content_signing_key)
+            .expect("HMAC accepts keys of any length");
+        mac.update(b"parcel-cookie-v1:");
+        mac.update(purpose.as_bytes());
+        mac.finalize().into_bytes().to_vec()
+    }
+
+    /// Cookies are `Secure` (and `__Host-`/`__Secure-` prefixed) unless the
+    /// app is served over plain http (local e2e).
+    pub fn secure_cookies(&self) -> bool {
+        self.app_origin.scheme() == "https"
+    }
+}
+
+/// `AUTH_PROVIDERS` and each provider's `AUTH_<ID>_*`. Unset means one
+/// provider, `slauth`, configured from the older `SLAUTH_*` variables.
+fn parse_providers<F: Fn(&str) -> Option<String>>(
+    env: &Lookup<F>,
+    app_env: AppEnv,
+    auth_mode: AuthMode,
+    errs: &mut Errors,
+) -> Vec<ProviderConfig> {
+    let ids: Vec<String> = match env.get("AUTH_PROVIDERS") {
+        Some(list) => list
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => vec!["slauth".into()],
+    };
+    let mut providers: Vec<ProviderConfig> = Vec::new();
+    for id in ids {
+        let valid_id = id.len() <= 32
+            && id.starts_with(|c: char| c.is_ascii_lowercase())
+            && id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+        if !valid_id || id == "dev" {
+            errs.push(
+                "AUTH_PROVIDERS",
+                format!("{id:?} is not a provider id: use [a-z][a-z0-9]{{0,31}}, not \"dev\""),
+            );
+            continue;
+        }
+        if providers.iter().any(|p| p.id == id) {
+            errs.push("AUTH_PROVIDERS", format!("{id:?} is listed twice"));
+            continue;
+        }
+        let var = |suffix: &str| format!("AUTH_{}_{suffix}", id.to_ascii_uppercase());
+        let legacy = id == "slauth";
+        let get = |suffix: &str, legacy_key: &str| {
+            env.get(&var(suffix))
+                .or_else(|| legacy.then(|| env.get(legacy_key)).flatten())
+        };
+        let issuer = get("ISSUER", "SLAUTH_ISSUER")
+            .or_else(|| legacy.then(|| "https://auth.local.stridelabs.ai".to_string()));
+        let client_id =
+            get("CLIENT_ID", "SLAUTH_CLIENT_ID").or_else(|| legacy.then(|| "parcel".to_string()));
+        let (Some(issuer), Some(client_id)) = (issuer, client_id) else {
+            if auth_mode == AuthMode::Oidc {
+                errs.push(
+                    var("ISSUER"),
+                    format!("{} and {} are required", var("ISSUER"), var("CLIENT_ID")),
+                );
+            }
+            continue;
+        };
+        let issuer = issuer.trim().to_string();
+        match Url::parse(&issuer) {
+            Ok(url)
+                if url.scheme() == "https"
+                    || (url.scheme() == "http" && app_env == AppEnv::Development) => {}
+            _ => errs.push(
+                var("ISSUER"),
+                "must be an https URL (http is allowed only in development)",
+            ),
+        }
+        let mut allowed_domains = Vec::new();
+        for domain in env
+            .get(&var("ALLOWED_DOMAINS"))
+            .unwrap_or_default()
+            .split(',')
+        {
+            let domain = domain.trim().trim_start_matches('@').to_ascii_lowercase();
+            if domain.is_empty() {
+                continue;
+            }
+            if !domain.contains('.')
+                || domain
+                    .chars()
+                    .any(|c| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+            {
+                errs.push(
+                    var("ALLOWED_DOMAINS"),
+                    format!("{domain:?} is not a domain"),
+                );
+            }
+            allowed_domains.push(domain);
+        }
+        let trust_email = env.parse(&var("TRUST_EMAIL"), legacy, errs);
+        let provider_logout = env.parse(&var("PROVIDER_LOGOUT"), legacy, errs);
+        providers.push(ProviderConfig {
+            label: env.get(&var("LABEL")).unwrap_or_else(|| id.clone()),
+            issuer,
+            client_id: client_id.trim().to_string(),
+            client_secret: env
+                .get(&var("CLIENT_SECRET"))
+                .map(|s| Secret(s.trim().to_string())),
+            allowed_domains,
+            trust_email,
+            scopes: env
+                .get(&var("SCOPES"))
+                .unwrap_or_else(|| DEFAULT_SCOPES.to_string()),
+            provider_logout,
+            id,
+        });
+    }
+    if auth_mode == AuthMode::Oidc && providers.is_empty() {
+        errs.push(
+            "AUTH_PROVIDERS",
+            "AUTH_MODE=oidc needs at least one provider",
+        );
+    }
+    providers
 }
 
 /// `scheme://host[:port]` without a trailing slash.
@@ -525,7 +729,9 @@ mod tests {
     fn defaults_load() {
         let c = load(&[]).unwrap();
         assert_eq!(c.app_env, AppEnv::Development);
-        assert_eq!(c.auth_mode, AuthMode::Slauth);
+        assert_eq!(c.auth_mode, AuthMode::Oidc);
+        assert_eq!(c.providers.len(), 1);
+        assert!(c.allow_public);
         assert_eq!(c.limits.max_file_bytes, 15 * MIB);
         assert_eq!(c.app_origin_str(), "https://parcel.local.stridelabs.ai");
     }
@@ -596,5 +802,100 @@ mod tests {
         let c = load(&[("APP_ENV", ""), ("BLOB_BACKEND", " ")]).unwrap();
         assert_eq!(c.app_env, AppEnv::Development);
         assert!(matches!(c.blob_backend, BlobBackend::Fs { .. }));
+    }
+
+    #[test]
+    fn legacy_slauth_vars_configure_one_provider() {
+        let c = load(&[
+            ("AUTH_MODE", "slauth"),
+            ("SLAUTH_ISSUER", "https://auth.example"),
+            ("SLAUTH_CLIENT_ID", "parcel-x"),
+        ])
+        .unwrap();
+        assert_eq!(c.auth_mode, AuthMode::Oidc);
+        let [p] = c.providers.as_slice() else {
+            panic!("one provider")
+        };
+        assert_eq!(
+            (p.id.as_str(), p.issuer.as_str(), p.client_id.as_str()),
+            ("slauth", "https://auth.example", "parcel-x")
+        );
+        assert!(p.trust_email, "slauth sends no email_verified");
+        assert!(p.client_secret.is_none());
+    }
+
+    #[test]
+    fn several_providers_load_in_order() {
+        let c = load(&[
+            ("AUTH_PROVIDERS", "okta, keycloak"),
+            ("AUTH_OKTA_ISSUER", "https://acme.okta.com"),
+            ("AUTH_OKTA_CLIENT_ID", "0oa1"),
+            ("AUTH_OKTA_CLIENT_SECRET", "s3cret"),
+            ("AUTH_OKTA_LABEL", "Acme (US)"),
+            ("AUTH_OKTA_ALLOWED_DOMAINS", "Acme.com, @us.acme.com"),
+            ("AUTH_KEYCLOAK_ISSUER", "https://kc.acme.eu/realms/acme"),
+            ("AUTH_KEYCLOAK_CLIENT_ID", "parcel"),
+            ("PARCEL_ALLOW_PUBLIC", "false"),
+            ("PARCEL_TOKEN_LOGIN_MAX_AGE_DAYS", "0"),
+        ])
+        .unwrap();
+        let ids: Vec<&str> = c.providers.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["okta", "keycloak"]);
+        let okta = c.provider("okta").unwrap();
+        assert_eq!(okta.label, "Acme (US)");
+        assert_eq!(okta.allowed_domains, ["acme.com", "us.acme.com"]);
+        assert!(!okta.trust_email);
+        assert!(okta.allows_domain("us.acme.com") && !okta.allows_domain("gmail.com"));
+        assert!(
+            !format!("{okta:?}").contains("s3cret"),
+            "secrets stay out of Debug"
+        );
+        assert_eq!(c.provider("keycloak").unwrap().label, "keycloak");
+        assert!(
+            c.domain_can_sign_in("anything.eu"),
+            "keycloak takes any domain"
+        );
+        assert!(!c.allow_public);
+        assert_eq!(c.token_login_max_age, None);
+    }
+
+    #[test]
+    fn bad_providers_are_reported() {
+        let err = load(&[
+            ("AUTH_PROVIDERS", "okta,Bad-Id,okta,dev"),
+            ("AUTH_OKTA_ISSUER", "ftp://acme"),
+            ("AUTH_OKTA_CLIENT_ID", "x"),
+            ("AUTH_OKTA_ALLOWED_DOMAINS", "nodot"),
+        ])
+        .unwrap_err()
+        .to_string();
+        for needle in [
+            "\"bad-id\" is not a provider id",
+            "\"okta\" is listed twice",
+            "\"dev\" is not a provider id",
+            "AUTH_OKTA_ISSUER",
+            "\"nodot\" is not a domain",
+        ] {
+            assert!(err.contains(needle), "{needle} missing from: {err}");
+        }
+        let err = load(&[("AUTH_PROVIDERS", "okta")]).unwrap_err().to_string();
+        assert!(err.contains("AUTH_OKTA_CLIENT_ID are required"), "{err}");
+        let err = load(&[
+            ("APP_ENV", "production"),
+            ("PARCEL_CONTENT_SIGNING_KEY", &"k".repeat(40)),
+            ("AUTH_PROVIDERS", "kc"),
+            ("AUTH_KC_ISSUER", "http://kc.internal/realms/a"),
+            ("AUTH_KC_CLIENT_ID", "parcel"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("must be an https URL"), "{err}");
+    }
+
+    #[test]
+    fn cookie_keys_differ_by_purpose() {
+        let c = Config::default();
+        assert_ne!(c.cookie_key("session"), c.cookie_key("login"));
+        assert_ne!(c.cookie_key("session"), c.content_signing_key);
     }
 }
