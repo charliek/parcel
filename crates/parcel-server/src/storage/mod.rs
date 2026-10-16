@@ -48,6 +48,9 @@ pub trait BlobStore: Send + Sync {
     /// Read `key`, or `None` if it does not exist.
     async fn get(&self, key: &str) -> Result<Option<Bytes>, StorageError>;
 
+    /// Whether `key` exists, without fetching its bytes.
+    async fn exists(&self, key: &str) -> Result<bool, StorageError>;
+
     /// Delete `key`. Deleting a missing key is not an error.
     async fn delete(&self, key: &str) -> Result<(), StorageError>;
 

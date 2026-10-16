@@ -48,6 +48,10 @@ impl BlobStore for FsBlobStore {
         }
     }
 
+    async fn exists(&self, key: &str) -> Result<bool, StorageError> {
+        Ok(tokio::fs::try_exists(self.path(key)).await?)
+    }
+
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
         match tokio::fs::remove_file(self.path(key)).await {
             Ok(()) => Ok(()),

@@ -41,10 +41,12 @@ async fn round_trips_through_the_emulator() {
     .unwrap();
     let key = "blobs/sha256/ab/abcdef";
     assert!(store.get(key).await.unwrap().is_none());
+    assert!(!store.exists(key).await.unwrap());
     store
         .put(key, Bytes::from_static(b"<p>hi</p>"), "text/html")
         .await
         .unwrap();
+    assert!(store.exists(key).await.unwrap());
     assert_eq!(store.get(key).await.unwrap().unwrap(), "<p>hi</p>");
     // Overwrite is idempotent for content-addressed keys.
     store

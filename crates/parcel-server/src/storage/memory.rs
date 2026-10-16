@@ -42,6 +42,10 @@ impl BlobStore for MemoryBlobStore {
         Ok(self.objects.lock().expect("lock").get(key).cloned())
     }
 
+    async fn exists(&self, key: &str) -> Result<bool, StorageError> {
+        Ok(self.contains(key))
+    }
+
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
         self.objects.lock().expect("lock").remove(key);
         Ok(())

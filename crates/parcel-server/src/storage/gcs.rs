@@ -146,6 +146,25 @@ impl BlobStore for GcsBlobStore {
         }
     }
 
+    async fn exists(&self, key: &str) -> Result<bool, StorageError> {
+        // Object metadata, not media: a few hundred bytes whatever the size.
+        let url = format!(
+            "{}/storage/v1/b/{}/o/{}?fields=name",
+            self.base_url,
+            self.bucket,
+            self.encoded(key)
+        );
+        let response = self.send(self.http.get(url), "stat").await?;
+        match response.status() {
+            StatusCode::NOT_FOUND => Ok(false),
+            s if s.is_success() => Ok(true),
+            s => Err(StorageError::Status {
+                status: s.as_u16(),
+                operation: "stat",
+            }),
+        }
+    }
+
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
         let url = format!(
             "{}/storage/v1/b/{}/o/{}",

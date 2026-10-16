@@ -98,3 +98,36 @@ async fn identical_files_share_a_blob_and_gc_spares_referenced_ones() {
     assert_eq!(sha_of(&again, "index.html"), unique_sha);
     assert!(app.blobs.contains(&blob_key(&unique_sha)));
 }
+
+#[tokio::test]
+async fn a_publish_heals_a_blob_missing_from_the_store() {
+    use parcel_server::storage::BlobStore;
+    let app = TestApp::new().await;
+    let token = user_token();
+    let page = format!("<p>{}</p>", uuid::Uuid::new_v4());
+    let form = Form::new().file("index.html", page.clone());
+    let first: PublishResult = json(
+        expect_status(
+            app.post_multipart("/api/v1/parcels", Some(&token), &form)
+                .await,
+            StatusCode::CREATED,
+        )
+        .await,
+    )
+    .await;
+    let key = blob_key(&first.version.files[0].sha256);
+    // Simulate a store that lost an object a committed version references.
+    app.blobs.delete(&key).await.unwrap();
+    assert!(!app.blobs.contains(&key));
+
+    expect_status(
+        app.post_multipart("/api/v1/parcels", Some(&token), &form)
+            .await,
+        StatusCode::CREATED,
+    )
+    .await;
+    assert!(
+        app.blobs.contains(&key),
+        "the second publish rewrote the bytes"
+    );
+}

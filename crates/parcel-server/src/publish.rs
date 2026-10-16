@@ -308,21 +308,33 @@ async fn store_blobs(state: &AppState, uploads: &[Upload]) -> Result<(), AppErro
     let touched = blobs::touch(&state.db, &shas, &sizes)
         .await
         .map_err(AppError::Internal)?;
-    let need_write: HashSet<&str> = touched
+    // A blob some committed version references was written before that
+    // version committed, so normally it is already in the store. Check
+    // anyway (one metadata request per such file) rather than trust it: if
+    // the store ever lost an object, the next publish of those bytes heals it
+    // instead of committing another reference to nothing.
+    let referenced: HashSet<&str> = touched
         .iter()
-        .filter(|t| !t.referenced)
+        .filter(|t| t.referenced)
         .map(|t| t.sha256.as_str())
         .collect();
-    let mut written: HashSet<&str> = HashSet::new();
+    let mut handled: HashSet<&str> = HashSet::new();
     for upload in uploads {
-        if need_write.contains(upload.sha256.as_str()) && written.insert(upload.sha256.as_str()) {
+        let sha = upload.sha256.as_str();
+        if !handled.insert(sha) {
+            continue;
+        }
+        let key = blob_key(sha);
+        let present = referenced.contains(sha)
+            && state
+                .blobs
+                .exists(&key)
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
+        if !present {
             state
                 .blobs
-                .put(
-                    &blob_key(&upload.sha256),
-                    upload.bytes.clone(),
-                    upload.content_type,
-                )
+                .put(&key, upload.bytes.clone(), upload.content_type)
                 .await
                 .map_err(|e| AppError::Internal(e.into()))?;
         }

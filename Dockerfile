@@ -5,7 +5,7 @@
 # compiled out (it is also runtime-gated off in production).
 
 # ---- frontend -------------------------------------------------------------
-FROM oven/bun:1.3 AS frontend
+FROM oven/bun:1.4.0 AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/bun.lock ./
 RUN bun install --frozen-lockfile
