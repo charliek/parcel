@@ -69,6 +69,9 @@ pub struct ParcelSummary {
     pub updated_at: OffsetDateTime,
     /// The viewer URL in the web app (`https://…/p/<id>`).
     pub url: String,
+    /// Unresolved comment threads.
+    #[serde(default)]
+    pub open_comments: i64,
 }
 
 /// One immutable version of a parcel.
@@ -227,6 +230,12 @@ pub struct Limits {
     pub max_version_bytes: i64,
     /// Total bytes across all of a user's versions; 0 means unlimited.
     pub user_quota_bytes: i64,
+    /// Data a parcel may keep (each item's JSON plus a per-item overhead).
+    #[serde(default)]
+    pub max_data_bytes: i64,
+    /// Largest single data value, as compact JSON.
+    #[serde(default)]
+    pub max_data_value_bytes: i64,
 }
 
 /// What a user is currently storing.

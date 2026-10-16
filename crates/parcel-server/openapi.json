@@ -71,6 +71,208 @@
         ],
         "type": "object"
       },
+      "Comment": {
+        "description": "A comment thread: the top-level comment and its replies.",
+        "properties": {
+          "anchor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommentAnchor",
+                "description": "Absent for a general comment about the whole parcel."
+              }
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/CommentAuthor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "number": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "replies": {
+            "description": "Oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/CommentReply"
+            },
+            "type": "array"
+          },
+          "resolved": {
+            "type": "boolean"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version": {
+            "description": "The version the commenter was looking at.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "via": {
+            "$ref": "#/components/schemas/CommentVia"
+          }
+        },
+        "required": [
+          "number",
+          "version",
+          "author",
+          "body",
+          "via",
+          "resolved",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "CommentAnchor": {
+        "additionalProperties": false,
+        "description": "Where on the page a comment points, as recorded by the viewer.",
+        "properties": {
+          "path": {
+            "description": "Published path of the page the comment was made on (`index.html`).",
+            "type": "string"
+          },
+          "selector": {
+            "description": "CSS selector of the element that was clicked.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "The element's visible text when the comment was made, used to find\nit again after the page changes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x": {
+            "description": "Click position inside the element's box, as a fraction of its width (0–1).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "y": {
+            "description": "Click position inside the element's box, as a fraction of its height (0–1).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "CommentAuthor": {
+        "description": "Who wrote a comment, from the caller's point of view.",
+        "properties": {
+          "is_owner": {
+            "description": "The author owns the parcel.",
+            "type": "boolean"
+          },
+          "is_you": {
+            "description": "The author is the caller.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Display name (the account's name, else its email).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "is_owner",
+          "is_you"
+        ],
+        "type": "object"
+      },
+      "CommentList": {
+        "description": "`GET /api/v1/parcels/{id}/comments`.",
+        "properties": {
+          "comments": {
+            "description": "Oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/Comment"
+            },
+            "type": "array"
+          },
+          "open": {
+            "description": "Unresolved threads on the parcel, whatever the filter.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "comments",
+          "open"
+        ],
+        "type": "object"
+      },
+      "CommentReply": {
+        "description": "A reply in a comment thread.",
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/CommentAuthor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "number": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "via": {
+            "$ref": "#/components/schemas/CommentVia"
+          }
+        },
+        "required": [
+          "number",
+          "author",
+          "body",
+          "via",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "CommentVia": {
+        "description": "Where a comment was written.",
+        "enum": [
+          "web",
+          "cli"
+        ],
+        "type": "string"
+      },
       "CreateTokenRequest": {
         "additionalProperties": false,
         "description": "`POST /api/v1/tokens`.",
@@ -106,6 +308,125 @@
         "required": [
           "token",
           "secret"
+        ],
+        "type": "object"
+      },
+      "DataCollection": {
+        "description": "A collection as listed in a [`DataSummary`].",
+        "properties": {
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "usage_bytes": {
+            "description": "What the collection counts against the parcel's data limit.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "count",
+          "usage_bytes",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "DataItem": {
+        "description": "One stored item.",
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "description": "Size of the value as compact JSON.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "value": {
+            "description": "Any JSON value."
+          }
+        },
+        "required": [
+          "collection",
+          "key",
+          "value",
+          "size_bytes",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "DataItemList": {
+        "description": "A page of a collection's items, ordered by key.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DataItem"
+            },
+            "type": "array"
+          },
+          "next_after": {
+            "description": "Pass as `after` to fetch the next page; absent on the last page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "DataSummary": {
+        "description": "`GET /api/v1/parcels/{id}/data`: a parcel's collections and usage.",
+        "properties": {
+          "collections": {
+            "description": "By name.",
+            "items": {
+              "$ref": "#/components/schemas/DataCollection"
+            },
+            "type": "array"
+          },
+          "limit_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision": {
+            "description": "Changes whenever any item is written or deleted.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "usage_bytes": {
+            "description": "Each item's JSON size plus a fixed per-item overhead.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "writable": {
+            "description": "Whether the caller may change this parcel's data.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "revision",
+          "usage_bytes",
+          "limit_bytes",
+          "writable",
+          "collections"
         ],
         "type": "object"
       },
@@ -290,6 +611,16 @@
       "Limits": {
         "description": "Storage and size limits enforced on publishes.",
         "properties": {
+          "max_data_bytes": {
+            "description": "Data a parcel may keep (each item's JSON plus a per-item overhead).",
+            "format": "int64",
+            "type": "integer"
+          },
+          "max_data_value_bytes": {
+            "description": "Largest single data value, as compact JSON.",
+            "format": "int64",
+            "type": "integer"
+          },
           "max_entry_bytes": {
             "format": "int64",
             "type": "integer"
@@ -359,6 +690,46 @@
         ],
         "type": "object"
       },
+      "NewComment": {
+        "additionalProperties": false,
+        "description": "`POST /api/v1/parcels/{id}/comments` — a new thread, or a reply.",
+        "properties": {
+          "anchor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommentAnchor",
+                "description": "Where on the page. Not allowed on replies."
+              }
+            ]
+          },
+          "body": {
+            "type": "string"
+          },
+          "reply_to": {
+            "description": "Reply to this thread instead of starting a new one.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "version": {
+            "description": "The version being commented on. Defaults to the current one; ignored\nfor replies, which take their thread's.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "type": "object"
+      },
       "NewVersionUpload": {
         "description": "Multipart body of `POST /api/v1/parcels/{id}/versions` (documentation only).",
         "properties": {
@@ -380,6 +751,36 @@
         },
         "required": [
           "file"
+        ],
+        "type": "object"
+      },
+      "ParcelActivity": {
+        "description": "`GET /api/v1/parcels/{id}/activity` — what the viewer polls to notice\nnew versions and comment changes without refetching everything.",
+        "properties": {
+          "comments_revision": {
+            "description": "Changes whenever any comment is added, edited, resolved or deleted.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "current_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "open_comments": {
+            "description": "Unresolved comment threads.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "current_version",
+          "updated_at",
+          "open_comments",
+          "comments_revision"
         ],
         "type": "object"
       },
@@ -461,6 +862,11 @@
           },
           "id": {
             "type": "string"
+          },
+          "open_comments": {
+            "description": "Unresolved comment threads.",
+            "format": "int64",
+            "type": "integer"
           },
           "title": {
             "type": "string"
@@ -588,6 +994,27 @@
         "required": [
           "tokens"
         ],
+        "type": "object"
+      },
+      "UpdateComment": {
+        "additionalProperties": false,
+        "description": "`PATCH /api/v1/parcels/{id}/comments/{number}`.",
+        "properties": {
+          "body": {
+            "description": "New text (the author only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved": {
+            "description": "Resolve or reopen a thread (the parcel's owner or the thread's author).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "UpdateParcelRequest": {
@@ -1341,6 +1768,891 @@
         ]
       }
     },
+    "/api/v1/parcels/{id}/activity": {
+      "get": {
+        "description": "The parcel's current version and comment counters: a cheap poll for noticing new versions and comment changes. Readable wherever the parcel is.",
+        "operationId": "get_activity",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelActivity"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "parcels"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}/comments": {
+      "get": {
+        "description": "A parcel's comment threads with their replies, oldest first. Visible to the owner, and to any signed-in user when the parcel is public.",
+        "operationId": "list_comments",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`open` (default), `resolved` or `all`.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "description": "Which threads to list.",
+              "enum": [
+                "open",
+                "resolved",
+                "all"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommentList"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "comments"
+        ]
+      },
+      "post": {
+        "description": "Start a thread (optionally pinned to a spot on the page with `anchor`) or reply to one with `reply_to`. Returns the whole thread.",
+        "operationId": "create_comment",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewComment"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comment"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The parcel has too many comments"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "comments"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}/comments/{number}": {
+      "delete": {
+        "description": "Delete a comment (its author or the parcel's owner). Deleting a thread's first comment deletes its replies too.",
+        "operationId": "delete_comment",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comment number",
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "comments"
+        ]
+      },
+      "patch": {
+        "description": "Edit a comment's text (its author) or resolve/reopen a thread (the owner or the thread's author). Returns the whole thread.",
+        "operationId": "update_comment",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comment number",
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateComment"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comment"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "comments"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}/data": {
+      "get": {
+        "description": "The parcel's data collections and how much of its data limit they use. Readable wherever the parcel is; `writable` says whether the caller may change it.",
+        "operationId": "get_data_summary",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataSummary"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}/data/{collection}": {
+      "delete": {
+        "description": "Delete every item in a collection (the owner only).",
+        "operationId": "delete_data_collection",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Collection name",
+            "in": "path",
+            "name": "collection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted (or already empty)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "data"
+        ]
+      },
+      "get": {
+        "description": "A page of a collection's items, by key.",
+        "operationId": "list_data_items",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Collection name",
+            "in": "path",
+            "name": "collection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (1–1000, default 100).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Return keys after this one (the previous page's `next_after`).",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataItemList"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/api/v1/parcels/{id}/data/{collection}/{key}": {
+      "delete": {
+        "description": "Delete one item (the owner only).",
+        "operationId": "delete_data_item",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Collection name",
+            "in": "path",
+            "name": "collection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Item key",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted (or already absent)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "data"
+        ]
+      },
+      "get": {
+        "description": "One item.",
+        "operationId": "get_data_item",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Collection name",
+            "in": "path",
+            "name": "collection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Item key",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataItem"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "data"
+        ]
+      },
+      "patch": {
+        "description": "Merge a JSON object into an item (RFC 7386 merge patch: `null` removes a field), creating it if it doesn't exist.",
+        "operationId": "patch_data_item",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Collection name",
+            "in": "path",
+            "name": "collection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Item key",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/merge-patch+json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataItem"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The value or the parcel's data is over its limit"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "data"
+        ]
+      },
+      "put": {
+        "description": "Create or replace an item. The body is the value: any JSON.",
+        "operationId": "put_data_item",
+        "parameters": [
+          {
+            "description": "Parcel id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Collection name",
+            "in": "path",
+            "name": "collection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Item key",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataItem"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": ""
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The value or the parcel's data is over its limit"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "data"
+        ]
+      }
+    },
     "/api/v1/parcels/{id}/versions": {
       "get": {
         "description": "Every version of a parcel, newest first.",
@@ -1915,6 +3227,14 @@
     {
       "description": "A parcel's immutable versions and their files.",
       "name": "versions"
+    },
+    {
+      "description": "Feedback threads pinned to spots on a parcel's page.",
+      "name": "comments"
+    },
+    {
+      "description": "JSON data a parcel keeps between visits: readable by its viewers, writable by its owner.",
+      "name": "data"
     },
     {
       "description": "API tokens for the CLI and agents.",

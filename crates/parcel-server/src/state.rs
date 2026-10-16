@@ -10,8 +10,8 @@ use stridelabs_auth::{SlauthConfig, Verifier};
 use tokio::sync::Semaphore;
 
 use crate::config::Config;
-use crate::db;
 use crate::storage::{self, BlobStore};
+use crate::{content, db};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -26,6 +26,8 @@ pub struct AppState {
     pub verifier: Verifier,
     /// Bounds concurrent publishes, since each holds its upload in memory.
     pub upload_permits: Arc<Semaphore>,
+    /// The script added to every HTML page on the content origin.
+    pub helper: Arc<content::helper::Helper>,
 }
 
 impl AppState {
@@ -62,6 +64,7 @@ impl AppState {
             .weigher(|_key: &String, value: &Bytes| u32::try_from(value.len()).unwrap_or(u32::MAX))
             .build();
         let upload_permits = Arc::new(Semaphore::new(config.max_concurrent_uploads.max(1)));
+        let helper = Arc::new(content::helper::Helper::new(&config.app_origin_str()));
         Self {
             config: Arc::new(config),
             db,
@@ -70,6 +73,7 @@ impl AppState {
             blob_cache,
             verifier,
             upload_permits,
+            helper,
         }
     }
 }

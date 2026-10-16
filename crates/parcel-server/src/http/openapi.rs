@@ -39,6 +39,9 @@ use crate::state::AppState;
         (name = "account", description = "Server description and the signed-in user."),
         (name = "parcels", description = "Create, list, read, change and delete parcels."),
         (name = "versions", description = "A parcel's immutable versions and their files."),
+        (name = "comments", description = "Feedback threads pinned to spots on a parcel's page."),
+        (name = "data", description = "JSON data a parcel keeps between visits: readable by its \
+            viewers, writable by its owner."),
         (name = "tokens", description = "API tokens for the CLI and agents."),
         (name = "device", description = "The CLI's device login flow."),
     )
@@ -91,6 +94,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(super::account::router())
         .merge(super::parcels::router())
         .merge(super::versions::router())
+        .merge(super::comments::router())
+        .merge(super::data::router())
         .merge(super::tokens::router())
         .merge(super::device::router());
     OpenApiRouter::with_openapi(ApiDoc::openapi()).nest("/api/v1", v1)

@@ -20,6 +20,7 @@ pub struct ParcelRow {
     pub entry: String,
     pub file_count: i32,
     pub total_bytes: i64,
+    pub open_comments: i64,
 }
 
 impl ParcelRow {
@@ -59,7 +60,10 @@ impl From<FileRow> for FileEntry {
 
 const PARCEL_SELECT: &str = "SELECT p.id, p.owner_id, p.title, p.description, p.visibility,
             p.current_version, p.created_at, p.updated_at,
-            v.entry, v.file_count, v.total_bytes
+            v.entry, v.file_count, v.total_bytes,
+            (SELECT count(*) FROM comments c
+              WHERE c.parcel_id = p.id AND c.parent_number IS NULL
+                AND c.resolved_at IS NULL) AS open_comments
      FROM parcels p
      JOIN parcel_versions v ON v.parcel_id = p.id AND v.version = p.current_version";
 
@@ -203,6 +207,16 @@ pub async fn content_lookup(
     .fetch_optional(pool)
     .await
     .context("content lookup")
+}
+
+/// A parcel's visibility, when it exists.
+pub async fn visibility(pool: &PgPool, id: &str) -> Result<Option<Visibility>> {
+    let raw: Option<String> = sqlx::query_scalar("SELECT visibility FROM parcels WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .context("loading parcel visibility")?;
+    Ok(raw.map(|v| Visibility::parse(&v).unwrap_or_default()))
 }
 
 /// The entry path of a version, when the parcel still exists.

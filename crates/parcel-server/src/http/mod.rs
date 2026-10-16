@@ -2,6 +2,8 @@
 //! Swagger UI and the SPA. The content origin lives in `crate::content`.
 
 pub mod account;
+pub mod comments;
+pub mod data;
 pub mod device;
 pub mod health;
 pub mod openapi;

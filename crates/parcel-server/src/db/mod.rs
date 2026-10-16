@@ -5,6 +5,8 @@
 //! `anyhow::Result`; handlers convert at the `AppError::Internal` boundary.
 
 pub mod blobs;
+pub mod comments;
+pub mod data;
 pub mod device;
 pub mod parcels;
 pub mod tokens;

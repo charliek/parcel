@@ -687,6 +687,8 @@ mod tests {
             max_files_per_version: 10,
             max_version_bytes: 100,
             user_quota_bytes: 0,
+            max_data_bytes: 0,
+            max_data_value_bytes: 0,
         };
         let m = manifest(&["index.html"]);
         assert_eq!(check_version_limits(&m, "index.html", &limits).unwrap(), 10);

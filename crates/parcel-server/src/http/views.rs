@@ -21,6 +21,7 @@ pub fn summary(config: &Config, row: &ParcelRow) -> ParcelSummary {
         created_at: row.created_at,
         updated_at: row.updated_at,
         url: config.viewer_url(&row.id),
+        open_comments: row.open_comments,
     }
 }
 

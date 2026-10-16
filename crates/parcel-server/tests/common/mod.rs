@@ -214,6 +214,43 @@ impl TestApp {
         .await
     }
 
+    pub async fn put_json(&self, uri: &str, token: Option<&str>, body: &Value) -> Response {
+        self.send(build(
+            Method::PUT,
+            uri,
+            token,
+            Body::from(body.to_string()),
+            Some("application/json"),
+        ))
+        .await
+    }
+
+    /// Send any request to the content host. `url` is a full content URL or
+    /// a path.
+    pub async fn content_request(&self, method: Method, url: &str, body: Option<&str>) -> Response {
+        let path = if url.starts_with('/') {
+            url.to_string()
+        } else {
+            let parsed = url::Url::parse(url).expect("content url");
+            match parsed.query() {
+                Some(q) => format!("{}?{q}", parsed.path()),
+                None => parsed.path().to_string(),
+            }
+        };
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, CONTENT_HOST);
+        if body.is_some() {
+            req = req.header(header::CONTENT_TYPE, "application/json");
+        }
+        self.send(
+            req.body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+                .unwrap(),
+        )
+        .await
+    }
+
     pub async fn post_multipart(&self, uri: &str, token: Option<&str>, form: &Form) -> Response {
         let (content_type, body) = form.encode();
         self.send(build(

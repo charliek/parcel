@@ -104,6 +104,8 @@ versions; unreferenced blobs are garbage-collected after a grace period.
 | `PARCEL_MAX_FILES_PER_VERSION` | 512 |
 | `PARCEL_MAX_VERSION_BYTES` | 256 MiB |
 | `PARCEL_USER_QUOTA_BYTES` (sum over all versions; 0 = unlimited) | 2 GiB |
+| `PARCEL_MAX_DATA_BYTES` (per parcel: each data item's JSON + 128 B) | 10 MiB |
+| `PARCEL_MAX_DATA_VALUE_BYTES` | 256 KiB |
 
 These mirror the published limits of Claude artifacts so skills written for one
 port to the other.
@@ -192,15 +194,85 @@ Types are in `crates/parcel-types/src/api.rs`.
 | POST | `/api/v1/cli/device/token` | — | `DevicePollRequest` → `DevicePollResponse` |
 | GET | `/api/v1/cli/device/{user_code}` | required | `DeviceInfo` (pending codes only) |
 | POST | `/api/v1/cli/device/{user_code}/approve` and `/deny` | required | 204 |
+| GET | `/api/v1/parcels/{id}/activity` | owner/public | `ParcelActivity` (the viewer's poll; `no-store`) |
+| GET/POST | `/api/v1/parcels/{id}/comments?status=open\|resolved\|all` | owner, or signed-in when public | `CommentList` / `NewComment` → 201 `Comment` (the thread) |
+| PATCH/DELETE | `/api/v1/parcels/{id}/comments/{number}` | author / owner (see below) | `UpdateComment` → `Comment` / 204 |
+| GET | `/api/v1/parcels/{id}/data` | owner/public | `DataSummary` |
+| GET/DELETE | `/api/v1/parcels/{id}/data/{collection}?limit=&after=` | read: owner/public; delete: owner | `DataItemList` / 204 |
+| GET/PUT/PATCH/DELETE | `/api/v1/parcels/{id}/data/{collection}/{key}` | read: owner/public; write: owner | any JSON → `DataItem` (PATCH = RFC 7386 merge) / 204 |
 | GET | anything else | — | SPA (`index.html` fallback) when `PARCEL_STATIC_DIR` is set |
 
 Content host (`PARCEL_CONTENT_ORIGIN`): `GET /v/{token}/{path}` serves a file
-(`/v/{token}/` redirects to the entry). Nothing else.
+(`/v/{token}/` redirects to the entry); `/d/{token}[/{collection}[/{key}]]`
+is the page's data (same verbs and bodies as the API above; writes need an
+owner-scope token; CORS `*`, `OPTIONS` preflight); `/_parcel/helper.<hash>.js`
+is the page helper. Nothing else.
 
 Web app routes: `/` (my parcels, or landing when signed out), `/p/:id` and
 `/p/:id/v/:version` (viewer; public parcels need no sign-in), `/new` (upload),
 `/tokens`, `/cli` (CLI + skill setup), `/device` (approve a CLI login),
 `/auth/callback`.
+
+## Comments, live updates and page data (v0.2)
+
+**Live updates.** The viewer polls `GET /parcels/{id}/activity` every ~5 s
+while its tab is visible (paused when hidden). A new `current_version`
+reloads the frame when the viewer shows the current version; when it shows an
+older version or the user is writing a comment, a banner offers the reload
+instead. A changed `comments_revision` refetches comments. Polling (not SSE)
+works across Cloud Run instances with no shared bus; the endpoint is one
+indexed row.
+
+**Comments.** Threads are numbered per parcel (`#1`, `#2`, …; replies take
+numbers too, numbers are never reused) and may carry an anchor
+`{path, selector?, text?, x?, y?}`: the page, a CSS selector of the clicked
+element, its text (to re-find it after edits), and the click position inside
+its box. Who may: read/write — the owner, plus any signed-in user when the
+parcel is public (anonymous viewers see none); edit — the author; resolve or
+reopen a thread — the owner or the thread's author; delete — the author or
+the owner. `via` is `web` or `cli` (a `pcl_` token). A parcel holds at most
+2000 comments.
+
+**Page helper.** Every HTML response on the content origin (HTML files and
+rendered Markdown entries) gets `<script src="/_parcel/helper.<hash>.js">`
+right after `<head>` (else after `<html>`, else after the doctype). The ETag
+includes the hash. The script (`crates/parcel-server/assets/parcel-helper.js`):
+
+1. replaces `localStorage`, `sessionStorage` and `document.cookie` with
+   in-memory stand-ins when they throw (they always do in the sandbox);
+2. exposes `window.parcel = {id, version, path, canWrite, data}` where `data`
+   has `get, list, set, update, delete, clear, collections, subscribe`,
+   calling `/d/{token}/…` with the page's own capability;
+3. when framed, speaks a postMessage protocol with the viewer, only with
+   `PARCEL_APP_ORIGIN` (checked both ways; the origin is baked into the
+   script at startup):
+
+| Direction | `type` | Fields |
+|---|---|---|
+| viewer → page | `hello` | — (page answers `ready`) |
+| viewer → page | `comment-mode` | `enabled: bool` |
+| viewer → page | `pins` | `pins: [{number, anchor, resolved, active?}]` |
+| viewer → page | `draft` | `anchor \| null` (the spot being commented on) |
+| viewer → page | `focus` | `number` (scroll to and pulse that pin) |
+| page → viewer | `ready` | `path, title, version` (on load and on `hello`) |
+| page → viewer | `anchor` | `anchor` (a click in comment mode) |
+| page → viewer | `pin-click` | `number` |
+| page → viewer | `located` | `found: number[], missing: number[]` |
+| page → viewer | `escape` | — (Escape pressed in comment mode) |
+
+Viewer messages carry `source: 'parcel-viewer'`, page messages
+`source: 'parcel-helper'`. The viewer accepts page messages only from its
+iframe's `contentWindow` and treats them as untrusted input (the page can
+forge any of them); it sends anchors and numbers, never comment text.
+
+**Page data.** Collections of keyed JSON items per parcel, shared by every
+version, deleted with the parcel. Readable by anyone who can view the parcel;
+writable only by its owner — through the API (CLI, agents) or from the page
+with an owner-scope capability (minted only for the owner's own viewing).
+Names are `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. Limits: one value
+`PARCEL_MAX_DATA_VALUE_BYTES` (256 KiB); a parcel `PARCEL_MAX_DATA_BYTES`
+(10 MiB), counting each item's compact JSON plus 128 bytes. Visitor writes
+(polls from anonymous viewers) are deliberately not supported yet.
 
 ## Status (2026-10-16)
 

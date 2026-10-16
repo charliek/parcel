@@ -117,7 +117,11 @@ async fn view_grant_serves_sandboxed_content() {
         headers.get("x-frame-options").is_none(),
         "content must be frameable by the app"
     );
-    assert_eq!(body_bytes(page).await, PAGE.as_bytes());
+    // The served page is the stored page plus the helper script.
+    assert_eq!(
+        body_bytes(page).await,
+        app.state.helper.inject(PAGE.as_bytes())
+    );
 
     // Siblings resolve under the same token prefix.
     let base = grant.content_url.trim_end_matches("index.html");

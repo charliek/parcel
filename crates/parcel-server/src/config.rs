@@ -161,6 +161,8 @@ impl Default for Config {
                 max_files_per_version: 512,
                 max_version_bytes: 256 * MIB,
                 user_quota_bytes: 2048 * MIB,
+                max_data_bytes: 10 * MIB,
+                max_data_value_bytes: 256 * 1024,
             },
             max_concurrent_uploads: 8,
             static_dir: None,
@@ -365,6 +367,12 @@ impl Config {
                 &mut errs,
             ),
             user_quota_bytes: env.parse("PARCEL_USER_QUOTA_BYTES", l.user_quota_bytes, &mut errs),
+            max_data_bytes: env.parse("PARCEL_MAX_DATA_BYTES", l.max_data_bytes, &mut errs),
+            max_data_value_bytes: env.parse(
+                "PARCEL_MAX_DATA_VALUE_BYTES",
+                l.max_data_value_bytes,
+                &mut errs,
+            ),
         };
         validate_limits(&limits, &mut errs);
 
@@ -471,7 +479,7 @@ fn parse_origin<F: Fn(&str) -> Option<String>>(
 }
 
 fn validate_limits(l: &Limits, errs: &mut Errors) {
-    let positive: [(&str, i64); 6] = [
+    let positive: [(&str, i64); 8] = [
         ("PARCEL_MAX_ENTRY_BYTES", l.max_entry_bytes),
         ("PARCEL_MAX_FILE_BYTES", l.max_file_bytes),
         ("PARCEL_MAX_UPLOAD_BYTES", l.max_upload_bytes),
@@ -484,6 +492,8 @@ fn validate_limits(l: &Limits, errs: &mut Errors) {
             i64::from(l.max_files_per_version),
         ),
         ("PARCEL_MAX_VERSION_BYTES", l.max_version_bytes),
+        ("PARCEL_MAX_DATA_BYTES", l.max_data_bytes),
+        ("PARCEL_MAX_DATA_VALUE_BYTES", l.max_data_value_bytes),
     ];
     for (key, value) in positive {
         if value <= 0 {

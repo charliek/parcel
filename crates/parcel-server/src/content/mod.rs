@@ -12,7 +12,12 @@
 //!   leaks to sites a parcel links to;
 //! * `Access-Control-Allow-Origin: *` — module scripts, fonts and `fetch()`
 //!   of sibling files are CORS requests from the opaque (`null`) origin.
+//!
+//! HTML responses also get the page helper script (`helper`), and the
+//! page's data lives under `/d/{token}/…` (`data`).
 
+pub mod data;
+pub mod helper;
 pub mod markdown;
 pub mod token;
 
@@ -85,6 +90,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         // So uptime checks against the content domain have something to hit.
         .route("/health/live", get(|| async { "ok" }))
+        .route("/_parcel/{file}", get(serve_helper))
+        .merge(data::router(&state))
         .route("/v/{token}", get(redirect_to_dir))
         .route("/v/{token}/", get(redirect_to_entry))
         .route("/v/{token}/{*path}", get(serve))
@@ -194,11 +201,19 @@ async fn serve(
     }
 
     let render_markdown = row.path == row.entry && parcel_types::media::is_markdown(&row.path);
-    let etag = if render_markdown {
-        format!("\"{}-md\"", row.blob_sha256)
-    } else {
-        format!("\"{}\"", row.blob_sha256)
-    };
+    let is_html = render_markdown || is_html(&row.content_type);
+    // The ETag covers what is sent: the rendered Markdown and the helper
+    // version, not just the stored bytes.
+    let etag = format!(
+        "\"{}{}{}\"",
+        row.blob_sha256,
+        if render_markdown { "-md" } else { "" },
+        if is_html {
+            format!("-h{}", state.helper.hash)
+        } else {
+            String::new()
+        }
+    );
     if request_headers
         .get(IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
@@ -228,6 +243,11 @@ async fn serve(
     } else {
         (bytes, row.content_type)
     };
+    let body = if is_html {
+        Bytes::from(state.helper.inject(&body))
+    } else {
+        body
+    };
 
     let mut response = Response::new(Body::from(body.clone()));
     let headers = response.headers_mut();
@@ -236,6 +256,43 @@ async fn serve(
     }
     headers.insert(CONTENT_LENGTH, HeaderValue::from(body.len()));
     apply_file_headers(&state, headers, &etag);
+    response
+}
+
+fn is_html(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .is_some_and(|t| t.trim().eq_ignore_ascii_case("text/html"))
+}
+
+/// `/_parcel/helper.<hash>.js`. A page cached from before an upgrade may ask
+/// for an older hash; it gets the current script, just not cached for long.
+async fn serve_helper(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+    let Some(hash) = file
+        .strip_prefix("helper.")
+        .and_then(|rest| rest.strip_suffix(".js"))
+    else {
+        return not_found(&state);
+    };
+    let cache = if hash == state.helper.hash {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    let mut response = Response::new(Body::from(state.helper.js.clone()));
+    let headers = response.headers_mut();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/javascript; charset=utf-8"),
+    );
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static(cache));
+    headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("cross-origin"),
+    );
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     response
 }
 

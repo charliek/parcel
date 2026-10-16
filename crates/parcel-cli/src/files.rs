@@ -311,6 +311,8 @@ mod tests {
             max_files_per_version: 10,
             max_version_bytes: 1000,
             user_quota_bytes: 0,
+            max_data_bytes: 0,
+            max_data_value_bytes: 0,
         }
     }
 
