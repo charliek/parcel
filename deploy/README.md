@@ -129,6 +129,20 @@ shorten it for work setups) and pauses their API tokens after
 `PARCEL_TOKEN_LOGIN_MAX_AGE_DAYS`. To cut someone off at once:
 `UPDATE users SET disabled_at = now() WHERE lower(email) = '…';`.
 
+## MCP server
+
+`PARCEL_MCP_ENABLED=true` (set in `cloud-run-service.yaml`) serves MCP at
+`https://${APP_DOMAIN}/mcp`, for agents signing in through
+`PARCEL_MCP_PROVIDER` (default `slauth`). That provider must know the
+resource: slauth's `apps.yaml` lists `https://parcel.stridelabs.ai/mcp` under
+parcel's `mcp_resources` and registers the `parcel-claude` and
+`parcel-claude-code` connectors, so a slauth release carries any change to
+them. Nothing else to provision: the keys are the provider's JWKS
+(`<issuer>/.well-known/jwks.json`, or `PARCEL_MCP_JWKS_URL`). Connecting
+assistants: the README's "Connect Claude". A disabled user, or one whose
+domain the provider no longer allows, is refused on the next call; people
+disconnect an assistant from slauth's connected apps.
+
 ## CI and deploys
 
 GitHub Actions reach GCP through Workload Identity Federation (the tapper

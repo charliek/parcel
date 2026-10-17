@@ -13,6 +13,9 @@ default = []
 # utoipa `ToSchema` derives for the server's OpenAPI document. Off by default
 # so the CLI's dependency graph never compiles utoipa.
 openapi = ["dep:utoipa"]
+# schemars `JsonSchema` derives for the enums MCP tool parameters use (the
+# server's /mcp). Off by default, like `openapi`, for the CLI's sake.
+schemars = ["dep:schemars"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -20,3 +23,4 @@ serde_json = "1"
 time = { version = "0.3", features = ["serde", "serde-well-known"] }
 thiserror = "2"
 utoipa = { version = "6", features = ["time"], optional = true }
+schemars = { version = "1", optional = true }

@@ -2,11 +2,20 @@
 
 ## Unreleased
 
-Maintenance: stridelabs-rust v0.5.0 and the dependency majors that come with
-it (their types are in those crates' signatures). No API or behaviour change
-for users beyond what is listed.
+### Added (v0.4: MCP server)
+- An MCP server at `<app>/mcp` (`PARCEL_MCP_ENABLED`, `PARCEL_MCP_PROVIDER`,
+  `PARCEL_MCP_JWKS_URL`) on the new shared crate stridelabs-mcp
+  (stridelabs-rust v0.6.0, which all stridelabs-* pins move to): stateless
+  Streamable HTTP, RFC 9728 metadata, slauth access tokens minted for the
+  resource (or `pcl_` tokens). Tools: `whoami`, `list_parcels`, `get_parcel`,
+  `read_file`, `publish_parcel`, `update_parcel`, `delete_parcel`,
+  `list_shares`, `share_parcel`, `unshare_parcel` — the REST API's operations
+  and rules, one audit line per call. Connect claude.ai with client ID
+  `parcel-claude`, Claude Code with `parcel-claude-code` (README).
 
-### Changed
+### Changed (maintenance)
+stridelabs-rust v0.5.0 and the dependency majors that come with it (their
+types are in those crates' signatures); no API change beyond what is listed.
 - stridelabs-* v0.4.0 → v0.5.0, reqwest 0.12 → 0.13, sqlx 0.8 → 0.9,
   jsonwebtoken 9 → 11, tower-http 0.6 → 0.7, utoipa 5 → 6 (utoipa-axum 0.3,
   utoipa-swagger-ui 10), rand 0.9 → 0.10.

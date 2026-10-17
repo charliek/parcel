@@ -55,17 +55,26 @@ async fn list_parcels(
     caller: AuthUser,
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<ParcelList>> {
+    Ok(Json(list(&state, &caller, &q).await?))
+}
+
+/// The caller's parcels (`GET /parcels`, and the MCP `list_parcels` tool).
+pub(crate) async fn list(
+    state: &AppState,
+    caller: &AuthUser,
+    q: &ListQuery,
+) -> AppResult<ParcelList> {
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let offset = q.offset.unwrap_or(0).max(0);
     let (rows, total) =
         parcels::list_for_owner(&state.db, caller.user.id, q.q.as_deref(), limit, offset).await?;
-    Ok(Json(ParcelList {
+    Ok(ParcelList {
         parcels: rows
             .iter()
             .map(|r| views::summary(&state.config, r))
             .collect(),
         total,
-    }))
+    })
 }
 
 /// Wait briefly for an upload slot; publishes hold their bytes in memory.
@@ -153,17 +162,26 @@ async fn get_parcel(
     MaybeAuthUser(caller): MaybeAuthUser,
     Path(id): Path<String>,
 ) -> AppResult<Json<ParcelDetail>> {
-    let (row, access) = readable(&state, &id, caller.as_ref()).await?;
-    let versions = parcels::list_versions(&state.db, &id).await?;
-    let files = parcels::version_files(&state.db, &id, row.current_version).await?;
-    Ok(Json(ParcelDetail {
+    Ok(Json(detail(&state, caller.as_ref(), &id).await?))
+}
+
+/// A parcel the caller may read, with its history and current files.
+pub(crate) async fn detail(
+    state: &AppState,
+    caller: Option<&AuthUser>,
+    id: &str,
+) -> AppResult<ParcelDetail> {
+    let (row, access) = readable(state, id, caller).await?;
+    let versions = parcels::list_versions(&state.db, id).await?;
+    let files = parcels::version_files(&state.db, id, row.current_version).await?;
+    Ok(ParcelDetail {
         parcel: views::summary(&state.config, &row),
         is_owner: access == ParcelAccess::Owner,
         access,
-        owner_name: views::owner_name(&state, &row, caller.as_ref()).await?,
+        owner_name: views::owner_name(state, &row, caller).await?,
         versions: versions.iter().map(views::version_summary).collect(),
         files: files.into_iter().map(Into::into).collect(),
-    }))
+    })
 }
 
 #[utoipa::path(
@@ -188,7 +206,17 @@ async fn update_parcel(
     Path(id): Path<String>,
     Json(body): Json<UpdateParcelRequest>,
 ) -> AppResult<Json<ParcelSummary>> {
-    owned(&state, &id, &caller).await?;
+    Ok(Json(update_metadata(&state, &caller, &id, &body).await?))
+}
+
+/// Change an owned parcel's title, description or visibility.
+pub(crate) async fn update_metadata(
+    state: &AppState,
+    caller: &AuthUser,
+    id: &str,
+    body: &UpdateParcelRequest,
+) -> AppResult<ParcelSummary> {
+    owned(state, id, caller).await?;
     views::check_visibility(&state.config, body.visibility)?;
     let title = body.title.as_deref().map(str::trim);
     if title.is_some_and(|t| t.is_empty() || t.chars().count() > 200) {
@@ -202,11 +230,11 @@ async fn update_parcel(
             "description must be at most 4000 characters".into(),
         ));
     }
-    parcels::update_metadata(&state.db, &id, title, description, body.visibility).await?;
-    let row = parcels::get(&state.db, &id)
+    parcels::update_metadata(&state.db, id, title, description, body.visibility).await?;
+    let row = parcels::get(&state.db, id)
         .await?
         .ok_or_else(crate::error::not_found)?;
-    Ok(Json(views::summary(&state.config, &row)))
+    Ok(views::summary(&state.config, &row))
 }
 
 #[utoipa::path(
@@ -227,10 +255,16 @@ async fn delete_parcel(
     caller: AuthUser,
     Path(id): Path<String>,
 ) -> AppResult<StatusCode> {
-    owned(&state, &id, &caller).await?;
-    parcels::delete(&state.db, &id).await?;
-    tracing::info!(parcel = %id, user = %caller.user.id, "parcel deleted");
+    delete(&state, &caller, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Delete an owned parcel and all its versions.
+pub(crate) async fn delete(state: &AppState, caller: &AuthUser, id: &str) -> AppResult<()> {
+    owned(state, id, caller).await?;
+    parcels::delete(&state.db, id).await?;
+    tracing::info!(parcel = %id, user = %caller.user.id, "parcel deleted");
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, IntoParams)]

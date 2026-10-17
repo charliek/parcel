@@ -25,6 +25,10 @@ export default defineConfig({
       '/auth/': { target: BACKEND, changeOrigin: true },
       '/openapi.json': { target: BACKEND, changeOrigin: true },
       '/docs': { target: BACKEND, changeOrigin: true },
+      // The MCP endpoint checks `Host` against its resource URL (DNS-rebinding
+      // protection), so these two keep the browser's Host.
+      '/mcp': { target: BACKEND, changeOrigin: false },
+      '/.well-known/oauth-protected-resource': { target: BACKEND, changeOrigin: false },
     },
   },
   build: {

@@ -80,18 +80,32 @@ async fn create_version(
             views::check_visibility(&state.config, m.visibility)
         })
         .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(publish_version(&state, &caller, &id, meta, uploads).await?),
+    ))
+}
+
+/// Publish a new version from checked uploads. The caller has already
+/// checked that it owns the parcel (`owned`, before buffering any bytes)
+/// and that `meta.visibility` is allowed; `add_version` re-checks ownership
+/// under the row lock.
+pub(crate) async fn publish_version(
+    state: &AppState,
+    caller: &AuthUser,
+    id: &str,
+    meta: NewVersionMetadata,
+    uploads: Vec<publish::Upload>,
+) -> AppResult<PublishResult> {
     let version = publish::add_version(
-        &state,
-        &id,
+        state,
+        id,
         caller.user.id,
         VersionSource::Upload { meta, uploads },
     )
     .await?;
     tracing::info!(parcel = %id, version, "version published");
-    Ok((
-        StatusCode::CREATED,
-        Json(publish_result(&state, &id, version).await?),
-    ))
+    publish_result(state, id, version).await
 }
 
 #[utoipa::path(
@@ -177,14 +191,7 @@ async fn get_file(
     MaybeAuthUser(caller): MaybeAuthUser,
     Path((id, version, path)): Path<(String, String, String)>,
 ) -> AppResult<Response> {
-    let (row, _) = readable(&state, &id, caller.as_ref()).await?;
-    let version = parse_version(&version, row.current_version)?;
-    let file = parcels::find_file(&state.db, &id, version, &path)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("{path:?} not found in version {version}")))?;
-    let bytes = content::load_blob(&state, &file.blob_sha256)
-        .await?
-        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("blob {} missing", file.blob_sha256)))?;
+    let (file, bytes) = read_file(&state, caller.as_ref(), &id, &version, &path).await?;
 
     let mut response = Response::new(Body::from(bytes.clone()));
     let headers = response.headers_mut();
@@ -211,4 +218,42 @@ async fn get_file(
         HeaderValue::from_static("private, no-cache"),
     );
     Ok(response)
+}
+
+/// One file of a version the caller may read: its row and bytes.
+/// `version` is a number or `latest`.
+pub(crate) async fn read_file(
+    state: &AppState,
+    caller: Option<&AuthUser>,
+    id: &str,
+    version: &str,
+    path: &str,
+) -> AppResult<(parcels::FileRow, bytes::Bytes)> {
+    let file = file_row(state, caller, id, version, path).await?;
+    let bytes = load_file(state, &file).await?;
+    Ok((file, bytes))
+}
+
+/// The row of one file of a version the caller may read.
+pub(crate) async fn file_row(
+    state: &AppState,
+    caller: Option<&AuthUser>,
+    id: &str,
+    version: &str,
+    path: &str,
+) -> AppResult<parcels::FileRow> {
+    let (row, _) = readable(state, id, caller).await?;
+    let version = parse_version(version, row.current_version)?;
+    parcels::find_file(&state.db, id, version, path)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("{path:?} not found in version {version}")))
+}
+
+pub(crate) async fn load_file(
+    state: &AppState,
+    file: &parcels::FileRow,
+) -> AppResult<bytes::Bytes> {
+    content::load_blob(state, &file.blob_sha256)
+        .await?
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("blob {} missing", file.blob_sha256)))
 }

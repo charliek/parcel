@@ -58,11 +58,16 @@ async fn list_shares(
     caller: AuthUser,
     Path(id): Path<String>,
 ) -> AppResult<Json<ShareList>> {
-    owned(&state, &id, &caller).await?;
-    let rows = shares::list(&state.db, &id).await?;
-    Ok(Json(ShareList {
+    Ok(Json(list(&state, &caller, &id).await?))
+}
+
+/// Who an owned parcel is shared with.
+pub(crate) async fn list(state: &AppState, caller: &AuthUser, id: &str) -> AppResult<ShareList> {
+    owned(state, id, caller).await?;
+    let rows = shares::list(&state.db, id).await?;
+    Ok(ShareList {
         shares: rows.into_iter().map(share).collect(),
-    }))
+    })
 }
 
 #[utoipa::path(
@@ -91,8 +96,19 @@ async fn put_share(
     Path((id, email)): Path<(String, String)>,
     Json(body): Json<PutShareRequest>,
 ) -> AppResult<Json<Share>> {
-    owned(&state, &id, &caller).await?;
-    let email = parse_email(&email)?;
+    Ok(Json(put(&state, &caller, &id, &email, body.role).await?))
+}
+
+/// Share an owned parcel with `email` as `role`, or change their role.
+pub(crate) async fn put(
+    state: &AppState,
+    caller: &AuthUser,
+    id: &str,
+    email: &str,
+    role: parcel_types::ShareRole,
+) -> AppResult<Share> {
+    owned(state, id, caller).await?;
+    let email = parse_email(email)?;
     if email == caller.user.email.to_lowercase() {
         return Err(AppError::BadRequest(
             "that's you: owners always have access".into(),
@@ -104,10 +120,10 @@ async fn put_share(
             email_domain(&email)
         )));
     }
-    match shares::put(&state.db, &id, &email, body.role).await? {
+    match shares::put(&state.db, id, &email, role).await? {
         Ok(row) => {
-            tracing::info!(parcel = %id, user = %caller.user.id, role = body.role.as_str(), "parcel shared");
-            Ok(Json(share(row)))
+            tracing::info!(parcel = %id, user = %caller.user.id, role = role.as_str(), "parcel shared");
+            Ok(share(row))
         }
         Err(PutRefused::ParcelGone) => Err(not_found()),
         Err(PutRefused::TooMany) => Err(AppError::BadRequest(format!(
@@ -139,15 +155,26 @@ async fn delete_share(
     caller: AuthUser,
     Path((id, email)): Path<(String, String)>,
 ) -> AppResult<StatusCode> {
-    owned(&state, &id, &caller).await?;
-    let email = parse_email(&email)?;
-    if !shares::delete(&state.db, &id, &email).await? {
+    remove(&state, &caller, &id, &email).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Stop sharing an owned parcel with `email`.
+pub(crate) async fn remove(
+    state: &AppState,
+    caller: &AuthUser,
+    id: &str,
+    email: &str,
+) -> AppResult<()> {
+    owned(state, id, caller).await?;
+    let email = parse_email(email)?;
+    if !shares::delete(&state.db, id, &email).await? {
         return Err(AppError::NotFound(format!(
             "this parcel isn't shared with {email}"
         )));
     }
     tracing::info!(parcel = %id, user = %caller.user.id, "parcel unshared");
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -177,11 +204,20 @@ async fn list_shared_with_me(
     caller: AuthUser,
     Query(q): Query<SharedQuery>,
 ) -> AppResult<Json<SharedParcelList>> {
+    Ok(Json(shared_with_me(&state, &caller, &q).await?))
+}
+
+/// Parcels other people shared with the caller.
+pub(crate) async fn shared_with_me(
+    state: &AppState,
+    caller: &AuthUser,
+    q: &SharedQuery,
+) -> AppResult<SharedParcelList> {
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let offset = q.offset.unwrap_or(0).max(0);
     let (rows, total) =
         shares::shared_with(&state.db, &caller.user.email, caller.user.id, limit, offset).await?;
-    Ok(Json(SharedParcelList {
+    Ok(SharedParcelList {
         parcels: rows
             .into_iter()
             .map(|r| SharedParcel {
@@ -192,5 +228,5 @@ async fn list_shared_with_me(
             })
             .collect(),
         total,
-    }))
+    })
 }

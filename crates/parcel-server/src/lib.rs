@@ -12,6 +12,7 @@ pub mod db;
 pub mod error;
 pub mod gc;
 pub mod http;
+pub mod mcp;
 pub mod publish;
 pub mod state;
 pub mod storage;

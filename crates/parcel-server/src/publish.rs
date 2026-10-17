@@ -90,46 +90,20 @@ pub async fn read_multipart<M: DeserializeOwned + Default>(
                             "each file part needs a filename (the published path)".into(),
                         )
                     })?;
-                validate_path(&path).map_err(|e| AppError::BadRequest(format!("{path:?}: {e}")))?;
-                let media = media::media_type_for(&path).ok_or_else(|| {
-                    AppError::BadRequest(format!(
-                        "{path:?}: unsupported file type; allowed extensions: {}",
-                        media::allowed_extensions().join(", ")
-                    ))
-                })?;
-                if !seen.insert(path.clone()) {
-                    return Err(AppError::BadRequest(format!("{path:?} was uploaded twice")));
-                }
-                if uploads.len() >= usize::try_from(limits.max_files_per_upload).unwrap_or(0) {
-                    return Err(too_large(format!(
-                        "too many files in one publish (limit {})",
-                        limits.max_files_per_upload
-                    )));
-                }
+                let content_type = check_new_file(&path, &mut seen, limits)?;
                 let mut buf = BytesMut::new();
                 let mut hasher = Sha256::new();
                 while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
                     hasher.update(&chunk);
                     buf.extend_from_slice(&chunk);
                     total += i64::try_from(chunk.len()).unwrap_or(i64::MAX);
-                    if i64::try_from(buf.len()).unwrap_or(i64::MAX) > per_file_cap {
-                        return Err(too_large(format!(
-                            "{path:?} is larger than {} bytes",
-                            per_file_cap
-                        )));
-                    }
-                    if total > limits.max_upload_bytes {
-                        return Err(too_large(format!(
-                            "upload is larger than {} bytes",
-                            limits.max_upload_bytes
-                        )));
-                    }
+                    check_sizes(&path, buf.len(), total, per_file_cap, limits)?;
                 }
                 uploads.push(Upload {
                     path,
                     bytes: buf.freeze(),
                     sha256: hex::encode(hasher.finalize()),
-                    content_type: media.content_type,
+                    content_type,
                 });
             }
             other => {
@@ -140,6 +114,78 @@ pub async fn read_multipart<M: DeserializeOwned + Default>(
         }
     }
     Ok((metadata.unwrap_or_default(), uploads))
+}
+
+/// Uploads from files already in memory (the MCP tools), held to the same
+/// path, type, count and size rules as a multipart publish.
+pub fn collect_uploads(
+    files: Vec<(String, Bytes)>,
+    limits: &Limits,
+) -> Result<Vec<Upload>, AppError> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut total: i64 = 0;
+    let per_file_cap = limits.max_entry_bytes.max(limits.max_file_bytes);
+    let mut uploads = Vec::with_capacity(files.len());
+    for (path, bytes) in files {
+        let content_type = check_new_file(&path, &mut seen, limits)?;
+        total = total.saturating_add(i64::try_from(bytes.len()).unwrap_or(i64::MAX));
+        check_sizes(&path, bytes.len(), total, per_file_cap, limits)?;
+        uploads.push(Upload {
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            path,
+            bytes,
+            content_type,
+        });
+    }
+    Ok(uploads)
+}
+
+/// A file's path and type are acceptable and it is not one too many; returns
+/// its content type. `seen` holds the paths already in this upload.
+fn check_new_file(
+    path: &str,
+    seen: &mut HashSet<String>,
+    limits: &Limits,
+) -> Result<&'static str, AppError> {
+    validate_path(path).map_err(|e| AppError::BadRequest(format!("{path:?}: {e}")))?;
+    let media = media::media_type_for(path).ok_or_else(|| {
+        AppError::BadRequest(format!(
+            "{path:?}: unsupported file type; allowed extensions: {}",
+            media::allowed_extensions().join(", ")
+        ))
+    })?;
+    if !seen.insert(path.to_string()) {
+        return Err(AppError::BadRequest(format!("{path:?} was uploaded twice")));
+    }
+    if seen.len() > usize::try_from(limits.max_files_per_upload).unwrap_or(0) {
+        return Err(too_large(format!(
+            "too many files in one publish (limit {})",
+            limits.max_files_per_upload
+        )));
+    }
+    Ok(media.content_type)
+}
+
+/// `file_len` bytes of `path` so far, `total` across the upload.
+fn check_sizes(
+    path: &str,
+    file_len: usize,
+    total: i64,
+    per_file_cap: i64,
+    limits: &Limits,
+) -> Result<(), AppError> {
+    if i64::try_from(file_len).unwrap_or(i64::MAX) > per_file_cap {
+        return Err(too_large(format!(
+            "{path:?} is larger than {per_file_cap} bytes"
+        )));
+    }
+    if total > limits.max_upload_bytes {
+        return Err(too_large(format!(
+            "upload is larger than {} bytes",
+            limits.max_upload_bytes
+        )));
+    }
+    Ok(())
 }
 
 fn multipart_error(e: MultipartError) -> AppError {

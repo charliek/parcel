@@ -26,7 +26,7 @@ default = ["swagger-ui"]
 swagger-ui = ["dep:utoipa-swagger-ui"]
 
 [dependencies]
-parcel-types = { workspace = true, features = ["openapi"] }
+parcel-types = { workspace = true, features = ["openapi", "schemars"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -118,14 +118,22 @@ utoipa-axum = "0.3"
 utoipa-swagger-ui = { version = "10", features = ["axum", "vendored"], optional = true }
 
 # StrideLabs shared crates (public git dep, lockstep-versioned).
-stridelabs-config = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.5.0" }
-stridelabs-observability = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.5.0" }
-stridelabs-http = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.5.0", features = ["openapi"] }
-stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.5.0", features = ["axum", "http"] }
+stridelabs-config = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.6.0" }
+stridelabs-observability = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.6.0" }
+stridelabs-http = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.6.0", features = ["openapi"] }
+stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.6.0", features = ["axum", "http"] }
+stridelabs-mcp = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.6.0" }
+# MCP server at /mcp (tools as an rmcp ServerHandler; stridelabs-mcp supplies
+# the auth boundary and the stateless transport). Same major as stridelabs-mcp,
+# whose API is rmcp's types. Never the `local` feature: it compiles the HTTP
+# service out.
+rmcp = { version = "3.5", default-features = false, features = ["server", "macros"] }
+schemars = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
 tempfile = "3"
-stridelabs-testing = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.5.0", features = ["postgres"] }
-stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.5.0", features = ["test-support"] }
+stridelabs-testing = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.6.0", features = ["postgres"] }
+stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.6.0", features = ["test-support"] }
+stridelabs-mcp = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.6.0", features = ["test-support"] }

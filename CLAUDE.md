@@ -13,7 +13,9 @@ one or more **OIDC providers** (slauth, Okta, Keycloak…; the server is the
 OIDC client and issues a signed session cookie); the `parcel` CLI signs in
 with a device flow and `pcl_` API tokens. Parcels are private, shared with
 people by email, internal (everyone signed in) or public. A bundled skill
-(`skills/parcel`) teaches agents to use it.
+(`skills/parcel`) teaches agents to use it, and an **MCP server** at
+`<app>/mcp` (`src/mcp`, on stridelabs-mcp) gives connected assistants
+(Claude, Claude Code) the same operations as tools.
 
 ## Layout
 
@@ -25,7 +27,7 @@ people by email, internal (everyone signed in) or public. A bundled skill
 | `frontend/` | React 19 + Vite + Tailwind v4 + zustand SPA (bun). |
 | `skills/parcel/` | The agent skill (`SKILL.md` + `references/`), also a Claude plugin via `.claude-plugin/`. |
 | `tests/functional/` | pytest suite driving the real binaries over HTTP (GCS emulator + test JWKS). |
-| `deploy/`, `Dockerfile`, `.github/workflows/` | Cloud Run + Neon + GCS. CI runs on GitHub ([charliek/parcel](https://github.com/charliek/parcel), public); deploy and release workflows not yet run. |
+| `deploy/`, `Dockerfile`, `.github/workflows/` | Cloud Run + Neon + GCS (production live at parcel.stridelabs.ai). CI, release and deploy run on GitHub ([charliek/parcel](https://github.com/charliek/parcel), public); see RELEASING.md and deploy/README.md. |
 
 ## Toolchain and local stack
 
@@ -46,8 +48,10 @@ people by email, internal (everyone signed in) or public. A bundled skill
   `https://parcel.local.stridelabs.ai`, content on
   `https://parcelcontent.local.stridelabs.ai`, backend direct on
   `https://parcelapi.local.stridelabs.ai`. slauth must be up too
-  (`cd ../slauth && prox up -d`; its `feature/add-parcel-app` branch registers
-  the `parcel` client). Local test login: `../slauth/test-users.md`.
+  (`cd ../slauth && prox up -d`; its registry has the `parcel` web client and
+  the `parcel-claude` / `parcel-claude-code` MCP connectors — after changing
+  `hydra/clients.json` locally, run its `scripts/seed-hydra-clients.sh`).
+  Local test login: `../slauth/test-users.md`.
 - Optional second provider: `docker compose --profile keycloak up -d keycloak`
   (see `dev/keycloak/README.md` for its users and the `.env` lines).
 - `AUTH_MODE=dev` (in `.env`) bypasses slauth with a fixed user — for e2e and
@@ -106,10 +110,13 @@ trust prox's local CA.
 10. **Sign-in state lives in signed cookies, not tables.** The session is
    `HMAC(user, epoch, expiry, provider)`; the server stores no provider
    tokens. Cookie-authenticated writes need `Origin` = the app origin, and a
-   cookie only counts for `Sec-Fetch-Site` same-origin/none. The only bearer
-   credential is a `pcl_` token. Every sign-in needs a provider-verified email
-   (or `TRUST_EMAIL`) in that provider's allowed domains, because shares and
-   account linking go by email.
+   cookie only counts for `Sec-Fetch-Site` same-origin/none. On `/api/v1` the
+   only bearer credential is a `pcl_` token. `/mcp` also takes the MCP
+   provider's access tokens minted for its resource (`aud` = `<app>/mcp`),
+   which work nowhere else, and strips them before any tool runs. Every
+   sign-in needs a provider-verified email (or `TRUST_EMAIL`) in that
+   provider's allowed domains, because shares and account linking go by
+   email; an MCP token's first use is a sign-in under the same rules.
 
 ## Conventions
 

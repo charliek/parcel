@@ -116,6 +116,10 @@ fn app_router(state: AppState) -> Router {
         )
         .merge(api_v1)
         .merge(auth::router());
+    let app = match crate::mcp::router(&state) {
+        Some(mcp) => app.merge(mcp),
+        None => app,
+    };
     let app = install_swagger_ui(app, &state.config, &api_doc);
     let app = match state.config.static_dir.clone() {
         Some(dir) => spa::install(app, &dir, &state.config),

@@ -159,6 +159,23 @@ pub struct Config {
     /// Apply migrations at boot. Production turns this off and runs
     /// `parcel-server migrate` as a job on Neon's direct (non-pooled) URL.
     pub run_migrations: bool,
+
+    /// The MCP server at `<app origin>/mcp`; `None` when off.
+    pub mcp: Option<McpConfig>,
+}
+
+/// The MCP server: which provider's access tokens it accepts. Those tokens
+/// are minted for the MCP resource (`aud` = `<app origin>/mcp`), never the
+/// web client, so they work nowhere else in the app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpConfig {
+    /// A configured provider's id (`PARCEL_MCP_PROVIDER`, default `slauth`).
+    pub provider: String,
+    /// That provider's issuer.
+    pub issuer: String,
+    /// Where its signing keys are (`PARCEL_MCP_JWKS_URL`, default
+    /// `<issuer>/.well-known/jwks.json`, which is slauth's).
+    pub jwks_url: String,
 }
 
 pub const DEFAULT_SCOPES: &str = "openid email profile";
@@ -218,6 +235,7 @@ impl Default for Config {
             gc_interval: Duration::from_secs(3600),
             gc_grace: Duration::from_secs(3600),
             run_migrations: true,
+            mcp: None,
         }
     }
 }
@@ -439,6 +457,7 @@ impl Config {
             ),
         };
         validate_limits(&limits, &mut errs);
+        let mcp = parse_mcp(&env, auth_mode, &providers, &app_origin, &mut errs);
 
         let config = Config {
             app_env,
@@ -485,6 +504,7 @@ impl Config {
                 &mut errs,
             )),
             run_migrations: env.parse("RUN_MIGRATIONS", d.run_migrations, &mut errs),
+            mcp,
         };
 
         errs.into_result().map_err(|list| {
@@ -517,6 +537,12 @@ impl Config {
         format!("{}/auth/callback", self.app_origin_str())
     }
 
+    /// The MCP server's canonical resource URL: its address, and the
+    /// audience its tokens must carry.
+    pub fn mcp_resource_url(&self) -> String {
+        format!("{}/mcp", self.app_origin_str())
+    }
+
     pub fn provider(&self, id: &str) -> Option<&ProviderConfig> {
         self.providers.iter().find(|p| p.id == id)
     }
@@ -544,6 +570,74 @@ impl Config {
     pub fn secure_cookies(&self) -> bool {
         self.app_origin.scheme() == "https"
     }
+}
+
+/// `PARCEL_MCP_ENABLED` and the provider whose tokens `/mcp` accepts.
+fn parse_mcp<F: Fn(&str) -> Option<String>>(
+    env: &Lookup<F>,
+    auth_mode: AuthMode,
+    providers: &[ProviderConfig],
+    app_origin: &Url,
+    errs: &mut Errors,
+) -> Option<McpConfig> {
+    if !env.parse("PARCEL_MCP_ENABLED", false, errs) {
+        return None;
+    }
+    if auth_mode != AuthMode::Oidc {
+        errs.push("PARCEL_MCP_ENABLED", "the MCP server needs AUTH_MODE=oidc");
+        return None;
+    }
+    // The resource URL is the token audience, which the provider registers
+    // as an exact canonical string: https and no port.
+    if app_origin.scheme() != "https" || app_origin.port().is_some() {
+        errs.push(
+            "PARCEL_MCP_ENABLED",
+            format!(
+                "the MCP server needs an https PARCEL_APP_ORIGIN without a port, got {}",
+                origin_string(app_origin)
+            ),
+        );
+        return None;
+    }
+    let id = env.or("PARCEL_MCP_PROVIDER", "slauth").to_ascii_lowercase();
+    let Some(provider) = providers.iter().find(|p| p.id == id) else {
+        errs.push(
+            "PARCEL_MCP_PROVIDER",
+            format!("{id:?} is not one of the configured AUTH_PROVIDERS"),
+        );
+        return None;
+    };
+    if let Err(e) = stridelabs_mcp::ProtectedResource::new(
+        &format!("{}/mcp", origin_string(app_origin)),
+        provider.issuer.as_str(),
+        ["parcel:read"],
+    ) {
+        errs.push(
+            "PARCEL_APP_ORIGIN",
+            format!("not usable as an MCP resource: {e}"),
+        );
+        return None;
+    }
+    let jwks_url = env.get("PARCEL_MCP_JWKS_URL").unwrap_or_else(|| {
+        format!(
+            "{}/.well-known/jwks.json",
+            provider.issuer.trim_end_matches('/')
+        )
+    });
+    // The keys decide which tokens are genuine; fetch them as securely as
+    // the issuer itself is reached.
+    if provider.issuer.starts_with("https://") && !jwks_url.starts_with("https://") {
+        errs.push(
+            "PARCEL_MCP_JWKS_URL",
+            "must be an https URL, like the issuer",
+        );
+        return None;
+    }
+    Some(McpConfig {
+        provider: provider.id.clone(),
+        issuer: provider.issuer.clone(),
+        jwks_url,
+    })
 }
 
 /// `AUTH_PROVIDERS` and each provider's `AUTH_<ID>_*`. Unset means one
@@ -911,6 +1005,66 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("must be an https URL"), "{err}");
+    }
+
+    #[test]
+    fn mcp_is_off_unless_enabled_and_names_a_provider() {
+        assert_eq!(load(&[]).unwrap().mcp, None);
+
+        let c = load(&[("PARCEL_MCP_ENABLED", "true")]).unwrap();
+        let mcp = c.mcp.as_ref().expect("enabled");
+        assert_eq!(mcp.provider, "slauth");
+        assert_eq!(mcp.issuer, "https://auth.local.stridelabs.ai");
+        assert_eq!(
+            mcp.jwks_url,
+            "https://auth.local.stridelabs.ai/.well-known/jwks.json"
+        );
+        assert_eq!(
+            c.mcp_resource_url(),
+            "https://parcel.local.stridelabs.ai/mcp"
+        );
+
+        let c = load(&[
+            ("PARCEL_MCP_ENABLED", "true"),
+            ("PARCEL_MCP_JWKS_URL", "https://keys.example/jwks"),
+        ])
+        .unwrap();
+        assert_eq!(c.mcp.unwrap().jwks_url, "https://keys.example/jwks");
+        let err = load(&[
+            ("PARCEL_MCP_ENABLED", "true"),
+            ("PARCEL_MCP_JWKS_URL", "http://keys.example/jwks"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("must be an https URL"), "{err}");
+
+        let err = load(&[
+            ("PARCEL_MCP_ENABLED", "true"),
+            ("PARCEL_MCP_PROVIDER", "okta"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("not one of the configured"), "{err}");
+    }
+
+    #[test]
+    fn mcp_needs_oidc_and_a_canonical_https_origin() {
+        let err = load(&[("PARCEL_MCP_ENABLED", "true"), ("AUTH_MODE", "dev")])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("AUTH_MODE=oidc"), "{err}");
+        for origin in ["http://localhost:18110", "https://parcel.example:8443"] {
+            let err = load(&[
+                ("PARCEL_MCP_ENABLED", "true"),
+                ("PARCEL_APP_ORIGIN", origin),
+            ])
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("https PARCEL_APP_ORIGIN without a port"),
+                "{err}"
+            );
+        }
     }
 
     #[test]

@@ -212,7 +212,7 @@ async fn create_comment(
     }
 
     let via = match caller.via {
-        AuthVia::Token(_) => CommentVia::Cli,
+        AuthVia::Token(_) | AuthVia::Mcp => CommentVia::Cli,
         AuthVia::Session | AuthVia::Dev => CommentVia::Web,
     };
     let inserted = comments::insert(

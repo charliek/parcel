@@ -22,7 +22,8 @@ craze, opencode) as much as for people.
   every viewer reads it, the owner (or their agent, with `parcel data set`)
   writes it.
 - **Agent-ready.** The `parcel` CLI and its bundled skill let an agent publish
-  and read parcels with one command and JSON output.
+  and read parcels with one command and JSON output, and an MCP server at
+  `/mcp` gives Claude (claude.ai) and Claude Code the same as tools.
 
 ```bash
 parcel login                              # opens the browser, approve the code
@@ -42,6 +43,28 @@ brew install charliek/tap/parcel            # macOS / Linux (once released)
 sudo apt install parcel                     # via https://apt.stridelabs.ai (once released)
 cargo install --locked --path crates/parcel-cli   # from source, today
 ```
+
+## Connect Claude (MCP)
+
+The server speaks MCP at `https://<your parcel>/mcp` (production:
+`https://parcel.stridelabs.ai/mcp`). Assistants sign in through Parcel's MCP
+provider (slauth), which has no dynamic client registration, so give them its
+pre-registered client ID:
+
+- **Claude.ai:** Settings → Connectors → Add custom connector, the URL above,
+  and under Advanced settings the OAuth Client ID `parcel-claude` (no secret).
+- **Claude Code:**
+  `claude mcp add --transport http --client-id parcel-claude-code parcel https://parcel.stridelabs.ai/mcp`,
+  then `/mcp` to sign in.
+- **Anything that can only send a header:** a Parcel API token,
+  `Authorization: Bearer pcl_…`. Such a token pauses after 30 days without a
+  web sign-in, like on the CLI; on MCP a paused token just reads as invalid,
+  so sign in on the web and it works again.
+
+You approve `parcel:read` and `parcel:write` once on the sign-in's consent
+screen. The tools publish, list, read, update, share and delete parcels, as
+you; disconnect from slauth's connected apps. A request is at most 16 MiB;
+publish bigger sites with the CLI.
 
 ## Run it locally
 

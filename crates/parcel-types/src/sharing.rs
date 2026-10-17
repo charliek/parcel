@@ -14,6 +14,7 @@ pub const MAX_EMAIL_CHARS: usize = 254;
 
 /// What a person a parcel is shared with may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ShareRole {

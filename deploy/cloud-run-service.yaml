@@ -54,6 +54,10 @@ spec:
               value: parcel
             - name: AUTH_SLAUTH_LABEL
               value: Stride Labs
+            # MCP at ${APP_DOMAIN}/mcp; slauth registers the resource and the
+            # parcel-claude / parcel-claude-code connectors (apps.yaml).
+            - name: PARCEL_MCP_ENABLED
+              value: "true"
             - name: BLOB_BACKEND
               value: gcs
             - name: GCS_BUCKET

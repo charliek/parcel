@@ -1,14 +1,11 @@
 # Roadmap
 
 ## Next
-- **MCP server** at `/mcp`: stateless streamable HTTP, RFC 9728 metadata,
-  a separate verifier with `aud=https://parcel…/mcp`, scopes
-  `parcel:read`/`parcel:write`, connector clients in slauth (the slaudio
-  design, ported to Rust). Tools: publish, list, read, update, delete.
-- First releases from GitHub (the repo is public and CI is green): the CLI
-  release (brew/apt), the image release + deploy workflows, and the first
-  staging deploy (Neon, bucket, secrets, domain mappings — see
-  deploy/README.md).
+- A staging environment (Neon branch, bucket, secrets, domain mappings — see
+  deploy/README.md) and the CLI release (brew/apt).
+- slauth access tokens carry no `email_verified`; add it (from Kratos'
+  verifiable addresses) so parcel can stop trusting slauth emails
+  (`AUTH_SLAUTH_TRUST_EMAIL=false`) before another provider joins.
 - Rate limiting for the unauthenticated device-start endpoint, publishes,
   comments and data writes.
 

@@ -32,7 +32,7 @@ call that is cheap to revisit.
 - Tests: Rust unit + integration (real Postgres, fail-loud), Python functional tests
   (`tests/functional`, pytest, drive the real binaries over HTTP), and Playwright.
 
-Not in the MVP: the MCP server (designed for, see "Later"), comments, shared
+Not in the MVP: the MCP server (v0.4, see "MCP server"), comments, shared
 databases, per-viewer storage, teams/sharing with named users.
 
 ## Architecture
@@ -152,20 +152,55 @@ pooled URL for the service and a direct URL for the migrate job.
 
 ## slauth registration
 
-`apps.yaml` (app `parcel`, invite-only, empty `mcp_resources`), `hydra/clients.json`
-(first-party `parcel` client, redirect `/auth/callback`, post-logout `/`),
-`invite_codes.yaml` (a `parcel-…` code; `parcel` added to `early-access-2026`), and
-the regenerated `hydra_seed_bodies.json` fixture. Done on a slauth branch
-`feature/add-parcel-app` — **not pushed**.
+`apps.yaml`: app `parcel`, invite-only, scopes `parcel:read` / `parcel:write`
+(both `connector_allowed`), and `mcp_resources` (`https://parcel.local.stridelabs.ai/mcp`,
+`https://parcel.stridelabs.ai/mcp`; a staging URL only for slauth's seeder).
+`hydra/clients.json`: the first-party `parcel` web client (redirect
+`/auth/callback`, post-logout `/`) and two MCP connectors, `parcel-claude`
+(claude.ai callback) and `parcel-claude-code` (loopback), with
+`audience_from_app`. `invite_codes.yaml`: a `parcel-…` code, and `parcel` in
+`early-access-2026`.
+
+## MCP server (v0.4)
+
+`<app>/mcp`, on the shared crate stridelabs-mcp (stridelabs-rust; the Rust twin
+of stridelabs-python's, on rmcp): stateless Streamable HTTP with JSON
+responses, `Host`-checked against the resource, RFC 9728 metadata at
+`/.well-known/oauth-protected-resource[/mcp]` naming the MCP provider, and
+RFC 6750 challenges. Off unless `PARCEL_MCP_ENABLED`; the provider is
+`PARCEL_MCP_PROVIDER` (default `slauth`), its keys `<issuer>/.well-known/jwks.json`.
+Supported with slauth: its access tokens carry the same `sub` as its ID
+tokens and register the resource as their audience. Okta or Keycloak would
+need both checked (Okta's custom servers, for one, put the login in `sub`).
+Requests are capped at 16 MiB (rmcp parses a whole request before a tool
+runs), and one over 1 MiB, or of unknown length, waits for an upload permit
+first, so concurrent publishes stay bounded as on the REST API.
+
+- **Credentials.** The provider's access tokens with `aud` = the resource URL
+  (so web-client tokens fail here and MCP tokens fail everywhere else), or a
+  `pcl_` token under the REST API's rules (for clients that can only send a
+  header). The token is stripped before any tool runs.
+- **Who the caller is.** A provider identity seen before is that user (its
+  allowed domains re-checked against the token's email if the provider is
+  trusted with emails, else the stored one; disabled users refused). Its first use signs
+  the person in like the web callback (same email/domain rules); access
+  tokens carry no `email_verified`, so that needs the provider's
+  `TRUST_EMAIL`, else a web sign-in first. MCP needs no pause rule: the
+  provider expires and refreshes its own tokens, so offboarding there
+  reaches them.
+- **Tools.** `whoami`, `list_parcels` (mine / shared), `get_parcel`,
+  `read_file` (≤ 1 MiB; utf8 or base64), `publish_parcel`, `update_parcel`
+  (a new version, or title/description/visibility), `delete_parcel`,
+  `list_shares`, `share_parcel`, `unshare_parcel`. Each runs inside
+  stridelabs-mcp's `ToolCall` (scope check, timeout, safe errors, one audit
+  line on `stridelabs.mcp.tool`) and calls the function its REST handler
+  calls, returning the same JSON. `whoami` needs no scope, the other read
+  tools `parcel:read`, the rest `parcel:write`.
 
 ## Later
 
-- **MCP server** at `/mcp` (stateless streamable HTTP, RFC 9728 metadata, separate
-  verifier with `aud=https://parcel…/mcp`, scopes `parcel:read`/`parcel:write`) —
-  the slaudio design, ported to Rust (likely `rmcp`). The API is shaped so MCP
-  tools are thin wrappers over the same service layer.
 - Per-parcel origins (wildcard subdomain) to allow storage inside parcels.
-- Publishing the repo to GitHub, then turning on CI / release / deploy workflows.
+- MCP tools for comments and page data.
 
 ## HTTP surface (MVP)
 

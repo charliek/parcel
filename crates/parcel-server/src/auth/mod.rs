@@ -43,6 +43,8 @@ pub enum AuthVia {
     Session,
     /// The id of the `api_tokens` row used.
     Token(Uuid),
+    /// An MCP access token from the MCP provider (only on `/mcp`).
+    Mcp,
     Dev,
 }
 
@@ -179,7 +181,7 @@ async fn session_user(parts: &Parts, state: &AppState) -> Result<Option<AuthUser
     }))
 }
 
-async fn token_user(state: &AppState, raw: &str) -> Result<AuthUser, AppError> {
+pub(crate) async fn token_user(state: &AppState, raw: &str) -> Result<AuthUser, AppError> {
     let hash = stridelabs_auth::pat::hash(raw);
     let invalid = || AppError::Unauthorized("invalid, revoked or expired token".into());
     let token = tokens::find_active_by_hash(&state.db, &hash)
@@ -218,6 +220,74 @@ async fn token_user(state: &AppState, raw: &str) -> Result<AuthUser, AppError> {
         user,
         via: AuthVia::Token(token.id),
         provider: None,
+    })
+}
+
+/// The person behind an MCP access token that `provider` issued for
+/// `subject`. An identity seen before is that user. The first connection
+/// signs the person in as the web callback would, under the same email and
+/// domain rules, since connecting is an interactive sign-in at the provider
+/// (with its consent screen); later calls only look the identity up.
+pub async fn mcp_user(
+    state: &AppState,
+    provider_id: &str,
+    subject: &str,
+    email: Option<&str>,
+    name: &str,
+) -> Result<AuthUser, AppError> {
+    let provider = state
+        .config
+        .provider(provider_id)
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("MCP provider not configured")))?;
+    let email = email.and_then(|e| parcel_types::normalize_email(e).ok());
+    let domain_refused = || AppError::Forbidden("your email domain can't sign in to Parcel".into());
+    let user = match users::find_by_identity(&state.db, provider_id, subject)
+        .await
+        .map_err(AppError::Internal)?
+    {
+        // The provider's allowed domains apply on every call, as they do
+        // at every web sign-in, so narrowing them cuts connections off too.
+        // The token's email counts only from a provider trusted to vouch
+        // for it; otherwise the one a verified sign-in stored.
+        Some(user) => {
+            let current = match email.as_deref() {
+                Some(e) if provider.trust_email => e,
+                _ => &user.email,
+            };
+            if !provider.allows_domain(parcel_types::email_domain(current)) {
+                return Err(domain_refused());
+            }
+            user
+        }
+        None => {
+            let email = email.ok_or_else(|| {
+                AppError::Unauthorized("this sign-in carries no usable email".into())
+            })?;
+            // Access tokens carry no `email_verified`, so a first connection
+            // can only trust the address when the provider is trusted to.
+            if !provider.trust_email {
+                return Err(AppError::Unauthorized(format!(
+                    "sign in to Parcel on the web ({}) once before connecting",
+                    state.config.app_origin_str()
+                )));
+            }
+            if !provider.allows_domain(parcel_types::email_domain(&email)) {
+                return Err(domain_refused());
+            }
+            let user = users::sign_in(&state.db, provider_id, subject, &email, name)
+                .await
+                .map_err(AppError::Internal)?;
+            tracing::info!(user = %user.id, provider = %provider_id, "signed in through MCP");
+            user
+        }
+    };
+    if user.disabled_at.is_some() {
+        return Err(AppError::Forbidden("this account is disabled".into()));
+    }
+    Ok(AuthUser {
+        user,
+        via: AuthVia::Mcp,
+        provider: Some(provider_id.to_string()),
     })
 }
 
