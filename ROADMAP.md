@@ -5,9 +5,10 @@
   a separate verifier with `aud=https://parcel…/mcp`, scopes
   `parcel:read`/`parcel:write`, connector clients in slauth (the slaudio
   design, ported to Rust). Tools: publish, list, read, update, delete.
-- Publish the repo to GitHub; turn on CI, the CLI release (brew/apt) and the
-  image release + deploy workflows; first staging deploy (Neon, bucket,
-  secrets, domain mappings — see deploy/README.md).
+- First releases from GitHub (the repo is public and CI is green): the CLI
+  release (brew/apt), the image release + deploy workflows, and the first
+  staging deploy (Neon, bucket, secrets, domain mappings — see
+  deploy/README.md).
 - Rate limiting for the unauthenticated device-start endpoint, publishes,
   comments and data writes.
 
