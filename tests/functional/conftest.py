@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import socket
 import subprocess
 import threading
@@ -404,8 +405,10 @@ def _create_bucket() -> str:
 def _build_binaries() -> None:
     if os.environ.get("PARCEL_FUNCTIONAL_SKIP_BUILD"):
         return
+    # mise pins the toolchain locally; CI puts the pinned cargo on PATH itself.
+    cargo = ["mise", "exec", "--", "cargo"] if shutil.which("mise") else ["cargo"]
     subprocess.run(
-        ["mise", "exec", "--", "cargo", "build", "-p", "parcel-server", "-p", "parcel-cli"],
+        [*cargo, "build", "-p", "parcel-server", "-p", "parcel-cli"],
         cwd=ROOT,
         check=True,
     )
