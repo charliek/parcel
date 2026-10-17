@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2026.10.17.3
 
 ### Added
 - MCP tools for the feedback loop and page data, so MCP is as complete an
