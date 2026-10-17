@@ -17,8 +17,12 @@ DROP DATABASE IF EXISTS $db WITH (FORCE);
 CREATE DATABASE $db;
 SQL
 
+# mise pins the toolchain locally; CI puts the pinned cargo on PATH itself.
+cargo=(cargo)
+command -v mise >/dev/null && cargo=(mise exec -- cargo)
+
 (cd "$root/frontend" && bun run build >/dev/null)
-(cd "$root" && mise exec -- cargo build -q -p parcel-server)
+(cd "$root" && "${cargo[@]}" build -q -p parcel-server)
 
 blobs="$(mktemp -d)"
 trap 'rm -rf "$blobs"' EXIT

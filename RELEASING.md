@@ -1,9 +1,11 @@
 # Releasing the parcel CLI
 
-> **Status: written, not yet run.** The repo is not on GitHub yet, so nothing
-> below has executed. The workflow, formula template and version script follow
-> strix (a Rust CLI already shipped this way) and are ready for the first tag
-> once the [one-time setup](#one-time-setup) is done.
+> **Status: written, not yet run.** The repo is on GitHub
+> ([charliek/parcel](https://github.com/charliek/parcel)) and CI runs, but no
+> release tag has been pushed, so nothing below has executed. The workflow,
+> formula template and version script follow strix (a Rust CLI already
+> shipped this way) and are ready for the first tag once the
+> [one-time setup](#one-time-setup) is done.
 
 The general release framework is `cc-plugins:release-workflows`; this file
 documents what's specific to this repo. It covers the `parcel` CLI

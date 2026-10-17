@@ -25,7 +25,7 @@ people by email, internal (everyone signed in) or public. A bundled skill
 | `frontend/` | React 19 + Vite + Tailwind v4 + zustand SPA (bun). |
 | `skills/parcel/` | The agent skill (`SKILL.md` + `references/`), also a Claude plugin via `.claude-plugin/`. |
 | `tests/functional/` | pytest suite driving the real binaries over HTTP (GCS emulator + test JWKS). |
-| `deploy/`, `Dockerfile`, `.github/workflows/` | Cloud Run + Neon + GCS. Prepared, not yet run (no GitHub repo yet). |
+| `deploy/`, `Dockerfile`, `.github/workflows/` | Cloud Run + Neon + GCS. CI runs on GitHub ([charliek/parcel](https://github.com/charliek/parcel), public); deploy and release workflows not yet run. |
 
 ## Toolchain and local stack
 

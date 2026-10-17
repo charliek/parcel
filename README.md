@@ -47,8 +47,9 @@ cargo install --locked --path crates/parcel-cli   # from source, today
 
 Requires Docker, [mise](https://mise.jdx.dev), [bun](https://bun.sh),
 [uv](https://docs.astral.sh/uv/) and [prox](https://github.com/charliek/prox),
-plus a running [slauth](../slauth) with parcel registered. For a second
-sign-in provider, run the local Keycloak in [dev/keycloak](dev/keycloak/README.md).
+plus a sign-in provider: the author's slauth (not public yet), any OIDC
+provider such as the local Keycloak in [dev/keycloak](dev/keycloak/README.md),
+or `AUTH_MODE=dev` for a fixed local user.
 
 ```bash
 docker compose up -d                 # Postgres :5439, GCS emulator :4447
@@ -77,3 +78,7 @@ make e2e                       # Playwright (see frontend/README.md)
 - [RELEASING.md](RELEASING.md) — CLI releases (brew + apt)
 - [skills/parcel/SKILL.md](skills/parcel/SKILL.md) — the agent skill
 - `/docs` on a dev server — Swagger UI for the API (`/openapi.json` everywhere)
+
+## License
+
+[MIT](LICENSE)
