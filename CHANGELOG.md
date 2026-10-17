@@ -1,8 +1,13 @@
 # Changelog
 
-## Unreleased
+## v2026.10.16
 
-First cut of Parcel, built and verified locally.
+First production release: `parcel.stridelabs.ai` (app) and
+`parcelcontent.stridelabs.ai` (content) on Cloud Run + Neon + GCS. The repo
+is public on GitHub; CI runs the Rust, functional, frontend and Playwright
+suites and builds the production image. Releases go through `/deploy:build`
+(date tag → `release.yml` builds the image) and `/deploy_app` (`deploy.yml`:
+migrate job, then the service), authenticated by Workload Identity Federation.
 
 ### Added (v0.3: sign-in providers and sharing)
 - Server-side OIDC sign-in through one or more providers at once (slauth, Okta,
