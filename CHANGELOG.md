@@ -1,5 +1,11 @@
 # Changelog
 
+## v2026.10.17
+
+- The sign-in button reads "Stride Labs" in production (`AUTH_SLAUTH_LABEL`).
+- Dependency advisories patched (lock only): h2 0.4.20 (RUSTSEC-2026-0258),
+  rustls 0.23.46, quinn-proto 0.11.19; chacha20 off a yanked release.
+
 ## v2026.10.16
 
 First production release: `parcel.stridelabs.ai` (app) and
