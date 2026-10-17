@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2026.10.17.2
 
 ### Added (v0.4: MCP server)
 - An MCP server at `<app>/mcp` (`PARCEL_MCP_ENABLED`, `PARCEL_MCP_PROVIDER`,
