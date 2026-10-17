@@ -21,7 +21,7 @@ environment (`deploy/env.staging` is prepared, but nothing exists in GCP).
    - The user can also type a custom tag via the "Other" option
 
 2. **Verify image exists**: Confirm the tag exists in Artifact Registry
-   - Run: `gcloud artifacts docker images list us-central1-docker.pkg.dev/projects-413401/stridelabs/parcel --include-tags --filter="tags:<TAG>" --format=json`
+   - Run: `gcloud artifacts docker images list us-central1-docker.pkg.dev/projects-413401/stridelabs/parcel --include-tags --filter="tags=<TAG>" --format=json`
    - `release.yml` builds it when `/deploy:build` pushes a date tag. If the tag
      doesn't exist (or that workflow is still running:
      `gh run list --workflow=release.yml -L 3`), inform the user and suggest
