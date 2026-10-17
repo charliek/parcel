@@ -1,7 +1,7 @@
 {
   "name": "parcel",
   "version": "0.1.0",
-  "description": "Publish HTML pages, reports, dashboards and prototypes to private, sandboxed Parcel URLs with the parcel CLI; share them with people by email or everyone signed in, read or revise existing parcels, act on comments left in the viewer, and update the data pages keep.",
+  "description": "The parcel CLI skill: publish HTML pages, plans, reports, dashboards and prototypes to private, sandboxed Parcel URLs with the parcel CLI; share them with people by email or everyone signed in, read or revise existing parcels, act on comments left in the viewer, and update the data pages keep. (For the MCP server instead, install parcel-mcp.)",
   "author": {
     "name": "Charlie Knudsen",
     "url": "https://github.com/charliek"

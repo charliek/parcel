@@ -9,7 +9,9 @@
 
 The general release framework is `cc-plugins:release-workflows`; this file
 documents what's specific to this repo. It covers the `parcel` CLI
-(`crates/parcel-cli`) and the Claude Code plugin manifest. The server's
+(`crates/parcel-cli`) and the two Claude Code plugins in this repo's
+marketplace (`parcel`, the CLI skill at the repo root, and `parcel-mcp`, the
+MCP server, in `plugins/parcel-mcp/`), which release with it. The server's
 container image is deployed separately (see `deploy/`).
 
 ## TL;DR
@@ -31,7 +33,8 @@ Everything after that is automatic.
 
 2. **`.github/workflows/release-cli.yml`** (CI, on tag push `v*`):
    - **version-check** — the tag matches `[workspace.package].version` in the
-     root `Cargo.toml` **and** `.claude-plugin/plugin.json`'s `version`
+     root `Cargo.toml` **and** both plugin manifests' `version`
+     (`.claude-plugin/plugin.json`, `plugins/parcel-mcp/.claude-plugin/plugin.json`)
    - **ci-gate** — polls for a green `ci-success` check on the tagged commit
    - **create-release** — this version's `CHANGELOG.md` section (or generated
      notes when there is no changelog yet) → `gh release create`
@@ -64,12 +67,26 @@ Users then install with:
 - `Cargo.lock` — `cargo update --workspace --offline`, which rewrites only the
   three workspace entries. Don't delete or regenerate the lockfile: that
   would move every dependency in the release commit.
-- `.claude-plugin/plugin.json` — `.version`, so the plugin and the CLI that
-  embeds the skill share a version.
+- `.claude-plugin/plugin.json` and `plugins/parcel-mcp/.claude-plugin/plugin.json`
+  — `.version`, so both plugins and the CLI that embeds the skill share a
+  version (`parcel-cli`'s `both_plugin_manifests_carry_the_workspace_version`
+  test fails between releases if one drifts).
 
 NOT bumped: `frontend/package.json` (the SPA is shipped inside the server image,
 not versioned independently) and `.claude-plugin/marketplace.json` (no version
 field).
+
+## Claude Code plugins
+
+Users install from this repo (`/plugin marketplace add charliek/parcel`), so a
+plugin change ships when it reaches `main`; the version bump at release is
+what tells Claude Code to update installed copies. Before a release, run
+`claude plugin validate ./plugins/parcel-mcp` and `claude plugin validate .`.
+`plugins/parcel-mcp/skills/parcel-mcp/references/authoring.md` is a copy of
+the CLI skill's (an installed plugin can't read outside its directory);
+`parcel-cli`'s tests fail when they differ. The MCP plugin's `.mcp.json`
+pins the OAuth client (`parcel-claude-code`) and callback port 3118, which
+slauth registers as `http://localhost:3118/callback`; change both together.
 
 ## Packaging details
 

@@ -157,14 +157,26 @@ async fn list_comments(
     Path(id): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<CommentList>> {
-    let parcel = commentable(&state, &id, caller.as_ref(), Need::Read).await?;
+    Ok(Json(
+        list(&state, caller.as_ref(), &id, q.status.unwrap_or_default()).await?,
+    ))
+}
+
+/// A parcel's threads (`GET …/comments`, and the MCP `list_comments` tool).
+pub(crate) async fn list(
+    state: &AppState,
+    caller: Option<&AuthUser>,
+    id: &str,
+    status: CommentStatus,
+) -> AppResult<CommentList> {
+    let parcel = commentable(state, id, caller, Need::Read).await?;
     let caller = caller.expect("commentable requires a caller");
-    let rows = comments::list(&state.db, &id, q.status.unwrap_or_default()).await?;
-    let open = comments::count_open(&state.db, &id).await?;
-    Ok(Json(CommentList {
+    let rows = comments::list(&state.db, id, status).await?;
+    let open = comments::count_open(&state.db, id).await?;
+    Ok(CommentList {
         comments: threads(rows, parcel.owner_id, caller.user.id),
         open,
-    }))
+    })
 }
 
 #[utoipa::path(
@@ -190,7 +202,20 @@ async fn create_comment(
     Path(id): Path<String>,
     Json(body): Json<NewComment>,
 ) -> AppResult<(StatusCode, Json<Comment>)> {
-    let parcel = commentable(&state, &id, Some(&caller), Need::Write).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(create(&state, &caller, &id, &body).await?),
+    ))
+}
+
+/// Start a thread or reply to one; returns the whole thread.
+pub(crate) async fn create(
+    state: &AppState,
+    caller: &AuthUser,
+    id: &str,
+    body: &NewComment,
+) -> AppResult<Comment> {
+    let parcel = commentable(state, id, Some(caller), Need::Write).await?;
     let text = validate_body(&body.body).map_err(AppError::BadRequest)?;
     if body.reply_to.is_some() && body.anchor.is_some() {
         return Err(AppError::BadRequest(
@@ -202,7 +227,7 @@ async fn create_comment(
     }
     let version = body.version.unwrap_or(parcel.current_version);
     if body.reply_to.is_none()
-        && parcels::get_version(&state.db, &id, version)
+        && parcels::get_version(&state.db, id, version)
             .await?
             .is_none()
     {
@@ -212,13 +237,14 @@ async fn create_comment(
     }
 
     let via = match caller.via {
-        AuthVia::Token(_) | AuthVia::Mcp => CommentVia::Cli,
+        AuthVia::Token(_) => CommentVia::Cli,
+        AuthVia::Mcp => CommentVia::Mcp,
         AuthVia::Session | AuthVia::Dev => CommentVia::Web,
     };
     let inserted = comments::insert(
         &state.db,
         &NewCommentRow {
-            parcel_id: &id,
+            parcel_id: id,
             version,
             reply_to: body.reply_to,
             author_id: caller.user.id,
@@ -246,10 +272,7 @@ async fn create_comment(
             )))
         }
     };
-    Ok((
-        StatusCode::CREATED,
-        Json(load_thread(&state, &parcel, thread, &caller).await?),
-    ))
+    load_thread(state, &parcel, thread, caller).await
 }
 
 #[utoipa::path(
@@ -277,8 +300,19 @@ async fn update_comment(
     Path((id, number)): Path<(String, i32)>,
     Json(body): Json<UpdateComment>,
 ) -> AppResult<Json<Comment>> {
-    let parcel = commentable(&state, &id, Some(&caller), Need::Write).await?;
-    let comment = comments::get(&state.db, &id, number)
+    Ok(Json(update(&state, &caller, &id, number, &body).await?))
+}
+
+/// Edit a comment or resolve/reopen a thread; returns the whole thread.
+pub(crate) async fn update(
+    state: &AppState,
+    caller: &AuthUser,
+    id: &str,
+    number: i32,
+    body: &UpdateComment,
+) -> AppResult<Comment> {
+    let parcel = commentable(state, id, Some(caller), Need::Write).await?;
+    let comment = comments::get(&state.db, id, number)
         .await?
         .ok_or_else(|| comment_not_found(number))?;
     let is_author = comment.author_id == caller.user.id;
@@ -314,13 +348,13 @@ async fn update_comment(
     }
 
     if let Some(text) = text {
-        comments::update_body(&state.db, &id, number, text).await?;
+        comments::update_body(&state.db, id, number, text).await?;
     }
     if let Some(resolved) = body.resolved {
-        comments::set_resolved(&state.db, &id, number, resolved, caller.user.id).await?;
+        comments::set_resolved(&state.db, id, number, resolved, caller.user.id).await?;
     }
     let thread = comment.parent_number.unwrap_or(number);
-    Ok(Json(load_thread(&state, &parcel, thread, &caller).await?))
+    load_thread(state, &parcel, thread, caller).await
 }
 
 #[utoipa::path(
@@ -345,9 +379,20 @@ async fn delete_comment(
     caller: AuthUser,
     Path((id, number)): Path<(String, i32)>,
 ) -> AppResult<StatusCode> {
+    delete(&state, &caller, &id, number).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Delete a comment (and, for a thread's first, its replies).
+pub(crate) async fn delete(
+    state: &AppState,
+    caller: &AuthUser,
+    id: &str,
+    number: i32,
+) -> AppResult<()> {
     // Taking back one's own words needs only read access.
-    let parcel = commentable(&state, &id, Some(&caller), Need::Read).await?;
-    let comment = comments::get(&state.db, &id, number)
+    let parcel = commentable(state, id, Some(caller), Need::Read).await?;
+    let comment = comments::get(&state.db, id, number)
         .await?
         .ok_or_else(|| comment_not_found(number))?;
     if comment.author_id != caller.user.id && parcel.owner_id != caller.user.id {
@@ -355,8 +400,8 @@ async fn delete_comment(
             "only its author or the parcel's owner can delete a comment".into(),
         ));
     }
-    comments::delete(&state.db, &id, number).await?;
-    Ok(StatusCode::NO_CONTENT)
+    comments::delete(&state.db, id, number).await?;
+    Ok(())
 }
 
 #[utoipa::path(

@@ -645,3 +645,379 @@ async fn paused_api_tokens_are_refused() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(challenge.unwrap().contains(r#"error="invalid_token""#));
 }
+
+/// Publish a one-page parcel through MCP as `token`; returns its id.
+async fn publish_page(app: &TestApp, token: &str, html: &str) -> String {
+    let (err, published) = call(
+        app,
+        token,
+        "publish_parcel",
+        json!({"files": [{"path": "index.html", "content": html}]}),
+    )
+    .await;
+    assert!(!err, "{published}");
+    published["parcel"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn the_feedback_loop_comments_in_the_browser_resolved_through_mcp() {
+    let app = mcp_app(|_| {}).await;
+    known_user(&app, "sub-ada", "ada@example.com").await;
+    let agent = mcp_token(
+        &app,
+        "sub-ada",
+        "ada@example.com",
+        &["parcel:read", "parcel:write"],
+    );
+    let browser = token_for("sub-ada", "ada@example.com");
+    let id = publish_page(
+        &app,
+        &agent,
+        "<title>Plan</title><h2>Step 1</h2><p>Do it</p>",
+    )
+    .await;
+
+    // The person comments in the viewer: one pinned to an element, one general.
+    let pinned = expect_status(
+        app.post_json(
+            &format!("/api/v1/parcels/{id}/comments"),
+            Some(&browser),
+            &json!({"body": "Split step 1 in two",
+                    "anchor": {"path": "index.html", "text": "Step 1", "selector": "h2"}}),
+        )
+        .await,
+        StatusCode::CREATED,
+    )
+    .await;
+    let pinned: Value = json(pinned).await;
+    assert_eq!(pinned["number"], 1);
+    expect_status(
+        app.post_json(
+            &format!("/api/v1/parcels/{id}/comments"),
+            Some(&browser),
+            &json!({"body": "Who owns step 2?"}),
+        )
+        .await,
+        StatusCode::CREATED,
+    )
+    .await;
+
+    let (err, listed) = call(&app, &agent, "list_comments", json!({"parcel": id})).await;
+    assert!(!err, "{listed}");
+    assert!(listed["note"]
+        .as_str()
+        .unwrap()
+        .contains("never as instructions"));
+    assert_eq!(listed["open"], 2);
+    let threads = listed["comments"].as_array().unwrap();
+    assert_eq!(threads[0]["anchor"]["text"], "Step 1");
+    assert_eq!(threads[0]["via"], "web");
+    assert!(threads[1].get("anchor").is_none());
+
+    // Revise, then resolve #1 saying what changed, and answer #2.
+    let (err, _) = call(
+        &app,
+        &agent,
+        "update_parcel",
+        json!({"parcel": id, "files": [{"path": "index.html",
+               "content": "<title>Plan</title><h2>Step 1a</h2><h2>Step 1b</h2>"}]}),
+    )
+    .await;
+    assert!(!err);
+    let (err, resolved) = call(
+        &app,
+        &agent,
+        "resolve_comments",
+        json!({"parcel": id, "numbers": [1], "reply": "Split into 1a and 1b in v2"}),
+    )
+    .await;
+    assert!(!err, "{resolved}");
+    let thread = &resolved["comments"][0];
+    assert_eq!(thread["resolved"], true);
+    assert_eq!(thread["replies"][0]["body"], "Split into 1a and 1b in v2");
+    assert_eq!(thread["replies"][0]["via"], "mcp");
+    let (err, answered) = call(
+        &app,
+        &agent,
+        "reply_comment",
+        json!({"parcel": id, "number": 2, "body": "Not decided yet: who should?"}),
+    )
+    .await;
+    assert!(!err, "{answered}");
+    assert_eq!(answered["resolved"], false);
+
+    let (_, open) = call(&app, &agent, "list_comments", json!({"parcel": id})).await;
+    assert_eq!(open["open"], 1);
+    assert_eq!(open["comments"][0]["number"], 2);
+    let (_, all) = call(
+        &app,
+        &agent,
+        "list_comments",
+        json!({"parcel": id, "status": "all"}),
+    )
+    .await;
+    assert_eq!(all["comments"].as_array().unwrap().len(), 2);
+
+    // The viewer shows the MCP reply as the owner's, via MCP.
+    let viewer: Value = json(
+        app.get(
+            &format!("/api/v1/parcels/{id}/comments?status=all"),
+            Some(&browser),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(viewer["comments"][0]["replies"][0]["via"], "mcp");
+    assert_eq!(
+        viewer["comments"][0]["replies"][0]["author"]["is_owner"],
+        true
+    );
+
+    let (err, reopened) = call(
+        &app,
+        &agent,
+        "reopen_comment",
+        json!({"parcel": id, "number": 1}),
+    )
+    .await;
+    assert!(!err);
+    assert_eq!(reopened["resolved"], false);
+    let (err, added) = call(
+        &app,
+        &agent,
+        "add_comment",
+        json!({"parcel": id, "body": "Is 1b right?", "path": "index.html", "element_text": "Step 1b"}),
+    )
+    .await;
+    assert!(!err, "{added}");
+    assert_eq!(added["number"], 5);
+    assert_eq!(added["version"], 2);
+    let (err, refused) = call(
+        &app,
+        &agent,
+        "add_comment",
+        json!({"parcel": id, "body": "x", "element_text": "Step 1b"}),
+    )
+    .await;
+    assert!(err, "{refused}");
+    let (err, _) = call(
+        &app,
+        &agent,
+        "delete_comment",
+        json!({"parcel": id, "number": 5}),
+    )
+    .await;
+    assert!(!err);
+}
+
+#[tokio::test]
+async fn comment_tools_follow_share_roles() {
+    let app = mcp_app(|_| {}).await;
+    known_user(&app, "sub-o", "owner@example.com").await;
+    let owner = mcp_token(
+        &app,
+        "sub-o",
+        "owner@example.com",
+        &["parcel:read", "parcel:write"],
+    );
+    let id = publish_page(&app, &owner, "<title>Doc</title>").await;
+    for (email, role) in [
+        ("viewer@example.com", "viewer"),
+        ("commenter@example.com", "commenter"),
+    ] {
+        let (err, _) = call(
+            &app,
+            &owner,
+            "share_parcel",
+            json!({"parcel": id, "email": email, "role": role}),
+        )
+        .await;
+        assert!(!err);
+    }
+    known_user(&app, "sub-v", "viewer@example.com").await;
+    known_user(&app, "sub-c", "commenter@example.com").await;
+    let viewer = mcp_token(
+        &app,
+        "sub-v",
+        "viewer@example.com",
+        &["parcel:read", "parcel:write"],
+    );
+    let commenter = mcp_token(
+        &app,
+        "sub-c",
+        "commenter@example.com",
+        &["parcel:read", "parcel:write"],
+    );
+
+    let (err, added) = call(
+        &app,
+        &commenter,
+        "add_comment",
+        json!({"parcel": id, "body": "Looks good"}),
+    )
+    .await;
+    assert!(!err, "{added}");
+    let (err, listed) = call(&app, &viewer, "list_comments", json!({"parcel": id})).await;
+    assert!(!err, "{listed}");
+    assert_eq!(listed["open"], 1);
+    let (err, refused) = call(
+        &app,
+        &viewer,
+        "add_comment",
+        json!({"parcel": id, "body": "Me too"}),
+    )
+    .await;
+    assert!(err);
+    assert!(
+        refused
+            .as_str()
+            .unwrap()
+            .contains("to view, not to comment"),
+        "{refused}"
+    );
+    // Resolving is for the owner or the thread's author.
+    let (err, _) = call(
+        &app,
+        &viewer,
+        "resolve_comments",
+        json!({"parcel": id, "numbers": [1]}),
+    )
+    .await;
+    assert!(err);
+    let (err, _) = call(
+        &app,
+        &owner,
+        "resolve_comments",
+        json!({"parcel": id, "numbers": [1]}),
+    )
+    .await;
+    assert!(!err);
+}
+
+#[tokio::test]
+async fn page_data_is_read_by_viewers_and_written_by_the_owner() {
+    let app = mcp_app(|_| {}).await;
+    known_user(&app, "sub-o", "owner@example.com").await;
+    let owner = mcp_token(
+        &app,
+        "sub-o",
+        "owner@example.com",
+        &["parcel:read", "parcel:write"],
+    );
+    let id = publish_page(&app, &owner, "<title>Dash</title>").await;
+
+    let (err, set) = call(
+        &app,
+        &owner,
+        "set_data",
+        json!({"parcel": id, "collection": "dashboard", "key": "metrics", "value": {"visits": 1, "errors": 0}}),
+    )
+    .await;
+    assert!(!err, "{set}");
+    let (err, merged) = call(
+        &app,
+        &owner,
+        "update_data",
+        json!({"parcel": id, "collection": "dashboard", "key": "metrics", "patch": {"visits": 42, "errors": null}}),
+    )
+    .await;
+    assert!(!err, "{merged}");
+    assert_eq!(merged["value"], json!({"visits": 42}));
+    let (err, refused) = call(
+        &app,
+        &owner,
+        "update_data",
+        json!({"parcel": id, "collection": "dashboard", "key": "metrics", "patch": [1]}),
+    )
+    .await;
+    assert!(err, "{refused}");
+
+    let (_, summary) = call(&app, &owner, "list_data", json!({"parcel": id})).await;
+    assert_eq!(summary["writable"], true);
+    assert_eq!(summary["collections"][0]["name"], "dashboard");
+    let (_, items) = call(
+        &app,
+        &owner,
+        "list_data",
+        json!({"parcel": id, "collection": "dashboard"}),
+    )
+    .await;
+    assert_eq!(items["items"][0]["key"], "metrics");
+
+    // A viewer reads it but can't change it.
+    let (_, _) = call(
+        &app,
+        &owner,
+        "share_parcel",
+        json!({"parcel": id, "email": "v@example.com"}),
+    )
+    .await;
+    known_user(&app, "sub-v", "v@example.com").await;
+    let viewer = mcp_token(
+        &app,
+        "sub-v",
+        "v@example.com",
+        &["parcel:read", "parcel:write"],
+    );
+    let (err, got) = call(
+        &app,
+        &viewer,
+        "get_data",
+        json!({"parcel": id, "collection": "dashboard", "key": "metrics"}),
+    )
+    .await;
+    assert!(!err, "{got}");
+    assert_eq!(got["value"]["visits"], 42);
+    let (_, summary) = call(&app, &viewer, "list_data", json!({"parcel": id})).await;
+    assert_eq!(summary["writable"], false);
+    let (err, _) = call(
+        &app,
+        &viewer,
+        "set_data",
+        json!({"parcel": id, "collection": "dashboard", "key": "metrics", "value": 0}),
+    )
+    .await;
+    assert!(err);
+
+    let (err, _) = call(
+        &app,
+        &owner,
+        "delete_data",
+        json!({"parcel": id, "collection": "dashboard"}),
+    )
+    .await;
+    assert!(!err);
+    let (_, summary) = call(&app, &owner, "list_data", json!({"parcel": id})).await;
+    assert_eq!(summary["collections"], json!([]));
+}
+
+#[tokio::test]
+async fn restore_makes_an_old_version_current() {
+    let app = mcp_app(|_| {}).await;
+    known_user(&app, "sub-r", "r@example.com").await;
+    let token = mcp_token(
+        &app,
+        "sub-r",
+        "r@example.com",
+        &["parcel:read", "parcel:write"],
+    );
+    let id = publish_page(&app, &token, "<title>One</title>").await;
+    let (_, _) = call(
+        &app,
+        &token,
+        "update_parcel",
+        json!({"parcel": id, "mode": "replace", "files": [{"path": "index.html", "content": "<title>Two</title>"}]}),
+    )
+    .await;
+    let (err, restored) = call(
+        &app,
+        &token,
+        "restore_version",
+        json!({"parcel": id, "version": 1}),
+    )
+    .await;
+    assert!(!err, "{restored}");
+    assert_eq!(restored["version"]["version"], 3);
+    let (_, content) = read_file(&app, &token, json!({"parcel": id})).await;
+    assert_eq!(content, "<title>One</title>");
+}

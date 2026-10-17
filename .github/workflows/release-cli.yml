@@ -44,7 +44,8 @@ jobs:
             }
           ' Cargo.toml)"
           plugin_ver="$(jq -r '.version' .claude-plugin/plugin.json)"
-          echo "tag=${tag} (full ${tag_ver}, base ${base_ver})  workspace version=${manifest_ver}  plugin version=${plugin_ver}"
+          mcp_plugin_ver="$(jq -r '.version' plugins/parcel-mcp/.claude-plugin/plugin.json)"
+          echo "tag=${tag} (full ${tag_ver}, base ${base_ver})  workspace version=${manifest_ver}  plugin versions=${plugin_ver} (parcel), ${mcp_plugin_ver} (parcel-mcp)"
           # Either spelling is accepted: update-version.sh writes the tag's
           # version verbatim, so v1.2.3-rc.1 puts "1.2.3-rc.1" in the manifest,
           # while a genuine mismatch (v0.0.2 against 0.0.1) still fails.
@@ -54,6 +55,10 @@ jobs:
           fi
           if [ "${plugin_ver}" != "${tag_ver}" ] && [ "${plugin_ver}" != "${base_ver}" ]; then
             echo "::error::tag ${tag} does not match .claude-plugin/plugin.json version ${plugin_ver}. scripts/release/update-version.sh bumps it with Cargo.toml — re-run /release-workflows:release if this looks wrong."
+            exit 1
+          fi
+          if [ "${mcp_plugin_ver}" != "${tag_ver}" ] && [ "${mcp_plugin_ver}" != "${base_ver}" ]; then
+            echo "::error::tag ${tag} does not match plugins/parcel-mcp/.claude-plugin/plugin.json version ${mcp_plugin_ver}. scripts/release/update-version.sh bumps it with Cargo.toml — re-run /release-workflows:release if this looks wrong."
             exit 1
           fi
 

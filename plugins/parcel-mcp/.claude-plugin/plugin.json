@@ -1,0 +1,20 @@
+{
+  "name": "parcel-mcp",
+  "version": "0.1.0",
+  "description": "Parcel's MCP server for Claude Code: publish HTML pages, plans, reports and prototypes to private, sandboxed Parcel URLs, read them back, act on the comments people leave in the viewer, share them, and update the data pages keep. Signs in through Stride Labs (/mcp); no CLI needed.",
+  "author": {
+    "name": "Charlie Knudsen",
+    "url": "https://github.com/charliek"
+  },
+  "homepage": "https://github.com/charliek/parcel",
+  "repository": "https://github.com/charliek/parcel",
+  "license": "MIT",
+  "keywords": [
+    "parcel",
+    "mcp",
+    "artifacts",
+    "html",
+    "publish",
+    "comments"
+  ]
+}

@@ -98,6 +98,7 @@ export function authorTags(author: CommentAuthor, via: CommentVia): string[] {
   if (author.is_you) tags.push('You');
   if (author.is_owner) tags.push('Owner');
   if (via === 'cli') tags.push('via CLI');
+  if (via === 'mcp') tags.push('via MCP');
   return tags;
 }
 

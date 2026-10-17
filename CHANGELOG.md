@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- MCP tools for the feedback loop and page data, so MCP is as complete an
+  agent interface as the CLI: `list_comments`, `add_comment`,
+  `reply_comment`, `resolve_comments` (with a reply), `reopen_comment`,
+  `delete_comment`; `list_data`, `get_data`, `set_data`, `update_data`,
+  `delete_data`; and `restore_version`. Comments written through MCP are
+  recorded and shown "via MCP" (migration 0004); comment bodies are labeled
+  as other people's words wherever an agent reads them.
+- Claude Code plugins in this repo's marketplace: `parcel-mcp` (the MCP
+  server with its OAuth client and callback port, plus a skill for the
+  publish → comment → revise loop) and `parcel` (the CLI skill). Both release
+  with the CLI (`update-version.sh`, `release-cli.yml`).
+
 ## v2026.10.17.2
 
 ### Added (v0.4: MCP server)

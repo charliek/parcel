@@ -84,6 +84,7 @@ describe('authorTags', () => {
     expect(authorTags(other, 'web')).toEqual([]);
     expect(authorTags({ ...owner, is_you: true }, 'cli')).toEqual(['You', 'Owner', 'via CLI']);
     expect(authorTags(owner, 'cli')).toEqual(['Owner', 'via CLI']);
+    expect(authorTags(owner, 'mcp')).toEqual(['Owner', 'via MCP']);
   });
 });
 

@@ -305,7 +305,7 @@ export interface CommentAnchor {
 }
 
 /** Where a comment was written: the web viewer, or a `pcl_` token (CLI or agent). */
-export type CommentVia = 'web' | 'cli' | (string & {});
+export type CommentVia = 'web' | 'cli' | 'mcp' | (string & {});
 
 /** Who wrote a comment, from the caller's point of view. */
 export interface CommentAuthor {

@@ -121,6 +121,41 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/parcel")
     }
 
+    fn repo_file(path: &str) -> String {
+        let full = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(path);
+        fs::read_to_string(&full).unwrap_or_else(|e| panic!("{}: {e}", full.display()))
+    }
+
+    /// The MCP plugin ships its own copy of the authoring guide (an installed
+    /// plugin can't reach files outside its directory); it must stay the CLI
+    /// skill's.
+    #[test]
+    fn the_mcp_plugin_carries_the_same_authoring_guide() {
+        assert_eq!(
+            repo_file("plugins/parcel-mcp/skills/parcel-mcp/references/authoring.md"),
+            repo_file("skills/parcel/references/authoring.md"),
+            "copy skills/parcel/references/authoring.md over the parcel-mcp plugin's"
+        );
+    }
+
+    /// Both plugins release with the CLI, at its version (update-version.sh).
+    #[test]
+    fn both_plugin_manifests_carry_the_workspace_version() {
+        for manifest in [
+            ".claude-plugin/plugin.json",
+            "plugins/parcel-mcp/.claude-plugin/plugin.json",
+        ] {
+            let json: serde_json::Value = serde_json::from_str(&repo_file(manifest)).unwrap();
+            assert_eq!(
+                json["version"],
+                env!("CARGO_PKG_VERSION"),
+                "{manifest}: run scripts/release/update-version.sh"
+            );
+        }
+    }
+
     #[test]
     fn embedded_bytes_match_the_repo_files() {
         for file in SKILL_FILES {
@@ -210,16 +245,19 @@ mod tests {
     }
 
     #[test]
-    fn skill_description_fits_loaders() {
-        // Agent skill loaders cap the description at 1024 characters.
-        let md = skill_md();
-        let line = md
-            .lines()
-            .find(|l| l.starts_with("description: "))
-            .expect("a description line");
-        let description = line.trim_start_matches("description: ").trim_matches('"');
-        let chars = description.chars().count();
-        assert!(chars <= 1024, "description is {chars} characters");
+    fn skill_descriptions_fit_loaders() {
+        // Agent skill loaders cap the description at 1024 characters; the MCP
+        // plugin's skill is held to it too.
+        let mcp = repo_file("plugins/parcel-mcp/skills/parcel-mcp/SKILL.md");
+        for md in [skill_md(), mcp.as_str()] {
+            let line = md
+                .lines()
+                .find(|l| l.starts_with("description: "))
+                .expect("a description line");
+            let description = line.trim_start_matches("description: ").trim_matches('"');
+            let chars = description.chars().count();
+            assert!(chars <= 1024, "description is {chars} characters");
+        }
     }
 
     #[test]

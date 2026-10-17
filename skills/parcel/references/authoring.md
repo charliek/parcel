@@ -89,7 +89,7 @@ Before publishing, check every item:
 
 ```
 site/
-├── index.html          entry page (or pass --entry)
+├── index.html          entry page (or name another as the entry)
 ├── about.html          other pages: link with href="about.html"
 ├── assets/
 │   ├── app.js          <script type="module" src="assets/app.js">
@@ -99,8 +99,8 @@ site/
 ```
 
 - Every reference is **relative** (`assets/app.js`, `./data/x.json`, `../index.html` from a subfolder). Never start a path with `/`, and don't add a `<base>` tag.
-- Publish with `parcel publish site --title "…" --json`. Dotfiles, dot-directories and `node_modules` are skipped; symlinks are skipped with a warning.
-- To revise, publish the folder again with `--parcel <id>` (replaces every file), or send only what changed: `parcel publish --parcel <id> --file data/results.json=out/results.json`.
+- Publish every file under its relative path. CLI: `parcel publish site --title "…" --json` (dotfiles, dot-directories and `node_modules` are skipped; symlinks are skipped with a warning). MCP: `publish_parcel` with one `files` entry per file (`encoding: "base64"` for images and fonts).
+- To revise, send the whole set again (replaces every file) or only what changed. CLI: `parcel publish site --parcel <id>`, or `parcel publish --parcel <id> --file data/results.json=out/results.json`. MCP: `update_parcel` with `mode: "replace"` and every file, or the changed files alone (merge, the default).
 - Build tools: point the publish at the build output (`dist/`), and configure the bundler for relative asset URLs (Vite `base: "./"`, webpack `publicPath: "auto"` or `""`).
 
 ## Sandbox-safe patterns
@@ -122,7 +122,7 @@ Parcel adds one script to every HTML page it serves, `<script src="/_parcel/help
 - defines `window.parcel` (below);
 - drives the web viewer's comment mode: highlighting what the user hovers, reporting which element they click, and drawing comment pins. It only talks to the Parcel app that frames the page.
 
-It is added when the page is served: `parcel cat` and `parcel pull` return the files exactly as published, without it. Don't define a global named `parcel` (`var parcel`, `let parcel`, `function parcel`, `window.parcel = …`) — yours wins and hides the helper's API. When the page is opened as a local file the helper isn't there, so guard with `window.parcel?.`.
+It is added when the page is served: reading a parcel's files back (`parcel cat` / `parcel pull`, or the MCP `read_file`) returns them exactly as published, without it. Don't define a global named `parcel` (`var parcel`, `let parcel`, `function parcel`, `window.parcel = …`) — yours wins and hides the helper's API. When the page is opened as a local file the helper isn't there, so guard with `window.parcel?.`.
 
 | Member | Meaning |
 |---|---|
@@ -169,13 +169,13 @@ The owner ticks items and they stay ticked; anyone else who can open the parcel 
     }));
   }
   render();
-  data?.subscribe(render);                          // another tab or `parcel data set` changed it
+  data?.subscribe(render);                          // another tab, or an agent, changed it
 </script>
 ```
 
 ### Example: a dashboard an agent keeps current
 
-The page renders whatever is in `dashboard/metrics`; an agent refreshes it with the CLI, no republish needed, and open viewers update live:
+The page renders whatever is in `dashboard/metrics`; an agent refreshes it, no republish needed, and open viewers update live:
 
 ```js
 async function render() {
@@ -190,6 +190,8 @@ window.parcel?.data.subscribe(render);
 parcel data set <ref> dashboard metrics @metrics.json        # replace
 parcel data update <ref> dashboard metrics '{"p99_ms": 412}'  # merge one field
 ```
+
+Over MCP the same is `set_data` (replace) and `update_data` (merge) with `collection: "dashboard"`, `key: "metrics"`.
 
 ## Markdown entry pages
 

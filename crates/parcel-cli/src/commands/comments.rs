@@ -167,8 +167,10 @@ fn author_label(author: &CommentAuthor, via: CommentVia) -> String {
     if author.is_owner {
         label.push_str(" (owner)");
     }
-    if via == CommentVia::Cli {
-        label.push_str(" via cli");
+    match via {
+        CommentVia::Cli => label.push_str(" via cli"),
+        CommentVia::Mcp => label.push_str(" via mcp"),
+        CommentVia::Web => {}
     }
     label
 }
@@ -403,6 +405,10 @@ mod tests {
         assert_eq!(
             author_label(&who("Bob", false, false), CommentVia::Web),
             "Bob"
+        );
+        assert_eq!(
+            author_label(&who("Ada", true, true), CommentVia::Mcp),
+            "you (owner) via mcp"
         );
     }
 

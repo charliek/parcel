@@ -283,7 +283,8 @@
         "description": "Where a comment was written.",
         "enum": [
           "web",
-          "cli"
+          "cli",
+          "mcp"
         ],
         "type": "string"
       },

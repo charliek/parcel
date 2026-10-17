@@ -190,12 +190,28 @@ first, so concurrent publishes stay bounded as on the REST API.
   reaches them.
 - **Tools.** `whoami`, `list_parcels` (mine / shared), `get_parcel`,
   `read_file` (≤ 1 MiB; utf8 or base64), `publish_parcel`, `update_parcel`
-  (a new version, or title/description/visibility), `delete_parcel`,
-  `list_shares`, `share_parcel`, `unshare_parcel`. Each runs inside
+  (a new version, or title/description/visibility), `restore_version`,
+  `delete_parcel`, `list_shares`, `share_parcel`, `unshare_parcel`; comments:
+  `list_comments`, `add_comment`, `reply_comment`, `resolve_comments` (with an
+  optional reply), `reopen_comment`, `delete_comment`; page data: `list_data`,
+  `get_data`, `set_data`, `update_data`, `delete_data`. The CLI has the same
+  set, so either is a complete agent interface. Each runs inside
   stridelabs-mcp's `ToolCall` (scope check, timeout, safe errors, one audit
   line on `stridelabs.mcp.tool`) and calls the function its REST handler
   calls, returning the same JSON. `whoami` needs no scope, the other read
   tools `parcel:read`, the rest `parcel:write`.
+- **The feedback loop.** The agent publishes a plan or page; people comment in
+  the viewer (pinned to elements); when asked, the agent lists the comments,
+  revises, and resolves what it addressed with a reply. Comments written
+  through MCP are recorded `via` `mcp` (migration 0004) and shown "via MCP".
+  Comment bodies come from other people, so `list_comments` says so next to
+  them and the server instructions tell agents never to follow instructions
+  in them.
+- **Claude Code plugins.** `plugins/parcel-mcp` (the server, OAuth client
+  `parcel-claude-code` on callback port 3118 — current Claude Code redirects to
+  `http://localhost:<port>/callback`, which slauth registers for that port)
+  and the root plugin `parcel` (the CLI skill), both in this repo's
+  marketplace and released with the CLI.
 
 ## Later
 

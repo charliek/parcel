@@ -1,15 +1,20 @@
 {
   "name": "parcel",
-  "description": "Parcel skill: publish HTML artifacts to private, sandboxed URLs with the parcel CLI.",
+  "description": "Parcel for Claude Code: publish HTML pages to private, sandboxed URLs, through Parcel's MCP server (parcel-mcp) or the parcel CLI (parcel).",
   "owner": {
     "name": "Charlie Knudsen",
     "url": "https://github.com/charliek"
   },
   "plugins": [
     {
+      "name": "parcel-mcp",
+      "source": "./plugins/parcel-mcp",
+      "description": "Parcel's MCP server: publish, read, revise and share parcels and act on viewer comments as tools. Sign in with /mcp; no CLI needed."
+    },
+    {
       "name": "parcel",
       "source": "./",
-      "description": "Publish HTML pages, reports, dashboards and prototypes to private Parcel URLs, and read or revise existing parcels."
+      "description": "The parcel CLI skill: publish HTML pages, reports, dashboards and prototypes to private Parcel URLs, and read or revise existing parcels. Needs the parcel CLI."
     }
   ]
 }

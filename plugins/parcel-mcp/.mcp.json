@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "parcel": {
+      "type": "http",
+      "url": "https://parcel.stridelabs.ai/mcp",
+      "oauth": {
+        "clientId": "parcel-claude-code",
+        "callbackPort": 3118
+      }
+    }
+  }
+}

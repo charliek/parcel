@@ -25,7 +25,8 @@ people by email, internal (everyone signed in) or public. A bundled skill
 | `crates/parcel-server` | axum + sqlx service (lib + thin `main.rs`). `migrations/`, committed `openapi.json`, `tests/` (real Postgres). |
 | `crates/parcel-cli` | The `parcel` binary (blocking reqwest). Embeds `skills/parcel`. |
 | `frontend/` | React 19 + Vite + Tailwind v4 + zustand SPA (bun). |
-| `skills/parcel/` | The agent skill (`SKILL.md` + `references/`), also a Claude plugin via `.claude-plugin/`. |
+| `skills/parcel/` | The CLI agent skill (`SKILL.md` + `references/`), embedded in the CLI and the `parcel` Claude Code plugin (`.claude-plugin/`, the repo's marketplace). |
+| `plugins/parcel-mcp/` | The `parcel-mcp` Claude Code plugin: the MCP server (`.mcp.json`, OAuth client `parcel-claude-code`, callback port 3118) and its skill; `references/authoring.md` is a tested copy of the CLI skill's. |
 | `tests/functional/` | pytest suite driving the real binaries over HTTP (GCS emulator + test JWKS). |
 | `deploy/`, `Dockerfile`, `.github/workflows/` | Cloud Run + Neon + GCS (production live at parcel.stridelabs.ai). CI, release and deploy run on GitHub ([charliek/parcel](https://github.com/charliek/parcel), public); see RELEASING.md and deploy/README.md. |
 

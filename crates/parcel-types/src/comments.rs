@@ -102,6 +102,8 @@ pub enum CommentVia {
     Web,
     /// With a `pcl_` token: the CLI or an agent.
     Cli,
+    /// Through the MCP server: an assistant acting for the person.
+    Mcp,
 }
 
 impl CommentVia {
@@ -109,6 +111,7 @@ impl CommentVia {
         match self {
             CommentVia::Web => "web",
             CommentVia::Cli => "cli",
+            CommentVia::Mcp => "mcp",
         }
     }
 
@@ -116,6 +119,7 @@ impl CommentVia {
         match s {
             "web" => Some(CommentVia::Web),
             "cli" => Some(CommentVia::Cli),
+            "mcp" => Some(CommentVia::Mcp),
             _ => None,
         }
     }
@@ -189,6 +193,7 @@ pub struct CommentList {
 
 /// Which threads to list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum CommentStatus {

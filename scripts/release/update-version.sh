@@ -5,8 +5,10 @@
 # parcel-cli) inherits `version.workspace = true`, so the canonical version is
 # `[workspace.package].version` in the root Cargo.toml. This script bumps that
 # field, regenerates Cargo.lock so the three workspace entries match, and bumps
-# the Claude Code plugin manifest (.claude-plugin/plugin.json), which carries
-# the same version and is checked by release-cli.yml's version-check job.
+# the two Claude Code plugin manifests (.claude-plugin/plugin.json, the CLI
+# skill, and plugins/parcel-mcp/.claude-plugin/plugin.json, the MCP server),
+# which carry the same version and are checked by release-cli.yml's
+# version-check job.
 #
 # Contract (see cc-plugins release-workflows references/update-version/README.md):
 #   - one arg: semver string, no `v` prefix
@@ -31,8 +33,8 @@ if [[ ! "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
   exit 2
 fi
 
-if [[ ! -f Cargo.toml || ! -f .claude-plugin/plugin.json ]]; then
-  echo "error: run this from the repo root (Cargo.toml and .claude-plugin/plugin.json not found)" >&2
+if [[ ! -f Cargo.toml || ! -f .claude-plugin/plugin.json || ! -f plugins/parcel-mcp/.claude-plugin/plugin.json ]]; then
+  echo "error: run this from the repo root (Cargo.toml and both .claude-plugin/plugin.json files)" >&2
   exit 1
 fi
 
@@ -80,9 +82,8 @@ fi
 echo "Cargo.toml"
 
 # 3. Regenerate Cargo.lock so the workspace entries match. --offline is safe:
-#    only internal version strings change, not the dependency tree. Never
-#    delete or fully regenerate the lockfile — it deliberately pins a yanked
-#    `zip` that utoipa-swagger-ui needs.
+#    only internal version strings change, not the dependency tree, and the
+#    release commit should move nothing else (never regenerate the lockfile).
 #
 #    Resolve cargo via mise when the repo's toolchain is pinned there
 #    (.mise.toml is the source of truth), else fall back to whatever cargo is on
@@ -112,19 +113,20 @@ for crate in parcel-types parcel-server parcel-cli; do
 done
 echo "Cargo.lock"
 
-# 5. The Claude Code plugin manifest carries the same version. jq rewrites it
+# 5. The Claude Code plugin manifests carry the same version. jq rewrites each
 #    through a temp file; the top-level .version is read back so a manifest
 #    that lost the field fails the release here instead of shipping stale.
-jq --arg v "$V" '.version = $v' .claude-plugin/plugin.json >"$plugin_tmp"
-# mktemp makes the file 0600; the manifest is a tracked 0644 file.
-chmod 644 "$plugin_tmp"
-mv "$plugin_tmp" .claude-plugin/plugin.json
-
-plugin_actual="$(jq -r '.version' .claude-plugin/plugin.json)"
-if [[ "$plugin_actual" != "$V" ]]; then
-  echo "error: .claude-plugin/plugin.json .version is '${plugin_actual}' after the bump, expected '$V'" >&2
-  exit 1
-fi
-echo ".claude-plugin/plugin.json"
+for manifest in .claude-plugin/plugin.json plugins/parcel-mcp/.claude-plugin/plugin.json; do
+  jq --arg v "$V" '.version = $v' "$manifest" >"$plugin_tmp"
+  # mktemp makes the file 0600; the manifest is a tracked 0644 file.
+  chmod 644 "$plugin_tmp"
+  mv "$plugin_tmp" "$manifest"
+  plugin_actual="$(jq -r '.version' "$manifest")"
+  if [[ "$plugin_actual" != "$V" ]]; then
+    echo "error: ${manifest} .version is '${plugin_actual}' after the bump, expected '$V'" >&2
+    exit 1
+  fi
+  echo "$manifest"
+done
 
 echo "Bumped parcel to $V"
