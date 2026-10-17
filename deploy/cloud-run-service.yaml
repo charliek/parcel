@@ -52,6 +52,8 @@ spec:
               value: https://${AUTH_DOMAIN}
             - name: SLAUTH_CLIENT_ID
               value: parcel
+            - name: AUTH_SLAUTH_LABEL
+              value: Stride Labs
             - name: BLOB_BACKEND
               value: gcs
             - name: GCS_BUCKET
