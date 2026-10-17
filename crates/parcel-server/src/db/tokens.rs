@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use parcel_types::ApiToken;
-use sqlx::{PgExecutor, PgPool};
+use sqlx::{AssertSqlSafe, PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -45,10 +45,10 @@ pub struct NewToken<'a> {
 }
 
 pub async fn insert<'e>(db: impl PgExecutor<'e>, t: &NewToken<'_>) -> Result<TokenRow> {
-    sqlx::query_as::<_, TokenRow>(&format!(
+    sqlx::query_as::<_, TokenRow>(AssertSqlSafe(format!(
         "INSERT INTO api_tokens (user_id, name, token_hash, prefix_display, created_via, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING {COLUMNS}"
-    ))
+    )))
     .bind(t.user_id)
     .bind(t.name)
     .bind(t.hash)
@@ -62,11 +62,11 @@ pub async fn insert<'e>(db: impl PgExecutor<'e>, t: &NewToken<'_>) -> Result<Tok
 
 /// A live (not revoked, not expired) token by hash.
 pub async fn find_active_by_hash(pool: &PgPool, hash: &str) -> Result<Option<TokenRow>> {
-    sqlx::query_as::<_, TokenRow>(&format!(
+    sqlx::query_as::<_, TokenRow>(AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM api_tokens
          WHERE token_hash = $1 AND revoked_at IS NULL
            AND (expires_at IS NULL OR expires_at > now())"
-    ))
+    )))
     .bind(hash)
     .fetch_optional(pool)
     .await
@@ -74,12 +74,12 @@ pub async fn find_active_by_hash(pool: &PgPool, hash: &str) -> Result<Option<Tok
 }
 
 pub async fn list_active(pool: &PgPool, user_id: Uuid) -> Result<Vec<TokenRow>> {
-    sqlx::query_as::<_, TokenRow>(&format!(
+    sqlx::query_as::<_, TokenRow>(AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM api_tokens
          WHERE user_id = $1 AND revoked_at IS NULL
            AND (expires_at IS NULL OR expires_at > now())
          ORDER BY created_at DESC"
-    ))
+    )))
     .bind(user_id)
     .fetch_all(pool)
     .await

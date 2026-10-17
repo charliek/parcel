@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use parcel_types::DATA_ITEM_OVERHEAD;
 use serde_json::Value;
 use sqlx::types::Json;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{AssertSqlSafe, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -61,12 +61,12 @@ pub async fn list(
     after: Option<&str>,
     limit: i64,
 ) -> Result<Vec<DataRow>> {
-    sqlx::query_as::<_, DataRow>(&format!(
+    sqlx::query_as::<_, DataRow>(AssertSqlSafe(format!(
         "SELECT {ITEM_COLUMNS} FROM parcel_data
          WHERE parcel_id = $1 AND collection = $2
            AND ($3::text IS NULL OR key COLLATE \"C\" > $3)
          ORDER BY key COLLATE \"C\" LIMIT $4"
-    ))
+    )))
     .bind(parcel_id)
     .bind(collection)
     .bind(after)
@@ -82,10 +82,10 @@ pub async fn get(
     collection: &str,
     key: &str,
 ) -> Result<Option<DataRow>> {
-    sqlx::query_as::<_, DataRow>(&format!(
+    sqlx::query_as::<_, DataRow>(AssertSqlSafe(format!(
         "SELECT {ITEM_COLUMNS} FROM parcel_data
          WHERE parcel_id = $1 AND collection = $2 AND key = $3"
-    ))
+    )))
     .bind(parcel_id)
     .bind(collection)
     .bind(key)
@@ -167,13 +167,13 @@ pub async fn write(
         return Ok(Err(WriteRefused::OverLimit { usage: others }));
     }
 
-    let row = sqlx::query_as::<_, DataRow>(&format!(
+    let row = sqlx::query_as::<_, DataRow>(AssertSqlSafe(format!(
         "INSERT INTO parcel_data (parcel_id, collection, key, value, size_bytes)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (parcel_id, collection, key) DO UPDATE
            SET value = EXCLUDED.value, size_bytes = EXCLUDED.size_bytes, updated_at = now()
          RETURNING {ITEM_COLUMNS}"
-    ))
+    )))
     .bind(parcel_id)
     .bind(collection)
     .bind(key)

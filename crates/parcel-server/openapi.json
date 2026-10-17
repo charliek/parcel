@@ -91,11 +91,11 @@
           "anchor": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/CommentAnchor",
                 "description": "Absent for a general comment about the whole parcel."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -718,11 +718,11 @@
           "anchor": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/CommentAnchor",
                 "description": "Where on the page. Not allowed on replies."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -1193,10 +1193,10 @@
           "visibility": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Visibility"
               },
               {
-                "$ref": "#/components/schemas/Visibility"
+                "type": "null"
               }
             ]
           }
@@ -1403,7 +1403,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -1413,7 +1413,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           }
         },
         "tags": [
@@ -1444,7 +1444,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           }
         },
         "tags": [
@@ -1476,7 +1476,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "404": {
             "content": {
@@ -1486,7 +1486,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -1526,7 +1526,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -1566,7 +1566,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -1592,7 +1592,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           }
         },
         "tags": [
@@ -1613,7 +1613,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "401": {
             "content": {
@@ -1623,7 +1623,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Unauthorized"
           }
         },
         "security": [
@@ -1680,7 +1680,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "401": {
             "content": {
@@ -1690,7 +1690,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Unauthorized"
           }
         },
         "security": [
@@ -1724,7 +1724,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Created"
           },
           "400": {
             "content": {
@@ -1734,7 +1734,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "401": {
             "content": {
@@ -1744,7 +1744,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Unauthorized"
           },
           "413": {
             "content": {
@@ -1794,7 +1794,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -1804,7 +1804,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -1839,7 +1839,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "404": {
             "content": {
@@ -1849,7 +1849,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -1895,7 +1895,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -1905,7 +1905,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "403": {
             "content": {
@@ -1915,7 +1915,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -1925,7 +1925,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -1962,7 +1962,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "404": {
             "content": {
@@ -1972,7 +1972,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2025,7 +2025,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "401": {
             "content": {
@@ -2035,7 +2035,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Unauthorized"
           },
           "404": {
             "content": {
@@ -2045,7 +2045,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2090,7 +2090,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Created"
           },
           "400": {
             "content": {
@@ -2100,7 +2100,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "401": {
             "content": {
@@ -2110,7 +2110,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Unauthorized"
           },
           "404": {
             "content": {
@@ -2120,7 +2120,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           },
           "413": {
             "content": {
@@ -2180,7 +2180,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -2190,7 +2190,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2245,7 +2245,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -2255,7 +2255,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "403": {
             "content": {
@@ -2265,7 +2265,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -2275,7 +2275,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2312,7 +2312,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "404": {
             "content": {
@@ -2322,7 +2322,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2372,7 +2372,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -2382,7 +2382,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2445,7 +2445,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -2455,7 +2455,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "404": {
             "content": {
@@ -2465,7 +2465,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2524,7 +2524,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -2534,7 +2534,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2587,7 +2587,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -2597,7 +2597,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "404": {
             "content": {
@@ -2607,7 +2607,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2669,7 +2669,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -2679,7 +2679,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "403": {
             "content": {
@@ -2689,7 +2689,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -2699,7 +2699,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           },
           "413": {
             "content": {
@@ -2770,7 +2770,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -2780,7 +2780,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "403": {
             "content": {
@@ -2790,7 +2790,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -2800,7 +2800,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           },
           "413": {
             "content": {
@@ -2847,7 +2847,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "403": {
             "content": {
@@ -2857,7 +2857,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -2867,7 +2867,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2916,7 +2916,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -2926,7 +2926,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -2980,7 +2980,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -2990,7 +2990,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "403": {
             "content": {
@@ -3000,7 +3000,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -3010,7 +3010,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -3047,7 +3047,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "404": {
             "content": {
@@ -3057,7 +3057,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -3103,7 +3103,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Created"
           },
           "400": {
             "content": {
@@ -3113,7 +3113,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "404": {
             "content": {
@@ -3123,7 +3123,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           },
           "409": {
             "content": {
@@ -3143,7 +3143,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Payload Too Large"
           }
         },
         "security": [
@@ -3189,7 +3189,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "404": {
             "content": {
@@ -3199,7 +3199,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -3270,7 +3270,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -3318,7 +3318,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Created"
           },
           "404": {
             "content": {
@@ -3328,7 +3328,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           },
           "413": {
             "content": {
@@ -3338,7 +3338,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Payload Too Large"
           }
         },
         "security": [
@@ -3385,7 +3385,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "404": {
             "content": {
@@ -3395,7 +3395,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [
@@ -3444,7 +3444,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "401": {
             "content": {
@@ -3454,7 +3454,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Unauthorized"
           }
         },
         "security": [
@@ -3480,7 +3480,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "OK"
           },
           "401": {
             "content": {
@@ -3490,7 +3490,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Unauthorized"
           }
         },
         "security": [
@@ -3524,7 +3524,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Created"
           },
           "400": {
             "content": {
@@ -3534,7 +3534,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Bad Request"
           },
           "401": {
             "content": {
@@ -3544,7 +3544,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Unauthorized"
           }
         },
         "security": [
@@ -3583,7 +3583,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Unauthorized"
           }
         },
         "security": [
@@ -3623,7 +3623,7 @@
                 }
               }
             },
-            "description": ""
+            "description": "Not Found"
           }
         },
         "security": [

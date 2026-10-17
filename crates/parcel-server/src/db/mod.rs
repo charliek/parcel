@@ -3,6 +3,11 @@
 //! Queries use sqlx's runtime API (no compile-time database), keeping `cargo
 //! build` and CI free of a live Postgres. Repository functions return
 //! `anyhow::Result`; handlers convert at the `AppError::Internal` boundary.
+//!
+//! Some queries splice a shared `const` column list or `SELECT` in with
+//! `format!`, which sqlx 0.9 accepts only as `AssertSqlSafe(..)`. Each one
+//! is spliced from `const` fragments and literals alone; every value goes
+//! through `.bind`. Keep it that way.
 
 pub mod blobs;
 pub mod comments;

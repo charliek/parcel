@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+Maintenance: stridelabs-rust v0.5.0 and the dependency majors that come with
+it (their types are in those crates' signatures). No API or behaviour change
+for users beyond what is listed.
+
+### Changed
+- stridelabs-* v0.4.0 → v0.5.0, reqwest 0.12 → 0.13, sqlx 0.8 → 0.9,
+  jsonwebtoken 9 → 11, tower-http 0.6 → 0.7, utoipa 5 → 6 (utoipa-axum 0.3,
+  utoipa-swagger-ui 10), rand 0.9 → 0.10.
+- One crypto provider, aws-lc-rs, instead of ring: rustls (outbound HTTPS,
+  Postgres TLS) and jsonwebtoken (ID tokens, GCS service-account assertions).
+  ring is compiled nowhere, and the lock no longer has `rsa`
+  (RUSTSEC-2023-0071) or the yanked `zip 3.0.0`.
+- The server's outbound HTTPS trusts the OS store (the image's CA bundle)
+  through rustls's platform verifier, no longer bundled roots as well.
+  Postgres TLS still verifies against bundled roots (`sslmode=verify-full`).
+  The CLI trusts the OS store plus bundled Mozilla roots, as before.
+- The built SPA answers with strong `ETag`s, so reloading the app shell
+  (`Cache-Control: no-cache`) revalidates to a 304. A file path with a
+  trailing slash now gets the app shell instead of the file.
+- `openapi.json` (utoipa 6): responses without a description now carry
+  their status's reason phrase (OpenAPI 3.1 requires one; utoipa 6 drops an
+  empty one), and an optional `$ref` lists the `$ref` before `null`. Paths,
+  schemas and types are unchanged.
+- Logs: the request span's id field is `requestId` (was `request_id`), the
+  key Cloud Logging lines correlate on.
+
+### Added
+- `LOG_FORMAT=cloud`: Google Cloud Logging lines (`severity`, a top-level
+  `message`, `requestId`). Opt-in: production stays `json`, because Cloud
+  lines carry no span fields, so the per-request line would lose its method
+  and path.
+
 ## v2026.10.17
 
 - The sign-in button reads "Stride Labs" in production (`AUTH_SLAUTH_LABEL`).

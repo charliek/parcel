@@ -12,7 +12,7 @@ call that is cheap to revisit.
 
 ## Scope of the MVP
 
-- Rust backend (`crates/parcel-server`): axum 0.8 + sqlx 0.8 on Postgres, the five
+- Rust backend (`crates/parcel-server`): axum 0.8 + sqlx 0.9 on Postgres, the five
   `stridelabs-*` crates, utoipa OpenAPI with a committed spec, freshness test,
   route-pinning test and Spectral lint; Swagger UI at `/docs` outside production.
 - React SPA (`frontend/`): React 19, Vite, Tailwind v4, zustand, react-router v7,

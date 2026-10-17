@@ -1,7 +1,7 @@
 //! Pending CLI device logins.
 
 use anyhow::{Context, Result};
-use sqlx::{PgExecutor, PgPool};
+use sqlx::{AssertSqlSafe, PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -29,10 +29,10 @@ pub async fn insert(
     interval_secs: i32,
     expires_at: OffsetDateTime,
 ) -> Result<DeviceRow> {
-    sqlx::query_as::<_, DeviceRow>(&format!(
+    sqlx::query_as::<_, DeviceRow>(AssertSqlSafe(format!(
         "INSERT INTO device_authorizations (device_code_hash, user_code, client_name, interval_secs, expires_at)
          VALUES ($1, $2, $3, $4, $5) RETURNING {COLUMNS}"
-    ))
+    )))
     .bind(device_code_hash)
     .bind(user_code)
     .bind(client_name)
@@ -48,10 +48,10 @@ pub async fn find_pending_by_user_code(
     pool: &PgPool,
     user_code: &str,
 ) -> Result<Option<DeviceRow>> {
-    sqlx::query_as::<_, DeviceRow>(&format!(
+    sqlx::query_as::<_, DeviceRow>(AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM device_authorizations
          WHERE user_code = $1 AND status = 'pending' AND expires_at > now()"
-    ))
+    )))
     .bind(user_code)
     .fetch_optional(pool)
     .await

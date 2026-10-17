@@ -20,7 +20,7 @@ use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::header::{CONTENT_TYPE, HOST};
 use axum::routing::get;
 use axum::Router;
-use stridelabs_observability::{RequestId, RequestIdLayer};
+use stridelabs_observability::{RequestId, RequestIdLayer, REQUEST_ID_FIELD, REQUEST_SPAN_NAME};
 use tower::util::Oneshot;
 use tower::{Service, ServiceExt};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -55,11 +55,14 @@ pub fn build_app(state: AppState) -> Router {
                         .get::<RequestId>()
                         .map(|r| r.0.as_str())
                         .unwrap_or("-");
+                    // `requestId` is the field `LogFormat::Cloud` lifts onto
+                    // every line inside the span; it writes no other span
+                    // field, so the method and path show only in text/json.
                     tracing::info_span!(
-                        "request",
+                        REQUEST_SPAN_NAME,
                         method = %req.method(),
                         path = %redacted_path(req.uri().path()),
-                        request_id = %request_id,
+                        { REQUEST_ID_FIELD } = %request_id,
                     )
                 })
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),

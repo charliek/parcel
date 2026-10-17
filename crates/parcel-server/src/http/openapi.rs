@@ -11,8 +11,9 @@
 //! both the runtime routes and the document's path keys. (Nesting an
 //! already-split `axum::Router` would prefix only the runtime half.)
 
+use axum::http::StatusCode;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
-use utoipa::openapi::OpenApi;
+use utoipa::openapi::{OpenApi, RefOr};
 use utoipa::{Modify, OpenApi as OpenApiDerive, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 
@@ -107,13 +108,49 @@ pub fn router() -> OpenApiRouter<AppState> {
 
 /// Axum spells a catch-all segment `{*path}`; OpenAPI has no such syntax.
 /// The runtime route keeps the wildcard, the document gets `{path}`.
+///
+/// Also gives every response a description: OpenAPI 3.1 requires one, and
+/// utoipa 6 omits an empty one rather than writing `""`, so a response
+/// annotated without one gets its status's reason phrase ("Not Found").
 pub fn finalize(mut doc: OpenApi) -> OpenApi {
     let paths = std::mem::take(&mut doc.paths.paths);
     doc.paths.paths = paths
         .into_iter()
         .map(|(path, item)| (path.replace("{*", "{"), item))
         .collect();
+    for item in doc.paths.paths.values_mut() {
+        let operations = [
+            &mut item.get,
+            &mut item.put,
+            &mut item.post,
+            &mut item.delete,
+            &mut item.options,
+            &mut item.head,
+            &mut item.patch,
+            &mut item.trace,
+            &mut item.query,
+        ]
+        .into_iter()
+        .flatten()
+        .chain(item.additional_operations.values_mut());
+        for operation in operations {
+            for (status, response) in &mut operation.responses.responses {
+                if let RefOr::T(response) = response {
+                    if response.description.is_empty() {
+                        response.description = reason_phrase(status).to_string();
+                    }
+                }
+            }
+        }
+    }
     doc
+}
+
+fn reason_phrase(status: &str) -> &'static str {
+    StatusCode::from_bytes(status.as_bytes())
+        .ok()
+        .and_then(|code| code.canonical_reason())
+        .unwrap_or("Response")
 }
 
 /// The document alone: what `parcel-server openapi`, `/openapi.json` and the

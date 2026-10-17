@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use parcel_types::{ShareRole, Visibility};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -82,9 +82,9 @@ const SHARE_SELECT: &str = "SELECT s.email, s.role, s.created_at,
      FROM parcel_shares s";
 
 pub async fn list(pool: &PgPool, parcel_id: &str) -> Result<Vec<ShareRow>> {
-    sqlx::query_as::<_, ShareRow>(&format!(
+    sqlx::query_as::<_, ShareRow>(AssertSqlSafe(format!(
         "{SHARE_SELECT} WHERE s.parcel_id = $1 ORDER BY s.email COLLATE \"C\""
-    ))
+    )))
     .bind(parcel_id)
     .fetch_all(pool)
     .await
@@ -136,9 +136,9 @@ pub async fn put(
     .execute(&mut *tx)
     .await
     .context("saving share")?;
-    let row = sqlx::query_as::<_, ShareRow>(&format!(
+    let row = sqlx::query_as::<_, ShareRow>(AssertSqlSafe(format!(
         "{SHARE_SELECT} WHERE s.parcel_id = $1 AND s.email = $2"
-    ))
+    )))
     .bind(parcel_id)
     .bind(email)
     .fetch_one(&mut *tx)
@@ -179,7 +179,7 @@ pub async fn shared_with(
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<SharedRow>, i64)> {
-    let rows = sqlx::query_as::<_, SharedRow>(&format!(
+    let rows = sqlx::query_as::<_, SharedRow>(AssertSqlSafe(format!(
         "SELECT {PARCEL_COLUMNS},
                 o.name AS owner_name, o.email AS owner_email, s.role, s.created_at AS shared_at
          {PARCEL_FROM}
@@ -187,7 +187,7 @@ pub async fn shared_with(
          JOIN users o ON o.id = p.owner_id
          WHERE p.owner_id <> $2
          ORDER BY p.updated_at DESC, p.id LIMIT $3 OFFSET $4"
-    ))
+    )))
     .bind(email)
     .bind(user_id)
     .bind(limit)

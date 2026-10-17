@@ -30,9 +30,17 @@ people by email, internal (everyone signed in) or public. A bundled skill
 ## Toolchain and local stack
 
 - Rust 1.97.1 via `.mise.toml` / `rust-toolchain.toml`: run `mise exec -- cargo …`.
-- `Cargo.lock` was seeded from slauth's lock on purpose: utoipa-swagger-ui 9
-  needs the **yanked** `zip 3.0.0`, which only resolves from an existing lock.
-  Never delete/regenerate the lock from scratch.
+- Move `Cargo.lock` with targeted `cargo update -p <crate>` (a manifest bump
+  re-resolves only what it touches); don't delete and regenerate it, which
+  moves every dependency at once. (It was seeded from slauth's lock while
+  utoipa-swagger-ui 9 needed the yanked `zip 3.0.0`; utoipa-swagger-ui 10
+  takes zip 8, so nothing in it depends on a yanked release any more.)
+- One crypto provider, aws-lc-rs: reqwest `rustls`, sqlx
+  `tls-rustls-aws-lc-rs`, jsonwebtoken `aws_lc_rs`. Never enable a `ring`
+  flavour or jsonwebtoken `rust_crypto` (two providers or backends panic at
+  the first TLS connect or JWT sign/verify).
+  `cargo tree -i ring --workspace --all-features -e all --target all` prints
+  nothing, and the lock has no `rsa`.
 - `docker compose up -d` — Postgres on **5439**, fake-gcs-server on **4447**.
 - `prox up -d` — backend :8106 and Vite :5178 behind
   `https://parcel.local.stridelabs.ai`, content on

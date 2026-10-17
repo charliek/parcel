@@ -283,7 +283,11 @@ impl Config {
             }
         };
 
-        // Text locally, JSON wherever a log aggregator is listening.
+        // Text locally, JSON wherever a log aggregator is listening. `cloud`
+        // (Google Cloud Logging lines: `severity`, a top-level `message`,
+        // `requestId`) is opt-in for now: it writes no span fields, so until
+        // request logging can carry the redacted path on its own line
+        // (RequestLogLayer logs the raw one), `json` keeps more per line.
         let default_format = match app_env {
             AppEnv::Development => "text",
             AppEnv::Production => "json",
@@ -295,8 +299,12 @@ impl Config {
         {
             "json" => LogFormat::Json,
             "text" => LogFormat::Text,
+            "cloud" => LogFormat::Cloud,
             other => {
-                errs.push("LOG_FORMAT", format!("expected text|json, got {other:?}"));
+                errs.push(
+                    "LOG_FORMAT",
+                    format!("expected text|json|cloud, got {other:?}"),
+                );
                 LogFormat::Text
             }
         };
@@ -763,6 +771,19 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(ok.log_format, LogFormat::Json);
+    }
+
+    #[test]
+    fn log_format_accepts_cloud() {
+        for (value, format) in [
+            ("text", LogFormat::Text),
+            ("json", LogFormat::Json),
+            ("cloud", LogFormat::Cloud),
+            ("Cloud", LogFormat::Cloud),
+        ] {
+            let c = load(&[("LOG_FORMAT", value)]).unwrap();
+            assert_eq!(c.log_format, format, "{value}");
+        }
     }
 
     #[test]

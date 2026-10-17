@@ -15,6 +15,8 @@ RUN bun run build
 # ---- backend --------------------------------------------------------------
 FROM rust:1.97.1-slim-bookworm AS backend
 WORKDIR /app
+# aws-lc-sys (rustls's and jsonwebtoken's crypto) compiles AWS-LC with the gcc
+# this image ships, through its `cc` builder: no cmake, clang or Go needed.
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
@@ -28,7 +30,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/parcel-server /usr/local/bin/parcel-server
 
 # ---- runtime --------------------------------------------------------------
-# Same pinned distroless base as slauth-rs: glibc + libgcc, no shell, nonroot.
+# Same pinned distroless base as slauth-rs: glibc + libgcc, no shell, nonroot,
+# and the CA bundle (/etc/ssl/certs) that reqwest's platform verifier trusts.
 FROM gcr.io/distroless/cc-debian12@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS runtime
 WORKDIR /app
 COPY --from=backend --chown=65532:65532 /usr/local/bin/parcel-server /usr/local/bin/parcel-server

@@ -62,8 +62,8 @@ Users then install with:
   `version.workspace = true`, so the CLI's `--version`, the server's
   `/api/v1/info` version and the `.deb` version move together.
 - `Cargo.lock` — `cargo update --workspace --offline`, which rewrites only the
-  three workspace entries. **Never delete or regenerate the lockfile**: it
-  deliberately pins a yanked `zip` release that `utoipa-swagger-ui` needs.
+  three workspace entries. Don't delete or regenerate the lockfile: that
+  would move every dependency in the release commit.
 - `.claude-plugin/plugin.json` — `.version`, so the plugin and the CLI that
   embeds the skill share a version.
 
@@ -73,8 +73,9 @@ field).
 
 ## Packaging details
 
-- **Binary:** `parcel`, pure Rust with rustls (webpki + native roots), no
-  OpenSSL; the `.deb` depends only on libc.
+- **Binary:** `parcel`, Rust with rustls on aws-lc-rs (statically linked),
+  trusting the OS store (the platform verifier) plus bundled Mozilla roots;
+  no OpenSSL, and the `.deb` depends only on libc.
 - **`.deb`:** `[package.metadata.deb]` in `crates/parcel-cli/Cargo.toml` names
   the Debian package `parcel` (not the crate name `parcel-cli`), installs
   `/usr/bin/parcel`, and sets `revision = ""` so the file is

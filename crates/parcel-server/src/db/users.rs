@@ -1,7 +1,7 @@
 //! Users, and the provider identities they sign in with.
 
 use anyhow::{Context, Result};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -18,11 +18,13 @@ pub struct User {
 const USER_COLUMNS: &str = "id, email, name, session_epoch, last_login_at, disabled_at";
 
 pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<User>> {
-    sqlx::query_as::<_, User>(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .context("finding user by id")
+    sqlx::query_as::<_, User>(AssertSqlSafe(format!(
+        "SELECT {USER_COLUMNS} FROM users WHERE id = $1"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("finding user by id")
 }
 
 pub async fn find_by_identity(
@@ -30,10 +32,10 @@ pub async fn find_by_identity(
     provider: &str,
     subject: &str,
 ) -> Result<Option<User>> {
-    sqlx::query_as::<_, User>(&format!(
+    sqlx::query_as::<_, User>(AssertSqlSafe(format!(
         "SELECT {USER_COLUMNS} FROM users
          WHERE id = (SELECT user_id FROM user_identities WHERE provider = $1 AND subject = $2)"
-    ))
+    )))
     .bind(provider)
     .bind(subject)
     .fetch_optional(pool)
@@ -119,11 +121,11 @@ pub async fn sign_in(
     .await
     .context("stamping identity")?;
     // Keep a name the provider didn't send rather than blanking it.
-    let user = sqlx::query_as::<_, User>(&format!(
+    let user = sqlx::query_as::<_, User>(AssertSqlSafe(format!(
         "UPDATE users SET email = $2, name = CASE WHEN $3 = '' THEN name ELSE $3 END,
                 last_login_at = now(), last_seen_at = now()
          WHERE id = $1 RETURNING {USER_COLUMNS}"
-    ))
+    )))
     .bind(user_id)
     .bind(email)
     .bind(name)

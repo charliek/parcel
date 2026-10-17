@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use parcel_types::{CommentAnchor, CommentStatus, CommentVia};
 use sqlx::types::Json;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{AssertSqlSafe, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -63,14 +63,14 @@ pub async fn list(
         CommentStatus::Resolved => "resolved",
         CommentStatus::All => "all",
     };
-    sqlx::query_as::<_, CommentRow>(&format!(
+    sqlx::query_as::<_, CommentRow>(AssertSqlSafe(format!(
         "{COMMENT_SELECT}
          JOIN comments t ON t.parcel_id = c.parcel_id
                         AND t.number = COALESCE(c.parent_number, c.number)
          WHERE c.parcel_id = $1
            AND ($2 = 'all' OR ($2 = 'open') = (t.resolved_at IS NULL))
          ORDER BY c.number"
-    ))
+    )))
     .bind(parcel_id)
     .bind(status)
     .fetch_all(pool)
@@ -80,11 +80,11 @@ pub async fn list(
 
 /// One thread (by its top-level number) with its replies.
 pub async fn thread(pool: &PgPool, parcel_id: &str, number: i32) -> Result<Vec<CommentRow>> {
-    sqlx::query_as::<_, CommentRow>(&format!(
+    sqlx::query_as::<_, CommentRow>(AssertSqlSafe(format!(
         "{COMMENT_SELECT}
          WHERE c.parcel_id = $1 AND (c.number = $2 OR c.parent_number = $2)
          ORDER BY c.number"
-    ))
+    )))
     .bind(parcel_id)
     .bind(number)
     .fetch_all(pool)
@@ -93,9 +93,9 @@ pub async fn thread(pool: &PgPool, parcel_id: &str, number: i32) -> Result<Vec<C
 }
 
 pub async fn get(pool: &PgPool, parcel_id: &str, number: i32) -> Result<Option<CommentRow>> {
-    sqlx::query_as::<_, CommentRow>(&format!(
+    sqlx::query_as::<_, CommentRow>(AssertSqlSafe(format!(
         "{COMMENT_SELECT} WHERE c.parcel_id = $1 AND c.number = $2"
-    ))
+    )))
     .bind(parcel_id)
     .bind(number)
     .fetch_optional(pool)

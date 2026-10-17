@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use parcel_types::{FileEntry, Usage, Visibility};
-use sqlx::{PgExecutor, PgPool, Postgres, Transaction};
+use sqlx::{AssertSqlSafe, PgExecutor, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -83,7 +83,7 @@ pub const PARCEL_FROM: &str = parcel_from!();
 const PARCEL_SELECT: &str = concat!("SELECT ", parcel_columns!(), "\n     ", parcel_from!());
 
 pub async fn get(pool: &PgPool, id: &str) -> Result<Option<ParcelRow>> {
-    sqlx::query_as::<_, ParcelRow>(&format!("{PARCEL_SELECT} WHERE p.id = $1"))
+    sqlx::query_as::<_, ParcelRow>(AssertSqlSafe(format!("{PARCEL_SELECT} WHERE p.id = $1")))
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -105,9 +105,9 @@ pub async fn list_for_owner(
         .map(|q| format!("%{}%", escape_like(q)));
     let filter = "p.owner_id = $1 AND ($2::text IS NULL
         OR p.title ILIKE $2 ESCAPE '\\' OR p.description ILIKE $2 ESCAPE '\\' OR p.id ILIKE $2 ESCAPE '\\')";
-    let rows = sqlx::query_as::<_, ParcelRow>(&format!(
+    let rows = sqlx::query_as::<_, ParcelRow>(AssertSqlSafe(format!(
         "{PARCEL_SELECT} WHERE {filter} ORDER BY p.updated_at DESC, p.id LIMIT $3 OFFSET $4"
-    ))
+    )))
     .bind(owner_id)
     .bind(pattern.as_deref())
     .bind(limit)
@@ -115,12 +115,14 @@ pub async fn list_for_owner(
     .fetch_all(pool)
     .await
     .context("listing parcels")?;
-    let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM parcels p WHERE {filter}"))
-        .bind(owner_id)
-        .bind(pattern.as_deref())
-        .fetch_one(pool)
-        .await
-        .context("counting parcels")?;
+    let total: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT count(*) FROM parcels p WHERE {filter}"
+    )))
+    .bind(owner_id)
+    .bind(pattern.as_deref())
+    .fetch_one(pool)
+    .await
+    .context("counting parcels")?;
     Ok((rows, total))
 }
 

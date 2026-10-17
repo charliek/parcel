@@ -29,7 +29,7 @@ use parcel_server::state::AppState;
 use parcel_server::storage::MemoryBlobStore;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use stridelabs_auth::test_support::TestKey;
 use tower::ServiceExt;
 use wiremock::matchers::{method, path};
@@ -73,7 +73,7 @@ async fn ensure_test_database() {
         }
         // Parallel test binaries can race here; "already exists" and
         // "template1 is being accessed" both resolve on retry.
-        match sqlx::query(&format!("CREATE DATABASE {TEST_DB}"))
+        match sqlx::query(AssertSqlSafe(format!("CREATE DATABASE {TEST_DB}")))
             .execute(&admin)
             .await
         {
@@ -99,11 +99,13 @@ pub async fn migrated_pool() -> PgPool {
     let base = database_url();
     let admin = stridelabs_testing::require_postgres(&base).await;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    // DDL can't bind identifiers, so the names below are spliced in: this
+    // one (and the `old` ones, which only ever match it) is `t_<secs>_<hex>`.
     let schema = format!(
         "t_{now}_{}",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     );
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    sqlx::query(AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&admin)
         .await
         .expect("create test schema");
@@ -115,9 +117,11 @@ pub async fn migrated_pool() -> PgPool {
     for old in existing {
         let created = old.split('_').nth(1).and_then(|t| t.parse::<i64>().ok());
         if created.is_some_and(|t| t < now - 3600) {
-            let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {old} CASCADE"))
-                .execute(&admin)
-                .await;
+            let _ = sqlx::query(AssertSqlSafe(format!(
+                "DROP SCHEMA IF EXISTS {old} CASCADE"
+            )))
+            .execute(&admin)
+            .await;
         }
     }
     admin.close().await;

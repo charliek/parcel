@@ -165,3 +165,62 @@ pub(super) fn redact(e: &reqwest::Error) -> &'static str {
         "request error"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use jsonwebtoken::{DecodingKey, Validation};
+    use stridelabs_auth::test_support::TestKey;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
+
+    /// The key-file path end to end: parse the PEM, sign RS256 on
+    /// jsonwebtoken's aws-lc-rs backend, and post the assertion as a form.
+    #[tokio::test]
+    async fn exchanges_a_signed_service_account_assertion() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "ya29.test",
+                "expires_in": 3600,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let token_uri = format!("{}/token", server.uri());
+        let key_file = serde_json::json!({
+            "client_email": "parcel@example.iam.gserviceaccount.com",
+            "private_key": TestKey::primary().pem(),
+            "token_uri": token_uri,
+        });
+        let provider = TokenProvider::from_service_account(
+            reqwest::Client::new(),
+            &BASE64.encode(key_file.to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(provider.access_token().await.unwrap(), "ya29.test");
+        // Cached: the second call makes no request (`expect(1)`).
+        assert_eq!(provider.access_token().await.unwrap(), "ya29.test");
+
+        let requests = server.received_requests().await.unwrap();
+        let form: HashMap<String, String> = url::form_urlencoded::parse(&requests[0].body)
+            .into_owned()
+            .collect();
+        assert_eq!(form["grant_type"], JWT_BEARER_GRANT);
+        let jwks = TestKey::primary().jwks();
+        let key = DecodingKey::from_jwk(&jwks.keys[0]).unwrap();
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_audience(&[&token_uri]);
+        validation.set_issuer(&["parcel@example.iam.gserviceaccount.com"]);
+        let claims =
+            jsonwebtoken::decode::<serde_json::Value>(&form["assertion"], &key, &validation)
+                .unwrap()
+                .claims;
+        assert_eq!(claims["scope"], SCOPE);
+    }
+}

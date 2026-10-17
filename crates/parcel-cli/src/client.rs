@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::blocking::{multipart::Form, Client, RequestBuilder, Response};
-use reqwest::{Method, Url};
+use reqwest::{Certificate, Method, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -34,10 +34,18 @@ pub struct Api {
 
 impl Api {
     pub fn new(base: &Url, token: Option<&str>) -> Result<Self> {
+        // The OS trust store (mkcert, corporate roots) plus Mozilla's, so a
+        // container without a CA bundle still reaches a public server.
+        let bundled = webpki_root_certs::TLS_SERVER_ROOT_CERTS
+            .iter()
+            .map(|der| Certificate::from_der(der))
+            .collect::<Result<Vec<_>, _>>()
+            .context("loading the bundled root certificates")?;
         let http = Client::builder()
             .user_agent(concat!("parcel-cli/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(None)
+            .tls_certs_merge(bundled)
             .build()
             .context("building the HTTP client")?;
         Ok(Api {

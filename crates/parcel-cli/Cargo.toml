@@ -39,16 +39,18 @@ directories = "6"
 gethostname = "1"
 open = "5"
 # Blocking client. reqwest runs a private tokio runtime on a background thread
-# for this; nothing else in the CLI is async. Both root stores: webpki for a
-# predictable baseline, native so a local mkcert CA (parcel.local.stridelabs.ai)
-# and corporate roots are trusted too.
-reqwest = { version = "0.12", default-features = false, features = [
+# for this; nothing else in the CLI is async. Both root sources: 0.13's
+# `rustls` verifies with the platform verifier (the OS trust store, so a local
+# mkcert CA for parcel.local.stridelabs.ai and corporate roots are trusted),
+# and `client.rs` merges in Mozilla's roots (`webpki-root-certs`) as a
+# predictable baseline for a machine or container with no CA bundle.
+reqwest = { version = "0.13", default-features = false, features = [
     "blocking",
     "json",
     "multipart",
-    "rustls-tls-webpki-roots",
-    "rustls-tls-native-roots",
+    "rustls",
 ] }
+webpki-root-certs = "1"
 serde = { version = "1", features = ["derive"] }
 # raw_value: data values are printed with the server's key order, not re-sorted.
 serde_json = { version = "1", features = ["raw_value"] }
