@@ -1,7 +1,7 @@
 name: Deploy
 
 # Manual rollout of an already-built image tag: migrate job, then service.
-# Same steps as deploy/deploy.sh. Not yet exercised.
+# Same steps as deploy/deploy.sh; run it with /deploy_app (.claude/commands).
 
 on:
   workflow_dispatch:

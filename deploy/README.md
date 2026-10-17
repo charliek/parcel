@@ -1,10 +1,11 @@
 # Deploying parcel (Cloud Run + Neon + GCS)
 
-> Status: **prepared, not yet executed.** Everything here is written against
-> the fleet's existing GCP conventions (project `projects-413401`,
-> `us-central1`, Artifact Registry `stridelabs`, per-env runtime service
-> accounts, `{env}-parcel-{purpose}` secrets). Nothing has been created in
-> GCP, Neon or DNS yet.
+> Status: **production is live** (since 2026-10-16) at
+> `parcel.stridelabs.ai` / `parcelcontent.stridelabs.ai`, on the fleet's GCP
+> conventions (project `projects-413401`, `us-central1`, Artifact Registry
+> `stridelabs`, per-env runtime service accounts, `{env}-parcel-{purpose}`
+> secrets). There is **no staging** for now: `env.staging` is prepared, but
+> none of its resources exist.
 
 ## Shape
 
@@ -39,8 +40,13 @@ Shown for production; substitute `staging` / `parcel-staging` names.
      --member serviceAccount:parcel-prod@projects-413401.iam.gserviceaccount.com \
      --role roles/storage.objectAdmin
    ```
-3. **Neon** — a `parcel` project (or branch) with database `parcel`. Keep both
-   the pooled URL (service) and the direct URL (migrate job).
+3. **Neon** — keep both the pooled URL (service) and the direct URL (migrate
+   job: the same host without `-pooler`). Production uses database `neondb` in
+   `aws-us-east-2`. Store them with `sslmode=verify-full` and **without**
+   Neon's `channel_binding=require`: sqlx ignores `channel_binding` (with a
+   warning), and with `sslmode=require` it encrypts without checking the
+   certificate. Neon's certificates are publicly trusted, so `verify-full`
+   works with the bundled roots.
 4. **Secrets** — each with its own accessor binding (never project-wide):
    ```bash
    for s in database-url database-url-direct content-signing-key; do
@@ -123,17 +129,27 @@ shorten it for work setups) and pauses their API tokens after
 `PARCEL_TOKEN_LOGIN_MAX_AGE_DAYS`. To cut someone off at once:
 `UPDATE users SET disabled_at = now() WHERE lower(email) = '…';`.
 
-## Each deploy
+## CI and deploys
+
+GitHub Actions reach GCP through Workload Identity Federation (the tapper
+pattern), no key files:
+
+- pool `github-pool`, provider `github-provider` (only `charliek/*` repos)
+- CI account `parcel-ci-prod`: `roles/iam.workloadIdentityUser` for
+  `charliek/parcel` only; `roles/artifactregistry.writer` on the `stridelabs`
+  repository; `roles/run.admin` (project, as `tapper-ci-prod`);
+  `roles/iam.serviceAccountUser` on `parcel-prod`
+- repo variables `GCP_WIF_PROVIDER`, `GCP_CI_SA`, `GCP_PROJECT_ID`
+
+Each release:
 
 ```bash
-make image-push TAG=v2026.10.16          # build + push us-central1-docker.pkg.dev/.../parcel:<tag>
-deploy/deploy.sh staging v2026.10.16     # migrate job (direct URL), then the service
-deploy/deploy.sh production v2026.10.16
+/deploy:build          # CHANGELOG entry + date tag vYYYY.MM.DD → release.yml builds + pushes the image
+/deploy_app v2026.10.16  # .claude/commands/deploy_app.md → deploy.yml (migrate job, then the service)
 ```
 
-`deploy.sh` resolves the tag to a digest, runs `parcel-server migrate` as a
-Cloud Run job, replaces the service from `cloud-run-service.yaml`
-(`RUN_MIGRATIONS=false` there), grants `allUsers` invoker, and probes both
-domains. Once the repo is on GitHub, `.github/workflows/release.yml` builds
-images on date tags and `deploy.yml` runs the same steps with Workload
-Identity Federation (the tapper pattern: `GCP_WIF_PROVIDER`, `GCP_CI_SA`).
+`deploy.sh` (which `deploy.yml` runs) resolves the tag to a digest, runs
+`parcel-server migrate` as a Cloud Run job, replaces the service from
+`cloud-run-service.yaml` (`RUN_MIGRATIONS=false` there), grants `allUsers`
+invoker, and probes both domains. By hand, with your own gcloud login:
+`make image-push TAG=…` then `deploy/deploy.sh production <tag>`.

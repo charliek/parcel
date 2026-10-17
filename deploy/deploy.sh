@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Deploy parcel to Cloud Run by hand (until the repo is on GitHub and
-# .github/workflows/deploy.yml takes over).
+# Deploy parcel to Cloud Run. .github/workflows/deploy.yml runs this (see
+# /deploy_app); it also works by hand with your own gcloud login.
 #
 #   deploy/deploy.sh staging|production <image-tag>
 #
