@@ -1,11 +1,12 @@
 # Releasing the parcel CLI
 
-> **Status: ready, not yet run.** No CLI tag has been pushed yet. The
-> one-time setup is done: the release-bot App (`charliek-release-bot`, one
-> installation covering every repo) has its `RELEASE_BOT_CLIENT_ID` /
-> `RELEASE_BOT_APP_KEY` secrets on this repo, and apt-charliek tracks
-> `parcel` in its `packages.yaml`. The workflow, formula template and
-> version script follow strix (a Rust CLI already shipped this way).
+> **Status: live.** v0.1.2 (2026-10-18) is the first published CLI
+> release: the GitHub Release (four tarballs, two `.deb`s), `Formula/parcel.rb`
+> in charliek/homebrew-tap, and `parcel` in apt-charliek's noble index all came
+> from `/release-workflows:release`. (v0.1.1 stopped at `ci-gate`, unpublished:
+> its bump missed `openapi.json`, which `update-version.sh` now covers.) The
+> release-bot App is `charliek-release-bot` (one installation covering every
+> repo); its secrets are on this repo, and apt-charliek tracks `parcel`.
 
 ## Two release streams
 
@@ -133,7 +134,7 @@ slauth registers as `http://localhost:3118/callback`; change both together.
 
 ## One-time setup
 
-Do these once, after the repo is pushed to `github.com/charliek/parcel`. Status as of 2026-10-18: 1–5 done, 6 skipped, 7 pending.
+Do these once, after the repo is pushed to `github.com/charliek/parcel`. Status as of 2026-10-18: 1–5 done, 6 skipped, 7 done (v0.1.2).
 
 1. ✅ **Push the repo** and keep it **public** — the homebrew job downloads the
    release tarballs anonymously to hash them.
@@ -160,7 +161,7 @@ Do these once, after the repo is pushed to `github.com/charliek/parcel`. Status 
    release-bot App (type `Integration`) and the Admin role (id `5`,
    `RepositoryRole`) as bypass actors so `/release-workflows:release` can push
    the changelog and version commits plus the tag.
-7. ⏳ **First release:** the tree starts at `0.1.0`. Cut `v0.1.1` (or `v0.1.0`
+7. ✅ **First release** (v0.1.2): the tree starts at `0.1.0`. Cut `v0.1.1` (or `v0.1.0`
    after confirming nothing has been tagged) with the release skill; the
    version-bump commit must be a real change, so pick a version other than the
    one already in `Cargo.toml`.
