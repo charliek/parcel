@@ -72,7 +72,7 @@ User HTML is untrusted. It is never served from the app origin.
 
 ### Data model
 
-`users` (keyed by slauth `sub`) → `parcels` (12-char id, title, description,
+`users` (one per person; `user_identities` maps each provider `(provider, subject)` to one) → `parcels` (12-char id, title, description,
 visibility `private|public`, current version) → `parcel_versions` (immutable, entry
 path, totals) → `version_files` (path → blob sha256, size, content type).
 `blobs` are content-addressed (`blobs/sha256/ab/<hash>`) and deduplicated across
@@ -516,7 +516,7 @@ calls never follow redirects); an ended session could still "sign out
 everywhere"; concurrent first sign-ins could split one email into two users
 (now serialized per email); a stale logout hint could reach another
 provider; the migration dropped `users.sub` under a still-running old
-revision (now kept, nullable); and signature forgery wasn't tested. Not
+revision (now kept, nullable, then dropped by migration 0005 once no running revision read it); and signature forgery wasn't tested. Not
 verified live: Okta (no account here; its setup is in `deploy/README.md`).
 
 Deviations from the original brief, by design:

@@ -95,6 +95,16 @@ async fn ensure_test_database() {
 /// than an hour are dropped as new ones are created, which bounds growth
 /// without racing any test that could still be running.
 pub async fn migrated_pool() -> PgPool {
+    let pool = schema_pool().await;
+    parcel_server::db::migrate(&pool)
+        .await
+        .expect("run migrations");
+    pool
+}
+
+/// A pool on a fresh, empty schema (the migration tests apply migrations
+/// one by one).
+pub async fn schema_pool() -> PgPool {
     ensure_test_database().await;
     let base = database_url();
     let admin = stridelabs_testing::require_postgres(&base).await;
@@ -128,11 +138,7 @@ pub async fn migrated_pool() -> PgPool {
 
     let separator = if base.contains('?') { '&' } else { '?' };
     let url = format!("{base}{separator}options=-c%20search_path%3D{schema}");
-    let pool = stridelabs_testing::require_postgres(&url).await;
-    parcel_server::db::migrate(&pool)
-        .await
-        .expect("run migrations");
-    pool
+    stridelabs_testing::require_postgres(&url).await
 }
 
 pub fn test_config(issuer: &str) -> Config {

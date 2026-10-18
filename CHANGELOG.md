@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Migration 0005 drops `users.sub`, the pre-provider identity column that
+  0003 copied into `user_identities` and kept only for the v0.3 rollover. It
+  refuses to run if a user with a legacy `sub` has no identity.
+
 ## v2026.10.17.3
 
 ### Added
