@@ -129,4 +129,24 @@ for manifest in .claude-plugin/plugin.json plugins/parcel-mcp/.claude-plugin/plu
   echo "$manifest"
 done
 
+# 6. The committed OpenAPI document states the server's version in
+#    `info.version` (utoipa reads CARGO_PKG_VERSION), and
+#    tests/openapi_shape.rs fails CI when it differs from a fresh export. Only
+#    that one line changes, so rewrite it in place rather than re-exporting
+#    (which would compile the server): the top-level `"info": {` block's
+#    `"version"` line, nothing else; then read it back.
+OPENAPI=crates/parcel-server/openapi.json
+awk -v v="$V" '
+  $0 == "  \"info\": {" { in_info = 1 }
+  in_info && /^    "version": "/ { sub(/"version": "[^"]*"/, "\"version\": \"" v "\""); in_info = 0 }
+  { print }
+' "$OPENAPI" >"$tmp"
+cat "$tmp" >"$OPENAPI"
+openapi_actual="$(jq -r '.info.version' "$OPENAPI")"
+if [[ "$openapi_actual" != "$V" ]]; then
+  echo "error: ${OPENAPI} .info.version is '${openapi_actual}' after the bump, expected '$V'" >&2
+  exit 1
+fi
+echo "$OPENAPI"
+
 echo "Bumped parcel to $V"

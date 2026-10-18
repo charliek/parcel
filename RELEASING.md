@@ -93,6 +93,12 @@ Users then install with:
   version (`parcel-cli`'s `both_plugin_manifests_carry_the_workspace_version`
   test fails between releases if one drifts).
 
+- `crates/parcel-server/openapi.json` — `.info.version`, which utoipa fills
+  from the crate version; `tests/openapi_shape.rs` fails CI when the
+  committed document differs from a fresh export. (Missing from the script
+  until v0.1.2, which is why the first tag, v0.1.1, stopped at `ci-gate`
+  and published nothing.)
+
 NOT bumped: `frontend/package.json` (the SPA is shipped inside the server image,
 not versioned independently) and `.claude-plugin/marketplace.json` (no version
 field).
