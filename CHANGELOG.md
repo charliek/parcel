@@ -1,11 +1,13 @@
 # Changelog
 
-## v0.1.1
+## v0.1.2
 
 The first release of the `parcel` CLI and the two Claude Code plugins
 (`brew install charliek/tap/parcel`, or `sudo apt install parcel` from
 apt-charliek; `/plugin marketplace add charliek/parcel`). Server releases keep
-their own date tags; see RELEASING.md, "Two release streams".
+their own date tags; see RELEASING.md, "Two release streams". (v0.1.1 was
+tagged but never published: its version bump missed `openapi.json`, so CI
+failed and the release workflow refused it; `update-version.sh` bumps it now.)
 
 ### CLI (`parcel`)
 - Sign in with a browser device flow (`login`, `logout`, `whoami`), then
