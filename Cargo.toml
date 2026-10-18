@@ -6,7 +6,7 @@ members = ["crates/parcel-types", "crates/parcel-server", "crates/parcel-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.97"
 license = "MIT"
