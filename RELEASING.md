@@ -1,11 +1,32 @@
 # Releasing the parcel CLI
 
-> **Status: written, not yet run.** The repo is on GitHub
-> ([charliek/parcel](https://github.com/charliek/parcel)) and CI runs, but no
-> release tag has been pushed, so nothing below has executed. The workflow,
-> formula template and version script follow strix (a Rust CLI already
-> shipped this way) and are ready for the first tag once the
-> [one-time setup](#one-time-setup) is done.
+> **Status: ready, not yet run.** No CLI tag has been pushed yet. The
+> one-time setup is done: the release-bot App (`charliek-release-bot`, one
+> installation covering every repo) has its `RELEASE_BOT_CLIENT_ID` /
+> `RELEASE_BOT_APP_KEY` secrets on this repo, and apt-charliek tracks
+> `parcel` in its `packages.yaml`. The workflow, formula template and
+> version script follow strix (a Rust CLI already shipped this way).
+
+## Two release streams
+
+This repo ships a web service *and* artifacts, so it runs both of the usual
+flows, kept apart by tag shape:
+
+| | Web (the server) | Artifacts (CLI + both Claude Code plugins) |
+|---|---|---|
+| Cut with | `/deploy:build`, then `/deploy_app <tag>` | `/release-workflows:release vX.Y.Z` (this file) |
+| Tag | date: `vYYYY.MM.DD[.N]` | semver: `vX.Y.Z` |
+| Workflow | `release.yml` (image) → `deploy.yml` (migrate job, service) | `release-cli.yml` (GitHub Release, Homebrew, apt) |
+| Bumps | nothing in the tree | `Cargo.toml` + both `plugin.json` (`update-version.sh`) |
+
+Each workflow ignores the other's tags (`release-cli.yml` excludes `v2…`).
+A date tag creates no GitHub Release, so apt-charliek's "newest release
+with a `.deb`" scan only ever sees CLI releases. Both write
+`CHANGELOG.md` sections (`## v2026.10.18` and `## v0.1.1` side by side);
+when `/deploy:build` drafts its entry, scope it to commits since the last
+**date** tag, not the last `v*` tag, which may be a CLI release. The
+server's `/api/v1/info` version is the workspace version, i.e. the last CLI
+release.
 
 The general release framework is `cc-plugins:release-workflows`; this file
 documents what's specific to this repo. It covers the `parcel` CLI
@@ -106,18 +127,18 @@ slauth registers as `http://localhost:3118/callback`; change both together.
 
 ## One-time setup
 
-Do these once, after the repo is pushed to `github.com/charliek/parcel`:
+Do these once, after the repo is pushed to `github.com/charliek/parcel`. Status as of 2026-10-18: 1–5 done, 6 skipped, 7 pending.
 
-1. **Push the repo** and keep it **public** — the homebrew job downloads the
+1. ✅ **Push the repo** and keep it **public** — the homebrew job downloads the
    release tarballs anonymously to hash them.
-2. **CI with a `ci-success` check.** `ci-gate` waits for a check run named
+2. ✅ **CI with a `ci-success` check.** `ci-gate` waits for a check run named
    `ci-success` on the tagged commit, so the CI workflow must end in a job with
    that name (the release-workflows convention's aggregate job).
-3. **Install the release-bot GitHub App** (App ID `3902108`) on
+3. ✅ **Install the release-bot GitHub App** (`charliek-release-bot`, App ID `3902108`, client ID `Iv23liGfGlNqw1ELyX14`; its single installation covers every repo on the account) on
    **charliek/parcel**, **charliek/homebrew-tap** and **charliek/apt-charliek**
    (Contents: read + write). It is the single credential for the formula push
    and the apt dispatch — no PATs.
-4. **Repository secrets** on charliek/parcel:
+4. ✅ **Repository secrets** on charliek/parcel (set 2026-10-18; the key is `homebrew-tap/cert/charliek-release-bot.private-key.pem`, envsecrets-managed, git-ignored):
 
    | Secret | Purpose |
    |---|---|
@@ -126,14 +147,14 @@ Do these once, after the repo is pushed to `github.com/charliek/parcel`:
 
    If `RELEASE_BOT_CLIENT_ID` is unset, `homebrew` and `apt-dispatch` log a
    warning and skip instead of failing the release.
-5. **apt-charliek:** add a `parcel` entry to `apt-charliek/packages.yaml`
+5. ✅ **apt-charliek:** add a `parcel` entry to `apt-charliek/packages.yaml`
    (source repo `charliek/parcel`, asset glob `parcel_*.deb`), following the
    existing `strix` entry.
-6. **Branch protection on `main`:** a ruleset requiring `ci-success`, with the
+6. ⏭ Skipped while this repo commits straight to `main` (CLAUDE.md); without a ruleset the release skill pushes directly. If one is added later: **Branch protection on `main`:** a ruleset requiring `ci-success`, with the
    release-bot App (type `Integration`) and the Admin role (id `5`,
    `RepositoryRole`) as bypass actors so `/release-workflows:release` can push
    the changelog and version commits plus the tag.
-7. **First release:** the tree starts at `0.1.0`. Cut `v0.1.1` (or `v0.1.0`
+7. ⏳ **First release:** the tree starts at `0.1.0`. Cut `v0.1.1` (or `v0.1.0`
    after confirming nothing has been tagged) with the release skill; the
    version-bump commit must be a real change, so pick a version other than the
    one already in `Cargo.toml`.
