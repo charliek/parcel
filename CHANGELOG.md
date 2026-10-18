@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2026.10.18
 
 ### Changed
 - Migration 0005 drops `users.sub`, the pre-provider identity column that
