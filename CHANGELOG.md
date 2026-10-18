@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.1.1
+
+The first release of the `parcel` CLI and the two Claude Code plugins
+(`brew install charliek/tap/parcel`, or `sudo apt install parcel` from
+apt-charliek; `/plugin marketplace add charliek/parcel`). Server releases keep
+their own date tags; see RELEASING.md, "Two release streams".
+
+### CLI (`parcel`)
+- Sign in with a browser device flow (`login`, `logout`, `whoami`), then
+  `publish` a file or folder as a new parcel or a new version of one (merge or
+  replace, `--base-version` conflict checks); `list` (yours or `--shared`),
+  `info`, `cat`, `pull`, `versions`, `restore`, `update`, `delete`, `open`.
+- Sharing by email (`share`, `unshare`, `shares`), comments left in the viewer
+  (`comments list|add|reply|resolve|reopen|delete`) and page data (`data
+  list|get|set|update|delete|clear`). `--json` prints the API's response.
+- `skill install` writes the bundled agent skill for Claude Code, craze and
+  opencode. macOS and Linux, amd64 and arm64; rustls on aws-lc-rs with the
+  OS trust store plus Mozilla roots.
+
+### Claude Code plugins
+- `parcel-mcp`: Parcel's MCP server (`https://parcel.stridelabs.ai/mcp`,
+  OAuth client `parcel-claude-code`, callback port 3118) and a skill for the
+  publish → comment → revise loop. No CLI needed.
+- `parcel`: the CLI skill; needs the CLI.
+
 ## v2026.10.18
 
 ### Changed
