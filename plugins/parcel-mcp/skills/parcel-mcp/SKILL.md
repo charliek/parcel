@@ -1,6 +1,6 @@
 ---
 name: parcel-mcp
-description: "Use when the user wants to see, share or hand off something as a web page rendered in a browser at a private link, and the Parcel MCP tools (publish_parcel, update_parcel, list_comments, …) are available: an HTML page, plan, report, dashboard, chart or data visualization, interactive prototype or mockup, diagram, slide-style summary, or a long document that reads better as a page than as chat. Triggers include 'publish this', 'put the plan in a parcel', 'share a link', 'make it a page', 'show it to me in the browser', 'share it with ada@… / the team', 'I left comments / there's feedback on the parcel', 'update it from the comments', 'update the dashboard's data', and any parcel URL (…/p/<id>) or 12-character parcel id to read, review, revise, share, act on comments for or delete. Do NOT use it for files that belong in the user's repository, for an answer that fits comfortably in chat, or for unrelated things named Parcel (the parcel.js bundler, package tracking)."
+description: "Use when the user wants to see, share or hand off something as a web page rendered in a browser at a private link, and the Parcel MCP tools (publish_parcel, update_parcel, list_comments, …) are available: an HTML page, plan, report, dashboard, chart or data visualization, interactive prototype or mockup, diagram, slide-style summary, or a long document that reads better as a page than as chat. Triggers include 'publish this', 'put the plan in a parcel', 'share a link', 'make it a page', 'show it to me in the browser', 'share it with ada@… / the team', 'I left comments / there's feedback on the parcel', 'update it from the comments', 'update the dashboard's data', and any parcel URL (…/p/<id>) or 12-character parcel id to find, read, review, revise, share, act on comments for or delete. Do NOT use it for files that belong in the user's repository, for an answer that fits comfortably in chat, or for unrelated things named Parcel (the parcel.js bundler, package tracking)."
 ---
 
 # Publishing pages with Parcel (MCP)
@@ -31,7 +31,7 @@ Design checklist, a chart example, multi-file layouts and the sandbox: [referenc
 publish_parcel { files: [{path: "index.html", content: "<!doctype html>…"}], title?: "Q3 plan" }
 ```
 
-Give the user `parcel.url` from the result, say who can open it (private: only them until shared), and what's in it. `description` and `label` (what this version is) are optional. One request is at most 16 MiB; for a bigger site use the CLI.
+Give the user `parcel.canonical_url` from the result (the clean `/@handle/slug` link when there is a slug, else the `/p/<id>` URL), say who can open it (private: only them until shared), and what's in it. `description` and `label` (what this version is) are optional. One request is at most 16 MiB; for a bigger site use the CLI. Tag and name what you publish: see "Reading and finding parcels" below.
 
 ## Revise without changing the URL
 
@@ -41,7 +41,7 @@ update_parcel { parcel: "<id or url>", files: [{path: "index.html", content: "�
 
 - **Merge** (default): files sent are added or replaced, others kept; `remove: ["old.css"]` drops some. **Replace** (`mode: "replace"`): the version is exactly the files sent.
 - `base_version: N` fails if someone published since version N; use it when the user may be editing too.
-- `title`, `description` or `visibility` alone (no files) change the parcel itself, not its version.
+- `title`, `description`, `visibility` or the organization fields (`tags`, `add_tags`, `remove_tags`, `slug`, `archived`) alone (no files) change the parcel itself, not its version. `add_tags` may also ride along with new files.
 - `restore_version { parcel, version }` makes an old version current again (as a new version).
 
 ## Act on feedback (comments)
@@ -75,9 +75,17 @@ Parcel adds a helper to every HTML page that defines `window.parcel.data`: JSON 
 
 ## Reading and finding parcels
 
-- `list_parcels` (the user's, newest first; `query` filters, `which: "shared"` for ones shared with them), paged with `limit`/`offset`.
-- `get_parcel { parcel }`: title, url, visibility, the caller's access, version history and files.
-- `read_file { parcel, path?, version? }`: one file's source (a JSON line describing it, then the content; base64 for binary; files over 1 MiB are refused). A URL ending in `/v/<n>` reads that version.
+Parcels pile up, so **look before you publish**, and tag and name what you publish so the next session can find it.
+
+- `list_tags { prefix?: "project:" }` is the vocabulary with counts (`which`, `tags`, `query`, `archived` narrow it). **Reuse it** rather than inventing near-duplicates (`perf` next to `performance`).
+- `list_parcels { which?, query?, tags?, archived?, limit?, offset? }`: `which` is `mine` (default), `shared` or `all` (yours and what others shared); `tags` keeps parcels carrying **all** of them; `archived` is `exclude` (default), `include` or `only`; paged `{items, total, has_more}`, `limit` 1–50. Items are parcels (`id`, `title`, `canonical_url`, `tags`, `slug`, …), with `match` (the matching page text as `{segments: [{text, hit}]}`, plain text) when the query hit the page, and `shared` on someone else's under `all`. `which: "shared"` items are `{parcel, owner_name, role, shared_at}`.
+- **How search matches:** every word must appear, matched by stem, in the title, description, tags or the entry page's text; an id, title or slug also matches by substring. It is not natural-language search, so a sentence returns nothing when one word isn't in the parcel. Use **two or three distinctive words**, and `or`, `"quotes"` and `-word` as in a web search. Only the entry page's text is searched.
+- **Tags** are lowercase labels (`a-z 0-9 . + -`, optionally `namespace:value`), up to 20 per parcel. Conventions: `project:<repo>` and `kind:<plan|discovery|research|report|review|dashboard|prototype|notes>`, plus a few topic words. MCP can't see the user's repository, so add the `project:` tag yourself (ask, or take it from the conversation). `publish_parcel { tags }` sets them; `update_parcel { parcel, add_tags?, remove_tags?, tags? }` changes them later (`tags` replaces the set, `[]` clears it); `rename_tag { from, to }` and `delete_tag { tag }` fix the vocabulary across all the user's parcels (a rename into an existing tag merges).
+- **Slugs** make republishing update one parcel: `publish_parcel { slug: "<repo>/<plan-name>", … }` creates the parcel the first time and adds a version to the same parcel and link after that (`created: false`; all its files replaced, so send the whole set; only the fields you pass change; `tags` are added). `base_version` goes with `slug` (it also fails when nothing has the slug yet). Lowercase words and dashes, up to four `/` segments; a renamed slug keeps redirecting (`update_parcel { slug }`; `""` clears). A slug puts the owner's handle in the link, which for a public parcel is a deliberate choice.
+- **Refs.** Wherever a tool takes `parcel`, an id, a viewer URL (`…/p/<id>`, `…/@handle/slug`), `@handle/slug` or one of the user's own slugs works; a URL's `?v=<n>` / `?page=<path>` are defaults that explicit `version` / `path` override. A private parcel and a missing one give the same error. A one-segment slug of 10–14 letters from the id alphabet (`management`) can't be a bare ref (it reads as an id): use `@handle/management` or the URL.
+- **Archive** what is finished: `update_parcel { parcel, archived: true }` hides it from lists, tag counts and search (it stays openable by URL; `archived: "only"` / `"include"` on a list shows it); a new version un-archives it.
+- `get_parcel { parcel }`: title, `canonical_url`, tags, slug, visibility, the caller's access, version history, files and **`pages`** (`[{path, title}]`: every `.html` / `.md` file, the entry first). Several pages are fine: link them with relative links and the viewer lists them in a Pages menu; give the user a `?page=<path>` link to one.
+- `read_file { parcel, path?, version? }`: one file's source (a JSON line describing it, then the content; base64 for binary; files over 1 MiB are refused). Without `path`, the entry page (or the ref's `?page=`).
 
 ## Safety
 

@@ -173,3 +173,9 @@ Each release:
 `cloud-run-service.yaml` (`RUN_MIGRATIONS=false` there), grants `allUsers`
 invoker, and probes both domains. By hand, with your own gcloud login:
 `make image-push TAG=…` then `deploy/deploy.sh production <tag>`.
+
+Full-text search (migration 0006) needs no deploy step of its own:
+each parcel's page text is extracted after its next publish, and the server's
+backfill loop fills in the rest a batch a minute. To index everything at once,
+run `parcel-server reindex` with the service's environment (a one-off Cloud Run
+job, like the migrate one); it is safe to repeat.

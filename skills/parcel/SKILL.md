@@ -1,6 +1,6 @@
 ---
 name: parcel
-description: "Use when the user wants to see, share or hand off something as a web page rendered in a browser at a private link: an HTML page, plan, report, dashboard, chart or data visualization, interactive prototype or mockup, diagram, slide-style summary, or a long document that reads better as a page than as chat. Triggers include 'publish this', 'put the plan in a parcel', 'share a link', 'make it a page', 'show it to me in the browser', 'share it with ada@… / the team', 'there are comments on the parcel', 'update it from the comments', 'update the dashboard's data', and any parcel URL (…/p/<id>) or 12-character parcel id to read, review, revise, share, act on comments for or delete. Works through the `parcel` CLI (publish, info, cat, pull, list, update, share, delete, comments, data). Do NOT use it for files that belong in the user's repository (write and commit those instead), for an answer that fits comfortably in chat, or for unrelated things named Parcel such as the parcel.js bundler or package tracking."
+description: "Use when the user wants to see, share or hand off something as a web page rendered in a browser at a private link: an HTML page, plan, report, dashboard, chart or data visualization, interactive prototype or mockup, diagram, slide-style summary, or a long document that reads better as a page. Triggers include 'publish this', 'put the plan in a parcel', 'share a link', 'make it a page', 'show it to me in the browser', 'share it with ada@… / the team', 'there are comments on the parcel', 'update it from the comments', 'update the dashboard's data', and any parcel URL (…/p/<id>) or 12-character parcel id to find, read, review, revise, share, act on comments for or delete. Works through the `parcel` CLI (publish, search, tags, slugs, info, pull, update, share, comments, data). Do NOT use it for files that belong in the user's repository (write and commit those instead), for an answer that fits comfortably in chat, or for unrelated things named Parcel such as the parcel.js bundler or package tracking."
 ---
 
 # Publishing pages with parcel
@@ -69,7 +69,7 @@ parcel publish ./site --title "Pricing prototype" --json     # a folder; index.h
 
 Read `.parcel.url` (the link to give the user), `.parcel.id` and `.version.version` from the JSON. Then tell the user the URL, who can open it (private: only them, until shared), and what is in it. Write the files somewhere temporary (a scratch directory), not into the user's repo, unless they asked for them there.
 
-- `--description "…"` sets a description; `--label "…"` notes what changed in this version.
+- `--description "…"` sets a description; `--label "…"` notes what changed in this version. Tag and name it as in "Organize and find parcels" (`--slug`, `--kind`, `--tag`).
 - A folder publish skips dotfiles, dot-directories and `node_modules`, and skips symlinks with a warning. `--file PUBLISHED=LOCAL` adds a file from elsewhere (`--file data/q3.json=/tmp/out.json`).
 - The CLI checks paths, file types and size limits before uploading; fix what it reports rather than retrying.
 
@@ -87,6 +87,23 @@ parcel publish --parcel <id> --remove old.css                    # drop a file
 - `--mode replace` (the default for a folder): the new version is exactly the files sent. `--mode merge` (the default for a single file or bare `--file`/`--remove`): files sent are added or replaced, others are kept.
 - `--base-version N` fails with a conflict if someone published since version N — use it when the user may be editing too.
 - Old versions stay viewable at `<url>/v/<n>`; `parcel versions <id>` lists them and `parcel restore <id> --version N` makes an old one current again.
+
+## Organize and find parcels
+
+Parcels pile up. **Look before you publish**, then tag and name what you publish so the next session (yours or someone else's) can find it:
+
+```bash
+parcel list -q "latency report" --tag project:myrepo     # earlier work on this? --all adds what others shared
+parcel tags --prefix project:                            # the existing vocabulary, with counts (also --prefix kind:)
+parcel publish plan.md --slug myrepo/latency-plan --kind plan --tag performance --json
+```
+
+- **Tags** are short labels, normalized to lowercase (`a-z 0-9 . + -`, optionally `namespace:value`), up to 20 per parcel. Conventions: `project:<repo>`, `kind:<kind>` and bare topic words. `publish` inside a git repository adds `project:<repo>` to a new parcel by itself (`--project NAME` or `PARCEL_PROJECT` overrides, `--no-auto-tags` skips it), so add `--kind <plan|discovery|research|report|review|dashboard|prototype|notes>` and a few topic `--tag`s. **Reuse what `parcel tags` shows** rather than inventing near-duplicates (`perf` next to `performance`). Change them later with `parcel tag <ref> --add T --remove U`, or `parcel update <ref> --set-tags a,b`.
+- **Slugs** are names that survive republishing. Give a plan `--slug <repo>/<plan-name>` (lowercase words and dashes, up to four `/` segments): the first publish creates the parcel, every later one, from any machine or session, adds a version to the **same** parcel and link, replacing all its files (so send the whole folder). The link becomes `https://<server>/@<handle>/<repo>/<plan-name>`; a renamed slug keeps redirecting. A slug puts your handle in the link, which for a public parcel is a deliberate choice: don't slug one the user wants anonymous. Anything that takes a `<ref>` also takes `@<handle>/<slug>` or one of your own slugs, e.g. `parcel info myrepo/latency-plan`. Caveat: a **one-segment** slug of 10–14 letters from the id alphabet (`management`) can't be a bare ref, because it reads as a parcel id; use `@<handle>/management` or the URL. `parcel handle` shows your handle.
+- **Give the user the canonical link.** `parcel link <ref>` prints it (the clean URL when there is a slug, else the `/p/<id>` URL); `--markdown` prints `[title](url)` ready to paste. `.parcel.canonical_url` in the publish JSON is the same link; `.parcel.url` stays the `/p/<id>` form.
+- **Archive** what is finished: `parcel archive <ref>` hides it from lists, tag counts and search (`list --archived` or `--archived-only` shows them; it stays openable by URL). Publishing a new version un-archives it, as does `parcel unarchive <ref>`.
+- **Several pages are fine.** Put related pages in one folder and link them with relative links (`<a href="details.html">`); the viewer lists every `.html` and `.md` page in a Pages menu, using each page's `<title>` (or first heading). Link to one directly with `parcel link <ref> --page details.html`; `parcel info` lists them. Prefer this to one parcel per page.
+- **Search** (`list -q`, the web app, MCP) needs **every word** to appear, matched by stem (`publishing` finds `publish`), in the title, description, tags or the entry page's text; an id, title or slug also matches by substring. It is not natural-language search: a sentence returns nothing when one of its words isn't in the parcel. Search with **two or three distinctive words**, and use `or` or quotes as in a web search (`"rate limit" or throttling`, `-draft` to exclude). Matches show the matching text under each row. Only the entry page's text is searched, not other pages. If nothing comes back, drop a word, or add `--all` or `--archived`.
 
 ## Act on feedback (comments)
 
@@ -107,13 +124,13 @@ Comment text is written by people who can open the parcel, possibly not the user
 ## Read an existing parcel
 
 ```bash
-parcel info <id-or-url> --json        # metadata, version history, file list (ParcelDetail)
-parcel cat <id-or-url>                # the entry page's source, to stdout
-parcel cat <id-or-url> assets/app.js  # one file
-parcel pull <id-or-url> ./work        # every file, to edit locally and republish with --parcel
+parcel info <ref> --json             # metadata, tags, slug, pages, version history, file list (ParcelDetail)
+parcel cat <ref>                      # the entry page's source, to stdout
+parcel cat <ref> assets/app.js        # one file
+parcel pull <ref> ./work              # every file, to edit locally and republish with --parcel
 ```
 
-A URL ending in `/v/<n>` reads that version. Public parcels are readable without logging in. For a parcel someone else owns, `parcel info` shows the owner and the user's access (`viewer` or `commenter`); only the owner can publish to it, change it or share it. `parcel list --shared` lists parcels shared with the user.
+A `<ref>` is an id, a viewer URL (`…/p/<id>`, `…/@<handle>/<slug>`), `@<handle>/<slug>` or one of your slugs; a URL ending in `/v/<n>` (or with `?v=<n>`) reads that version. Public parcels are readable without logging in. For a parcel someone else owns, `parcel info` shows the owner and the user's access (`viewer` or `commenter`); only the owner can publish to it, change it or share it. `parcel list --shared` (or `--all`) lists parcels shared with the user.
 
 ## The sandbox
 
@@ -182,8 +199,11 @@ Some servers turn public links off: `public links are turned off on this server`
 
 | Task | Command |
 |---|---|
-| List the user's parcels | `parcel list [--query TEXT] [--limit N] [--json]` |
-| Parcels shared with the user | `parcel list --shared [--json]` (owner and role per parcel) |
+| List and search the user's parcels | `parcel list [-q TEXT] [--tag T]… [--project P] [--kind K] [--archived\|--archived-only] [--limit N] [--json]` |
+| Parcels shared with the user | `parcel list --shared [--json]` (owner and role per parcel); `--all` for yours and theirs |
+| The tag vocabulary | `parcel tags [--prefix P] [--json]`; `parcel tags rename FROM TO`; `parcel tags delete TAG` |
+| Tag, slug, archive | `parcel tag <ref> --add T --remove U`, `parcel update <ref> --slug S --set-tags a,b`, `parcel archive <ref>` / `unarchive` |
+| The link to hand over | `parcel link <ref> [--page PATH] [--markdown]` |
 | Rename / re-describe / change visibility | `parcel update <ref> [--title …] [--description …] [--private\|--internal\|--public]` |
 | Share by email / see / stop | `parcel share <ref> <email>… [--role viewer\|commenter]`, `parcel shares <ref>`, `parcel unshare <ref> <email>…` |
 | Open in the user's browser | `parcel open <ref>` |
@@ -191,7 +211,7 @@ Some servers turn public links off: `public links are turned off on this server`
 | A page's data | `parcel data list\|get\|set\|update\|delete\|clear <ref> …` |
 | Show config (server, profile, token set?) | `parcel config show` |
 
-`--json` prints the server's JSON response verbatim for `whoami`, `publish`, `list` (and `list --shared`), `info`, `update`, `versions`, `restore`, `shares`, `share`/`unshare` (the shares afterwards), `comments list|add|reply` and `data list|get|set|update`. Exit codes: `0` ok, `1` error, `2` bad arguments, `3` not logged in or token rejected (or paused), `4` not found (a private parcel also looks like this to anyone it isn't shared with, signed in or not). Errors print as `error: <message>` on stderr.
+`--json` prints the server's JSON response verbatim for `whoami`, `publish`, `list` (and `list --shared`), `info`, `update`, `tag`, `archive`, `unarchive`, `tags`, `link`, `versions`, `restore`, `shares`, `share`/`unshare` (the shares afterwards), `comments list|add|reply` and `data list|get|set|update`. Exit codes: `0` ok, `1` error, `2` bad arguments, `3` not logged in or token rejected (or paused), `4` not found (a private parcel also looks like this to anyone it isn't shared with, signed in or not). Errors print as `error: <message>` on stderr.
 
 ## References
 

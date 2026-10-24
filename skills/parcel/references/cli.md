@@ -1,9 +1,7 @@
 # parcel CLI reference
 
 `parcel <command> --help` is authoritative; this is the overview an agent needs.
-`<ref>` is a 12-character parcel id (`abcdefghijkm`) or a viewer URL
-(`https://parcel.stridelabs.ai/p/abcdefghijkm`, optionally ending `/v/<n>` to
-pin a version).
+`<ref>` names a parcel: see [Refs](#refs).
 
 ## Global options and environment
 
@@ -13,6 +11,7 @@ pin a version).
 | `--profile <NAME>` | `PARCEL_PROFILE` | Config profile (default `default`) |
 | — | `PARCEL_TOKEN` | API token; overrides the saved one |
 | — | `PARCEL_CONFIG_DIR` | Directory holding `config.toml` (default `$XDG_CONFIG_HOME/parcel` or the OS config dir) |
+| `--project <NAME>` (`publish`) | `PARCEL_PROJECT` | Name for a new parcel's `project:<name>` tag (default: the current directory's git repository) |
 
 The config file is `config.toml`, mode 0600:
 
@@ -26,6 +25,26 @@ A saved token is only ever sent to the server it was issued by; with
 `--server` pointing elsewhere the CLI behaves as signed out. The CLI refuses to
 read a token from a config file other users can read (`chmod 600` fixes it).
 
+## Refs
+
+Every `<ref>` argument takes any of:
+
+| Form | Example |
+|---|---|
+| Parcel id | `abcdefghijkm` |
+| Viewer URL | `https://parcel.stridelabs.ai/p/abcdefghijkm`, optionally ending `/v/<n>` to pin a version |
+| Clean URL | `https://parcel.stridelabs.ai/@ada/myrepo/latency-plan`, with optional `?v=<n>`, `?page=<path>` and `#fragment` |
+| Handle and slug | `@ada/myrepo/latency-plan` |
+| One of your own slugs | `myrepo/latency-plan` |
+
+A slug ref costs one lookup (`GET /parcels/by-slug`), after which the command
+runs by id; a private parcel you can't see and a missing one fail the same way
+(exit 4). A pinned version, page or fragment comes along from the ref, and an
+explicit `--version` / `--page` wins over it. A slug of 10–14 letters from the id
+alphabet in one segment (`management`) reads as a malformed id when bare: write
+`@<handle>/management` or the URL. Slugs never have a segment that looks like an
+id, or `p` or `v`.
+
 ## Commands
 
 | Command | Does |
@@ -35,19 +54,25 @@ read a token from a config file other users can read (`chmod 600` fixes it).
 | `parcel logout` | Revoke this profile's token on the server and remove it locally |
 | `parcel whoami [--json]` | Signed-in email, storage used and quota |
 | `parcel publish <PATH> [flags]` | Create a parcel, or a new version with `--parcel` (below) |
-| `parcel list [--query T] [--limit N] [--offset N] [--json]` | Your parcels: id, title, visibility, version, size, updated |
-| `parcel list --shared [--limit N] [--offset N] [--json]` | Parcels other people shared with you by email: id, title, owner, your role, version, updated |
+| `parcel list [-q T] [--tag T]… [--project P] [--kind K] [--shared\|--all] [--archived\|--archived-only] [--limit N] [--offset N] [--json]` | Your parcels (or shared with you, or both): id, title, visibility or owner and role, version, size, updated, comments, then TAGS and SLUG columns when any row has them. `-q` is full text and prints the matching text under each row; archived rows say `(archived)` |
+| `parcel tags [--prefix P] [--shared\|--all] [--json]` | The tags on your parcels with counts (counts over the parcels in scope), most used first |
+| `parcel tags rename FROM TO [--json]` | Rename a tag on every parcel you own; into an existing tag the two merge |
+| `parcel tags delete TAG [--json]` | Remove a tag from every parcel you own |
+| `parcel tag <ref> [--add T…] [--remove T…] [--json]` | Add or remove tags on one parcel; then prints its tags |
+| `parcel archive <ref>` / `parcel unarchive <ref>` `[--json]` | Hide a parcel from lists, tag counts and search (it stays openable by URL), or bring it back |
+| `parcel link <ref> [--page PATH] [--markdown] [--json]` | Print the link to hand over: the clean URL when the parcel has a slug, else the `/p/<id>` URL (with the ref's `?v=`, and `?page=` from `--page`). `--markdown` prints `[title](url)` |
+| `parcel handle [NEW] [--json]` | Show your handle (the `@handle` in clean URLs), or change it; the old one keeps working in links and nobody else can take it |
 | `parcel info <ref> [--version N] [--json]` | Metadata, versions (newest first) and files |
 | `parcel cat <ref> [PATH] [--version N]` | Raw bytes of one file (default: the entry page) to stdout |
 | `parcel pull <ref> [DIR] [--version N] [--force]` | Download a version's files into DIR (default `./<id>`); refuses to overwrite without `--force` |
-| `parcel update <ref> [--title T] [--description D] [--private\|--internal\|--public] [--json]` | Change metadata (files change only through publish) |
+| `parcel update <ref> [--title T] [--description D] [--private\|--internal\|--public] [--add-tag T]… [--remove-tag T]… [--set-tags a,b] [--slug S] [--archive\|--unarchive] [--json]` | Change metadata (files change only through publish). `--set-tags ""` removes every tag; `--slug ""` removes the slug (the old one keeps redirecting). There is no bare `--tag` here, so adding and replacing can't be confused |
 | `parcel share <ref> <EMAIL>... [--role viewer\|commenter] [--json]` | Share with people by email (owner only); then prints who has access |
 | `parcel unshare <ref> <EMAIL>... [--json]` | Stop sharing with them; then prints who still has access |
 | `parcel shares <ref> [--json]` | Who the parcel is shared with: email, role, name (or `not signed in yet`) |
 | `parcel versions <ref> [--json]` | Version history |
 | `parcel restore <ref> --version N [--json]` | Publish a copy of version N as the newest version |
 | `parcel delete <ref> [--yes]` | Delete the parcel and every version. Prompts on a terminal; needs `--yes` otherwise |
-| `parcel open <ref>` | Print the viewer URL and open it in a browser |
+| `parcel open <ref> [--page PATH] [--json]` | Print the viewer URL and open it in a browser (`--json` prints `{url}`) |
 | `parcel comments list <ref> [--status open\|resolved\|all] [--json]` | Comment threads (default: open ones), with page, element, author and replies |
 | `parcel comments add <ref> <TEXT> [--version N] [--json]` | A general comment about the whole parcel |
 | `parcel comments reply <ref> <N> <TEXT> [--json]` | Reply to thread `#N` |
@@ -73,6 +98,12 @@ read a token from a config file other users can read (`chmod 600` fixes it).
 | `--private` / `--internal` / `--public` | Visibility (new parcels are private); see below |
 | `--entry <path>` | Entry page path inside the parcel (`.html`, `.htm`, `.md`, `.markdown`) |
 | `--label <text>` | Note stored with this version |
+| `--tag T` | Add a tag (repeatable). On a new version of an existing parcel the tags are added to its set |
+| `--kind K` | `--tag kind:K`: `plan`, `discovery`, `research`, `report`, `review`, `dashboard`, `prototype`, `notes` |
+| `--project NAME` | The new parcel's `project:NAME` tag instead of the git repository's (env `PARCEL_PROJECT`; the flag wins) |
+| `--no-auto-tags` | No automatic `project:` tag, whatever its origin |
+| `--no-source` | Don't record where this was published from (repository, branch, commit, machine) |
+| `--slug S` | Upsert: create the parcel with this slug the first time, add a new version of it (every file replaced; only the fields you pass change) after that, from any machine. Follows your redirects from renamed slugs. Conflicts with `--parcel`, `--mode` and `--remove`; `--base-version N` is allowed and also fails when nothing has the slug yet. Prints `created` in `--json` |
 | `--file PUBLISHED=LOCAL` | Add a file at an explicit published path (repeatable; `--file LOCAL` keeps the file name). Overrides a walked file with the same path |
 | `--parcel <ref>` (alias `--update`) | Publish a new version of this parcel instead of creating one |
 | `--mode merge\|replace` | With `--parcel`. Default: `replace` for a directory, `merge` for a single file or bare `--file`/`--remove` |
@@ -80,6 +111,16 @@ read a token from a config file other users can read (`chmod 600` fixes it).
 | `--base-version N` | With `--parcel`: fail (HTTP 409) unless the current version is still N |
 | `--open` | Open the result in a browser |
 | `--json` | Print the `PublishResult` JSON |
+
+Inside a git repository, a **new** parcel gets the tag `project:<repo>`
+(the origin remote's name, else the main checkout's folder; the current
+directory's repository, so publish from where you work, not from a scratch
+directory). It is applied only when the call creates the parcel, so a project
+tag you remove later stays removed, and it is dropped first if tags would exceed
+20. Every publish also records a **source** for the version (repository
+without credentials, branch, commit, machine, `parcel-cli/<version>`), which only
+the owner sees. Without `git`, outside a repository or after a 2 s timeout, no
+project tag and no repository fields are sent.
 
 ### visibility and sharing
 
@@ -174,24 +215,42 @@ strings, sizes are bytes.
   "created_at": "2026-10-01T12:00:00Z",
   "updated_at": "2026-10-15T09:30:00Z",
   "url": "https://parcel.stridelabs.ai/p/abcdefghijkm",
-  "open_comments": 2
+  "open_comments": 2,
+  "tags": ["kind:report", "project:myrepo"],
+  "archived_at": null,
+  "slug": "myrepo/latency-report",
+  "owner_handle": "ada",
+  "canonical_url": "https://parcel.stridelabs.ai/@ada/myrepo/latency-report"
 }
 ```
 
-**VersionSummary**: `{"version", "entry", "label" (string or null), "file_count", "total_bytes", "created_at"}`.
-**VersionDetail**: a VersionSummary's fields plus `"files": [FileEntry]`.
-**FileEntry**: `{"path", "size_bytes", "content_type", "sha256"}`.
+`url` is always `<server>/p/<id>`; **`canonical_url` is the link to show and share**
+(the clean URL when there is a slug, else equal to `url`). `tags` are sorted;
+`slug` and `archived_at` are `null` when unset; `owner_handle` is left out for
+signed-out callers of a parcel without a slug.
+
+**VersionSummary**: `{"version", "entry", "label" (string or null), "file_count", "total_bytes", "created_at"}`, plus `"source"` for the owner only: `{"repo", "branch", "commit", "host", "client"}`, each optional.
+**VersionDetail**: a VersionSummary's fields plus `"files": [FileEntry]` and `"pages": [PageEntry]`.
+**FileEntry**: `{"path", "size_bytes", "content_type", "sha256"}`, plus `"page_title"` on a page that has one.
+**PageEntry**: `{"path", "title" (string or null)}`: the version's `.html`, `.htm`, `.md` and `.markdown` files, the entry first, then by path.
+**ListMatch** (`match` on a list item, when the query matched page text): `{"segments": [{"text", "hit": bool}]}`; concatenated, the segments are a passage of the page and `hit` marks the matched words. Plain text, never HTML.
 
 | Command | Prints |
 |---|---|
-| `publish`, `restore` | `PublishResult`: `{"parcel": ParcelSummary, "version": VersionDetail}` — the link is `.parcel.url`, the new version `.version.version` |
-| `list` | `ParcelList`: `{"parcels": [ParcelSummary], "total": N}` |
-| `info` | `ParcelDetail`: `{"parcel": ParcelSummary, "is_owner": bool, "access": "owner"\|"commenter"\|"viewer"\|"public", "owner_name" (signed in only), "versions": [VersionSummary], "files": [FileEntry]}` (files of the current version). With `--version N` or a `/v/<n>` URL: that version's `VersionDetail` |
-| `list --shared` | `SharedParcelList`: `{"parcels": [{"parcel": ParcelSummary, "owner_name", "role": "viewer"\|"commenter", "shared_at"}], "total": N}` |
+| `publish`, `restore` | `PublishResult`: `{"parcel": ParcelSummary, "version": VersionDetail, "created": bool}` — the link is `.parcel.canonical_url`, the new version `.version.version`; `created` is `false` when a `--slug` publish added a version to an existing parcel |
+| `list` (yours, or `--all`, or filtered `--shared`) | `ParcelList`: `{"parcels": [ParcelListItem], "total": N}`; a ParcelListItem is a ParcelSummary's fields plus `"match"` (a ListMatch, only when `-q` matched page text) and, on someone else's parcel, `"shared": {"owner_name", "role", "shared_at"}` |
+| `list --shared` (plain: no `-q`, `--tag`, `--project`, `--kind` or `--archived*`) | `SharedParcelList` from the legacy `/shared` endpoint: `{"parcels": [{"parcel": ParcelSummary, "owner_name", "role": "viewer"\|"commenter", "shared_at"}], "total": N}` (archived parcels included) |
+| `list --shared` with any of those filters | the `/parcels?scope=shared` body: a `ParcelList` as in the `list` row above, **not** the SharedParcelList shape. Scripts that parse `--shared` output must expect both |
+| `info` | `ParcelDetail`: `{"parcel": ParcelSummary, "is_owner": bool, "access": "owner"\|"commenter"\|"viewer"\|"public", "owner_name" (signed in only), "versions": [VersionSummary], "files": [FileEntry], "pages": [PageEntry]}` (files and pages of the current version). With `--version N` or a `/v/<n>` URL: that version's `VersionDetail` |
+| `tag`, `archive`, `unarchive`, `update` | `ParcelSummary` |
+| `tags` | `{"tags": [{"tag", "count"}], "total": N}` (every page is fetched and merged) |
+| `tags rename`, `tags delete` | `{"updated": N}`: how many of your parcels changed |
+| `link` | `{"url", "canonical_url", "markdown"}` (the `--page` and `?v=` of the ref included) |
+| `open` | `{"url"}` (the browser still opens) |
+| `handle` | `{"handle", "previous"}` (`previous` only after a change) |
 | `shares`, `share`, `unshare` | `ShareList`: `{"shares": [{"email", "role", "name" (once they've signed in), "created_at"}]}` |
 | `versions` | `VersionList`: `{"versions": [VersionSummary]}`, newest first |
-| `update` | `ParcelSummary` |
-| `whoami` | `Me`: `{"id", "email", "name", "usage": {"parcel_count", "version_count", "stored_bytes"}, "limits": {"max_entry_bytes", "max_file_bytes", "max_upload_bytes", "max_files_per_upload", "max_files_per_version", "max_version_bytes", "user_quota_bytes", "max_data_bytes", "max_data_value_bytes"}}` (`user_quota_bytes` 0 = unlimited) |
+| `whoami` | `Me`: `{"id", "email", "name", "handle", "usage": {"parcel_count", "version_count", "stored_bytes"}, "limits": {"max_entry_bytes", "max_file_bytes", "max_upload_bytes", "max_files_per_upload", "max_files_per_version", "max_version_bytes", "user_quota_bytes", "max_data_bytes", "max_data_value_bytes"}}` (`user_quota_bytes` 0 = unlimited) |
 | `comments list` | `CommentList`: `{"comments": [Comment], "open": N}` — oldest first; `open` counts unresolved threads whatever `--status` is |
 | `comments add`, `comments reply` | `Comment`: the whole thread |
 | `data list` | `DataSummary`: `{"revision", "usage_bytes", "limit_bytes", "writable", "collections": [{"name", "count", "usage_bytes", "updated_at"}]}`. With a collection: `{"items": [DataItem]}` |
@@ -222,6 +281,17 @@ strings, sizes are bytes.
 
 `anchor` is absent on a general comment; inside it only `path` is always present. `x`/`y` are the click position within the element's box (0–1). `via` is `web` or `cli`.
 
+### Older servers
+
+The CLI reads the server's `features` (`tags`, `search`, `archive`, `slugs`,
+`pages`; from `GET /info`, once per run) before it sends anything an older server
+would ignore or refuse. Asking for something the server lacks fails with
+`this server doesn't support <tags|slugs|searching shared parcels|archiving|pages> yet
+(it is older than this CLI)` rather than returning an unfiltered list. What the CLI
+adds on its own (the automatic `project:` tag and the version source) is silently
+left out there. A plain `list`, `list -q` on your own parcels, `info`, `cat`,
+`pull` and `publish` work against any server.
+
 Errors are not JSON on stdout: they go to stderr as `error: <message>` with a
 non-zero exit code (see [troubleshooting.md](troubleshooting.md)).
 
@@ -241,6 +311,14 @@ parcel publish ./work --parcel "$url" --json
 
 # Pin a version for review
 parcel cat "$url/v/2" > v2.html
+
+# Look before publishing, then publish under a slug so republishing updates it
+parcel tags --prefix project:
+parcel list -q "latency" --tag project:myrepo --tag kind:plan
+parcel publish ./plan --slug myrepo/latency-plan --kind plan --tag performance --json | jq -r .parcel.canonical_url
+parcel link myrepo/latency-plan --markdown          # [Latency plan](https://…/@ada/myrepo/latency-plan)
+parcel link myrepo/latency-plan --page appendix.html
+parcel archive myrepo/latency-plan                  # finished: out of lists and search
 
 # Show it to two colleagues, one of whom may comment
 parcel share "$url" ada@example.com
