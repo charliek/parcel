@@ -262,6 +262,7 @@ mod tests {
             "@<handle>/",
             "every word",
             "two or three distinctive words",
+            "as its git remote spells it",
         ] {
             assert!(
                 md.contains(needle),
