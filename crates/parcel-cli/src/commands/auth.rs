@@ -1,16 +1,18 @@
-//! `login`, `logout`, `whoami`.
+//! `login`, `logout`, `whoami`, `handle`.
 
 use std::io::Read;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use parcel_types::slugs::normalize_handle;
 use parcel_types::{
     DevicePollRequest, DevicePollResponse, DeviceStartRequest, DeviceStartResponse, DeviceStatus,
-    Me,
+    Me, UpdateMeRequest,
 };
+use serde::Serialize;
 
 use super::{authed_api, can_launch_browser, open_in_browser};
-use crate::cli::LoginArgs;
+use crate::cli::{HandleArgs, LoginArgs};
 use crate::client::Api;
 use crate::config::{self, Profile, Settings, TokenSource};
 use crate::error::{self, ApiError};
@@ -218,4 +220,50 @@ pub fn whoami(settings: &Settings, json: bool) -> Result<()> {
         usage.version_count
     ));
     output::print(&out)
+}
+
+/// `handle --json`.
+#[derive(Serialize)]
+struct HandleJson {
+    handle: String,
+    /// The handle before this change (links with it keep working).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous: Option<String>,
+}
+
+pub fn handle(settings: &Settings, args: HandleArgs) -> Result<()> {
+    let wanted = match &args.handle {
+        Some(raw) => Some(normalize_handle(raw).map_err(|e| error::usage(e.to_string()))?),
+        None => None,
+    };
+    let api = authed_api(settings)?;
+    api.require_feature("slugs", "handles")?;
+    let current = api.get::<Me>(api.endpoint(["me"]))?.value.handle;
+    let (handle, previous) = match wanted {
+        Some(new) if new != current => {
+            let me = api
+                .patch::<_, Me>(api.endpoint(["me"]), &UpdateMeRequest { handle: Some(new) })?
+                .value;
+            (me.handle, Some(current))
+        }
+        _ => (current, None),
+    };
+    if args.json {
+        let body = HandleJson { handle, previous };
+        return output::print_json(&serde_json::to_vec(&body)?);
+    }
+    // Clean URLs live on the web app's origin (already read for the feature check).
+    let app = api
+        .server_info()?
+        .app_origin
+        .trim_end_matches('/')
+        .to_string();
+    let example = format!("{app}/@{handle}/<slug>");
+    output::print(&match previous {
+        Some(old) => format!(
+            "Your handle is now @{handle} (was @{old}); links with @{old} keep working.\n\
+             Clean URLs: {example}\n"
+        ),
+        None => format!("@{handle}\nClean URLs: {example}\n"),
+    })
 }

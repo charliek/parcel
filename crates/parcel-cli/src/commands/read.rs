@@ -1,4 +1,4 @@
-//! `list`, `info`, `cat`, `pull`, `versions`, `open`.
+//! `list`, `info`, `cat`, `pull`, `versions`, `open`, `link`.
 
 use std::fs;
 use std::io::Write;
@@ -7,12 +7,18 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use parcel_types::paths::validate_path;
 use parcel_types::{
-    FileEntry, ParcelAccess, ParcelDetail, ParcelList, SharedParcelList, VersionDetail,
-    VersionList, VersionSummary, Visibility,
+    ArchivedFilter, FileEntry, ListMatch, ListScope, PageEntry, ParcelAccess, ParcelDetail,
+    ParcelList, ParcelSummary, SharedParcelList, SourceInfo, VersionDetail, VersionList,
+    VersionSummary, Visibility,
 };
+use serde::Serialize;
 
-use super::{api, authed_api, open_in_browser, parse_ref, version_segment};
-use crate::cli::{CatArgs, InfoArgs, ListArgs, PullArgs, RefArg};
+use super::tags::normalize_each;
+use super::{
+    api, authed_api, links, open_in_browser, parse_ref, resolve, resolve_id, version_segment,
+    Resolved,
+};
+use crate::cli::{CatArgs, InfoArgs, LinkArgs, ListArgs, OpenArgs, PullArgs, RefArg};
 use crate::client::{Api, Fetched};
 use crate::config::Settings;
 use crate::error::{self, ApiError};
@@ -24,9 +30,22 @@ const INFO_VERSIONS: usize = 10;
 
 /// `<base>/api/v1/<path>` with the paging (and search) options that are set.
 fn list_url(api: &Api, path: &str, args: &ListArgs) -> reqwest::Url {
+    list_url_with(api, path, args, &[])
+}
+
+/// [`list_url`] with these filters first (`scope`, repeated `tag`, `archived`).
+fn list_url_with(
+    api: &Api,
+    path: &str,
+    args: &ListArgs,
+    filters: &[(&str, String)],
+) -> reqwest::Url {
     let mut url = api.endpoint([path]);
     {
         let mut query = url.query_pairs_mut();
+        for (key, value) in filters {
+            query.append_pair(key, value);
+        }
         if let Some(q) = &args.query {
             query.append_pair("q", q);
         }
@@ -58,12 +77,69 @@ fn more_hint(shown: usize, offset: Option<u32>, total: i64) -> String {
     }
 }
 
+/// `list`'s tag filters (`--tag`, `--project`, `--kind`), normalized.
+fn filter_tags(args: &ListArgs) -> Result<Vec<String>> {
+    let mut raw = args.tags.clone();
+    if let Some(project) = &args.project {
+        raw.push(format!("project:{project}"));
+    }
+    if let Some(kind) = &args.kind {
+        raw.push(format!("kind:{kind}"));
+    }
+    normalize_each(&raw)
+}
+
 pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
+    let tags = filter_tags(&args)?;
+    let archived = if args.archived_only {
+        ArchivedFilter::Only
+    } else if args.archived {
+        ArchivedFilter::Include
+    } else {
+        ArchivedFilter::Exclude
+    };
+    let scope = if args.all {
+        ListScope::All
+    } else if args.shared {
+        ListScope::Shared
+    } else {
+        ListScope::Mine
+    };
     let api = authed_api(settings)?;
-    if args.shared {
+    // A plain `--shared` keeps the endpoint (and the JSON) it always had.
+    if scope == ListScope::Shared
+        && args.query.is_none()
+        && tags.is_empty()
+        && archived == ArchivedFilter::Exclude
+    {
         return list_shared(&api, &args);
     }
-    let list = api.get::<ParcelList>(list_url(&api, "parcels", &args))?;
+    // An older server ignores parameters it doesn't know: it would list
+    // everything rather than fail.
+    if !tags.is_empty() {
+        api.require_feature("tags", "tags")?;
+    }
+    if archived != ArchivedFilter::Exclude {
+        api.require_feature("archive", "archived parcels")?;
+    }
+    match scope {
+        ListScope::Mine => {}
+        ListScope::Shared => api.require_feature("search", "searching shared parcels")?,
+        ListScope::All => api.require_feature("search", "--all")?,
+    }
+    let mut filters: Vec<(&str, String)> = Vec::new();
+    match scope {
+        ListScope::Mine => {}
+        ListScope::Shared => filters.push(("scope", "shared".into())),
+        ListScope::All => filters.push(("scope", "all".into())),
+    }
+    filters.extend(tags.iter().map(|t| ("tag", t.clone())));
+    match archived {
+        ArchivedFilter::Exclude => {}
+        ArchivedFilter::Include => filters.push(("archived", "include".into())),
+        ArchivedFilter::Only => filters.push(("archived", "only".into())),
+    }
+    let list = api.get::<ParcelList>(list_url_with(&api, "parcels", &args, &filters))?;
     if args.json.json {
         return output::print_json(&list.raw);
     }
@@ -71,39 +147,107 @@ pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
     if parcels.is_empty() {
         let message = match (&args.query, total) {
             (Some(q), _) => format!("No parcels match {q:?}.\n"),
+            (None, _) if !tags.is_empty() || archived == ArchivedFilter::Only => {
+                "No parcels match these filters.\n".to_string()
+            }
             (None, 0) => "No parcels yet. Publish one with `parcel publish page.html`.\n".into(),
             (None, _) => format!("No parcels on this page ({total} in total).\n"),
         };
         return output::print(&message);
     }
+    let with_owner = scope != ListScope::Mine;
+    let with_tags = parcels.iter().any(|p| !p.tags.is_empty());
+    let with_slug = parcels.iter().any(|p| p.slug.is_some());
+    let mut header = vec!["ID", "TITLE"];
+    if with_owner {
+        header.extend(["OWNER", "ROLE"]);
+    } else {
+        header.push("VISIBILITY");
+    }
+    header.push("VERSION");
+    if !with_owner {
+        header.push("SIZE");
+    }
+    header.extend(["UPDATED", "COMMENTS"]);
+    if with_tags {
+        header.push("TAGS");
+    }
+    if with_slug {
+        header.push("SLUG");
+    }
     let rows: Vec<Vec<String>> = parcels
         .iter()
-        .map(|p| {
-            vec![
-                p.id.clone(),
-                truncate(&p.title, 48),
-                p.visibility.as_str().to_string(),
-                format!("v{}", p.current_version),
-                format_size(p.total_bytes),
-                age(p.updated_at),
-                open_comments(p.open_comments),
-            ]
+        .map(|item| {
+            let p = &item.parcel;
+            let mut title = cell(&truncate(&p.title, if with_owner { 40 } else { 48 }));
+            if p.archived_at.is_some() {
+                title.push_str(" (archived)");
+            }
+            let mut row = vec![p.id.clone(), title];
+            if with_owner {
+                match &item.shared {
+                    Some(shared) => {
+                        row.push(cell(&truncate(&shared.owner_name, 24)));
+                        row.push(shared.role.as_str().to_string());
+                    }
+                    None => row.extend(["you".to_string(), "owner".to_string()]),
+                }
+            } else {
+                row.push(p.visibility.as_str().to_string());
+            }
+            row.push(format!("v{}", p.current_version));
+            if !with_owner {
+                row.push(format_size(p.total_bytes));
+            }
+            row.push(age(p.updated_at));
+            row.push(open_comments(p.open_comments));
+            if with_tags {
+                row.push(cell(&truncate(&p.tags.join(","), 40)));
+            }
+            if with_slug {
+                row.push(cell(&truncate(p.slug.as_deref().unwrap_or(""), 40)));
+            }
+            row
         })
         .collect();
-    let mut out = table(
-        &[
-            "ID",
-            "TITLE",
-            "VISIBILITY",
-            "VERSION",
-            "SIZE",
-            "UPDATED",
-            "COMMENTS",
-        ],
-        &rows,
-    );
+    let rendered = table(&header, &rows);
+    let mut lines = rendered.lines();
+    let mut out = format!("{}\n", lines.next().unwrap_or_default());
+    // Each row, then where the search matched its page text.
+    for (line, item) in lines.zip(&parcels) {
+        out.push_str(line);
+        out.push('\n');
+        if let Some(matched) = &item.matched {
+            out.push_str(&format!("    {}\n", snippet(matched)));
+        }
+    }
     out.push_str(&more_hint(parcels.len(), args.offset, total));
-    output::print(&out)
+    // Titles, names and snippets can be other people's (or page text).
+    output::print(&printable(&out))
+}
+
+/// A table cell from text someone else may have written: control
+/// characters spelled out, kept on one line.
+fn cell(text: &str) -> String {
+    printable(text).replace(['\n', '\t'], " ")
+}
+
+/// A search snippet on one line, matched words in `**…**`. Page text is
+/// user content, so it only ever goes through [`printable`].
+fn snippet(matched: &ListMatch) -> String {
+    let text: String = matched
+        .segments
+        .iter()
+        .map(|s| {
+            if s.hit {
+                format!("**{}**", s.text)
+            } else {
+                s.text.clone()
+            }
+        })
+        .collect();
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("… {} …", printable(&truncate(&flat, 200)))
 }
 
 /// `list --shared`: parcels other people shared with the caller by email.
@@ -183,10 +327,15 @@ pub(super) fn signed_out_hint(err: anyhow::Error, has_token: bool) -> anyhow::Er
 }
 
 pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
-    let (id, pinned) = parse_ref(&args.parcel.parcel)?;
-    let version = args.version.or(pinned);
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let api = api(settings)?;
-    let detail = get_detail(&api, &id)?;
+    let target = resolve(&api, parcel_ref)?;
+    let version = args.version.or(target.version);
+    let id = target.id;
+    let detail = match target.detail {
+        Some(detail) => detail,
+        None => get_detail(&api, &id)?,
+    };
     let pinned_detail = match version {
         Some(v) => Some(get_version(&api, &id, Some(v))?),
         None => None,
@@ -207,7 +356,7 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
         owner_name,
         versions,
         files,
-        pages: _,
+        pages,
     } = detail.value;
     let mut out = String::new();
     out.push_str(&format!("{}\n", parcel.title));
@@ -215,11 +364,10 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
         out.push_str(&format!("  {:<12} {value}\n", format!("{name}:")));
     };
     field("id", parcel.id.clone());
-    let url = match version {
-        Some(v) => format!("{}/v/{v}", parcel.url),
-        None => parcel.url.clone(),
-    };
-    field("url", url);
+    field("url", links(&parcel, version, None, None).1);
+    if let Some(slug) = &parcel.slug {
+        field("slug", slug.clone());
+    }
     field("visibility", visibility_note(parcel.visibility).to_string());
     if !is_owner {
         field(
@@ -230,6 +378,20 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
     }
     if !parcel.description.trim().is_empty() {
         field("description", parcel.description.trim().to_string());
+    }
+    if !parcel.tags.is_empty() {
+        field("tags", parcel.tags.join(", "));
+    }
+    if let Some(at) = parcel.archived_at {
+        let undo = if is_owner {
+            format!("; `parcel unarchive {}`", parcel.id)
+        } else {
+            String::new()
+        };
+        field(
+            "archived",
+            format!("{} (left out of lists and search{undo})", age(at)),
+        );
     }
     field("version", format!("v{}", parcel.current_version));
     field("entry", parcel.entry.clone());
@@ -248,6 +410,17 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
         n => format!("{n} open; see `parcel comments list {}`", parcel.id),
     };
     field("comments", comments);
+    // The owner's only: the server leaves it out for everyone else.
+    let source = match &pinned_detail {
+        Some(v) => v.value.summary.source.clone(),
+        None => versions
+            .iter()
+            .find(|v| v.version == parcel.current_version)
+            .and_then(|v| v.source.clone()),
+    };
+    if let Some(source) = source.as_ref().and_then(describe_source) {
+        field("source", source);
+    }
 
     out.push_str("\nVersions (newest first):\n");
     out.push_str(&indent(&versions_table(
@@ -262,14 +435,61 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
         ));
     }
 
-    let (shown_version, shown_files) = match &pinned_detail {
-        Some(v) => (v.value.summary.version, &v.value.files),
-        None => (parcel.current_version, &files),
+    let (shown_version, shown_files, shown_pages) = match &pinned_detail {
+        Some(v) => (v.value.summary.version, &v.value.files, &v.value.pages),
+        None => (parcel.current_version, &files, &pages),
     };
     out.push_str(&format!("\nFiles in v{shown_version}:\n"));
     out.push_str(&indent(&files_table(shown_files)));
-    // Someone else's parcel: its title, description and owner are theirs.
+    match shown_pages.as_slice() {
+        [] => {}
+        // One page is the common case; a table would be noise.
+        [only] => out.push_str(&format!(
+            "\nPages: {}\n",
+            match only.title.as_deref() {
+                Some(title) => format!("{} — {}", only.path, cell(title)),
+                None => only.path.clone(),
+            }
+        )),
+        _ => {
+            out.push_str(&format!(
+                "\nPages in v{shown_version} (open one with `parcel link {} --page PATH`):\n",
+                parcel.id
+            ));
+            out.push_str(&indent(&pages_table(shown_pages)));
+        }
+    }
+    // Someone else's parcel: its title, description and owner are theirs;
+    // page titles come from the pages.
     output::print(&printable(&out))
+}
+
+/// `github.com/o/r, branch main, commit 0123456789ab, on laptop, via parcel-cli/0.2.0`.
+fn describe_source(source: &SourceInfo) -> Option<String> {
+    let parts: Vec<String> = [
+        source.repo.clone(),
+        source.branch.as_ref().map(|b| format!("branch {b}")),
+        source.commit.as_ref().map(|c| format!("commit {c}")),
+        source.host.as_ref().map(|h| format!("on {h}")),
+        source.client.as_ref().map(|c| format!("via {c}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+fn pages_table(pages: &[PageEntry]) -> String {
+    let rows: Vec<Vec<String>> = pages
+        .iter()
+        .map(|p| {
+            vec![
+                p.path.clone(),
+                cell(p.title.as_deref().unwrap_or("(no title)")),
+            ]
+        })
+        .collect();
+    table(&["PAGE", "TITLE"], &rows)
 }
 
 /// The visibility, and whom it reaches.
@@ -341,8 +561,9 @@ fn files_table(files: &[FileEntry]) -> String {
 }
 
 pub fn versions(settings: &Settings, parcel: &RefArg, json: bool) -> Result<()> {
-    let (id, _) = parse_ref(&parcel.parcel)?;
+    let parcel_ref = parse_ref(&parcel.parcel)?;
     let api = api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     let list = api
         .get::<VersionList>(api.endpoint(["parcels", &id, "versions"]))
         .map_err(|e| signed_out_hint(e, api.has_token()))?;
@@ -364,10 +585,13 @@ fn file_url(api: &Api, id: &str, version: &str, path: &str) -> reqwest::Url {
 }
 
 pub fn cat(settings: &Settings, args: CatArgs) -> Result<()> {
-    let (id, pinned) = parse_ref(&args.parcel.parcel)?;
-    let version = args.version.or(pinned);
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let api = api(settings)?;
-    let (segment, path) = match (&args.path, version) {
+    let target = resolve(&api, parcel_ref)?;
+    let id = target.id;
+    let version = args.version.or(target.version);
+    // A URL's ?page= names the file when no PATH is given.
+    let (segment, path) = match (&args.path.clone().or(target.page), version) {
         (Some(path), v) => (version_segment(v), path.clone()),
         // The entry of a specific version.
         (None, Some(v)) => {
@@ -435,9 +659,11 @@ fn create_dirs_inside(base: &Path, rel: &Path) -> Result<()> {
 }
 
 pub fn pull(settings: &Settings, args: PullArgs) -> Result<()> {
-    let (id, pinned) = parse_ref(&args.parcel.parcel)?;
-    let version = args.version.or(pinned);
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let api = api(settings)?;
+    let target = resolve(&api, parcel_ref)?;
+    let id = target.id;
+    let version = args.version.or(target.version);
     let detail = get_version(&api, &id, version)?.value;
     let dir = args.dir.clone().unwrap_or_else(|| PathBuf::from(&id));
     if dir.exists() && !dir.is_dir() {
@@ -531,17 +757,146 @@ pub fn pull(settings: &Settings, args: PullArgs) -> Result<()> {
     ))
 }
 
-pub fn open(settings: &Settings, parcel: &RefArg) -> Result<()> {
-    let (id, pinned) = parse_ref(&parcel.parcel)?;
-    let api = api(settings)?;
-    let detail = get_detail(&api, &id)?.value;
-    let url = match pinned {
-        Some(v) => format!("{}/v/{v}", detail.parcel.url),
-        None => detail.parcel.url,
+/// A parcel's links at a version and page, checked against the parcel.
+struct Link {
+    parcel: ParcelSummary,
+    /// `/p/<id>[/v/<n>][?page=…][#…]`: works for as long as the parcel exists.
+    legacy: String,
+    /// The clean URL with `?v=`/`page=` when the parcel has a slug, else `legacy`.
+    canonical: String,
+}
+
+/// The parcel's links for `target`, with `--page` overriding the
+/// reference's page. A page that isn't one of the version's is not found.
+fn deep_link(api: &Api, target: Resolved, page_flag: Option<String>) -> Result<Link> {
+    let Resolved {
+        id,
+        version,
+        page,
+        fragment,
+        detail,
+    } = target;
+    if let Some(flag) = &page_flag {
+        validate_path(flag).map_err(|e| error::usage(format!("--page {flag:?}: {e}")))?;
+    }
+    // A fragment belongs to the page it came with.
+    let fragment = match (&page_flag, &page) {
+        (Some(flag), ref_page) if ref_page.as_ref() != Some(flag) => None,
+        _ => fragment,
     };
-    output::print(&format!("{url}\n"))?;
-    open_in_browser(&url);
+    let page = page_flag.or(page);
+    if page.is_some() {
+        api.require_feature("pages", "pages")?;
+    }
+    let detail = match detail {
+        Some(detail) => detail.value,
+        None => get_detail(api, &id)?.value,
+    };
+    if let Some(page) = &page {
+        let shown = version.unwrap_or(detail.parcel.current_version);
+        let pages = if shown == detail.parcel.current_version {
+            detail.pages.clone()
+        } else {
+            get_version(api, &id, Some(shown))?.value.pages
+        };
+        if !pages.iter().any(|p| &p.path == page) {
+            let known: Vec<&str> = pages.iter().map(|p| p.path.as_str()).collect();
+            return Err(error::not_found(format!(
+                "{page:?} is not a page of {id} v{shown}; its pages: {}",
+                known.join(", ")
+            )));
+        }
+    }
+    let (legacy, canonical) = links(&detail.parcel, version, page, fragment);
+    Ok(Link {
+        parcel: detail.parcel,
+        legacy,
+        canonical,
+    })
+}
+
+pub fn open(settings: &Settings, args: OpenArgs) -> Result<()> {
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
+    let api = api(settings)?;
+    let target = resolve(&api, parcel_ref)?;
+    let link = deep_link(&api, target, args.page)?;
+    if args.json {
+        #[derive(Serialize)]
+        struct OpenJson<'a> {
+            url: &'a str,
+        }
+        output::print_json(&serde_json::to_vec(&OpenJson {
+            url: &link.canonical,
+        })?)?;
+    } else {
+        // The fragment is raw user input, so it is escaped like `link`'s.
+        output::print(&printable(&format!("{}\n", link.canonical)))?;
+    }
+    open_in_browser(&link.canonical);
     Ok(())
+}
+
+/// `link --json`.
+#[derive(Serialize)]
+struct LinkJson {
+    url: String,
+    canonical_url: String,
+    markdown: String,
+}
+
+pub fn link(settings: &Settings, args: LinkArgs) -> Result<()> {
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
+    let api = api(settings)?;
+    let target = resolve(&api, parcel_ref)?;
+    let link = deep_link(&api, target, args.page)?;
+    let markdown = format!(
+        "[{}]({})",
+        markdown_text(&link.parcel.title),
+        markdown_url(&link.canonical)
+    );
+    if args.json {
+        return output::print_json(&serde_json::to_vec(&LinkJson {
+            url: link.legacy,
+            canonical_url: link.canonical,
+            markdown,
+        })?);
+    }
+    let line = if args.markdown {
+        markdown
+    } else {
+        link.canonical
+    };
+    output::print(&printable(&format!("{line}\n")))
+}
+
+/// A title as Markdown link text: one line, control characters dropped,
+/// and `\ [ ] ( )` escaped so the title can't end the link early or
+/// smuggle in a link of its own.
+fn markdown_text(title: &str) -> String {
+    let flat = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::with_capacity(flat.len());
+    for c in flat.chars().filter(|c| !c.is_control()) {
+        if matches!(c, '\\' | '[' | ']' | '(' | ')') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A URL as a Markdown link destination: what would end or split it
+/// (spaces, parentheses, angle brackets; only a typed `#fragment` can hold
+/// them) percent-encoded.
+fn markdown_url(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    for c in url.chars() {
+        match c {
+            ' ' | '(' | ')' | '<' | '>' | '\\' => out.push_str(&format!("%{:02X}", c as u32)),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -558,6 +913,58 @@ mod tests {
         for bad in ["../x", "/etc/passwd", "a/../../x", "a\\..\\x", ""] {
             assert!(local_target(dir, bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn markdown_links_escape_titles() {
+        assert_eq!(
+            markdown_text("A [b](c) \\ d\n\u{1b}[31mred"),
+            "A \\[b\\]\\(c\\) \\\\ d \\[31mred"
+        );
+        assert_eq!(
+            markdown_url("https://x.test/p/abcdefghijkm#a (b)<c>"),
+            "https://x.test/p/abcdefghijkm#a%20%28b%29%3Cc%3E"
+        );
+    }
+
+    #[test]
+    fn snippets_mark_hits_and_stay_printable() {
+        let matched = ListMatch {
+            segments: vec![
+                parcel_types::MatchSegment {
+                    text: "the\nrefresh ".into(),
+                    hit: false,
+                },
+                parcel_types::MatchSegment {
+                    text: "token".into(),
+                    hit: true,
+                },
+                parcel_types::MatchSegment {
+                    text: " \u{1b}]52;c;aGk=\u{7} rotates".into(),
+                    hit: false,
+                },
+            ],
+        };
+        assert_eq!(
+            snippet(&matched),
+            "… the refresh **token** \\u{1b}]52;c;aGk=\\u{7} rotates …"
+        );
+    }
+
+    #[test]
+    fn sources_read_as_one_line() {
+        let source = SourceInfo {
+            repo: Some("github.com/o/r".into()),
+            branch: Some("main".into()),
+            commit: None,
+            host: Some("laptop".into()),
+            client: Some("parcel-cli/0.2.0".into()),
+        };
+        assert_eq!(
+            describe_source(&source).unwrap(),
+            "github.com/o/r, branch main, on laptop, via parcel-cli/0.2.0"
+        );
+        assert_eq!(describe_source(&SourceInfo::default()), None);
     }
 
     #[test]

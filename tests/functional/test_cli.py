@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import time
@@ -339,3 +340,158 @@ def test_data_commands(
     assert cli.run("data", "get", pid, "metrics", "count", token=user, check=False).returncode == 4
     assert cli.run("data", "clear", pid, "metrics", token=user).stdout == f"Cleared metrics on {pid}\n"
     assert cli.json("data", "list", pid, "metrics", token=user) == {"items": []}
+
+
+# ---------------------------------------------------------------- tags, slugs, search, pages
+
+
+def git(repo: Path, *args: str) -> None:
+    """`git` with no user or system configuration."""
+    subprocess.run(
+        [
+            "git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=t@example.com",
+            "-c", "init.defaultBranch=main", *args,
+        ],
+        env={"PATH": os.environ["PATH"], "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"},
+        capture_output=True,
+        check=True,
+    )
+
+
+def run_json(cli: Cli, *args: str, token: str, cwd: Path | None = None):
+    return json.loads(cli.run(*args, "--json", token=token, cwd=cwd).stdout)
+
+
+def test_publish_from_a_git_repo_tags_the_project(cli: Cli, user: str, tmp_path: Path):
+    repo = tmp_path / "funcproj-checkout"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "init")
+    git(repo, "remote", "add", "origin", "https://ada:CANARY-7731@git.example.com/acme/FuncProj.git")
+    page = tmp_path / "scratch" / "plan.html"
+    page.parent.mkdir()
+    page.write_text("<title>Func plan</title><p>x</p>")
+
+    created = run_json(cli, "publish", str(page), "--kind", "plan", token=user, cwd=repo)
+    parcel = created["parcel"]
+    assert parcel["tags"] == ["kind:plan", "project:funcproj"]
+    assert created["created"] is True
+    source = created["version"]["source"]
+    assert source["repo"] == "git.example.com/acme/FuncProj"
+    assert source["branch"] == "main" and len(source["commit"]) == 12
+    assert source["client"].startswith("parcel-cli/")
+    info = cli.run("info", parcel["id"], token=user).stdout
+    assert "source:      git.example.com/acme/FuncProj, branch main" in info
+    assert "CANARY" not in json.dumps(created) + info
+
+    # Suppressed, and outside any repository.
+    bare = run_json(cli, "publish", str(page), "--no-auto-tags", "--no-source", token=user, cwd=repo)
+    assert bare["parcel"]["tags"] == [] and "source" not in bare["version"]
+    outside = run_json(cli, "publish", str(page), token=user, cwd=tmp_path)
+    assert outside["parcel"]["tags"] == []
+    assert set(outside["version"]["source"]) <= {"host", "client"}
+
+
+def test_slug_upserts_and_slug_refs(cli: Cli, user: str, tmp_path: Path):
+    page = tmp_path / "plan.html"
+    page.write_text("<title>Upserted plan</title><p>one</p>")
+    first = run_json(cli, "publish", str(page), "--slug", "func/plan-1", token=user)
+    page.write_text("<title>Upserted plan</title><p>two</p>")
+    second = run_json(
+        cli, "publish", str(page), "--slug", "func/plan-1", "--base-version", "1", token=user
+    )
+    pid = first["parcel"]["id"]
+    assert first["created"] is True and second["created"] is False
+    assert second["parcel"]["id"] == pid and second["version"]["version"] == 2
+    assert [v["version"] for v in cli.json("versions", "func/plan-1", token=user)["versions"]] == [2, 1]
+    stale = cli.run(
+        "publish", str(page), "--slug", "func/plan-1", "--base-version", "1", token=user, check=False
+    )
+    assert stale.returncode == 1
+
+    handle = cli.json("handle", token=user)["handle"]
+    assert cli.run("cat", f"@{handle}/func/plan-1", token=user).stdout.endswith("<p>two</p>")
+    human = cli.run("publish", str(page), "--slug", "func/plan-1", token=user).stdout
+    assert human.startswith('Updated "Upserted plan"'), human
+    assert f"/@{handle}/func/plan-1" in human
+
+
+def test_list_filters_and_full_text_snippets(cli: Cli, user: str, tmp_path: Path):
+    for name, body, extra in [
+        ("alpha", "The zygomorphic flowers bloom in spring.", ["--project", "fx", "--kind", "plan"]),
+        ("beta", "Nothing to see here.", ["--tag", "misc"]),
+    ]:
+        page = tmp_path / f"{name}.html"
+        page.write_text(f"<title>{name} page</title><p>{body}</p>")
+        cli.run("publish", str(page), *extra, token=user, cwd=tmp_path)
+
+    by_project = cli.json("list", "--project", "fx", "--kind", "plan", token=user)
+    assert [p["title"] for p in by_project["parcels"]] == ["alpha page"]
+    assert [p["title"] for p in cli.json("list", "--tag", "misc", token=user)["parcels"]] == ["beta page"]
+    human = cli.run("list", "--tag", "misc", token=user).stdout
+    assert "TAGS" in human.splitlines()[0] and "misc" in human
+
+    # Indexing runs after the publish commits: wait for it.
+    deadline = time.monotonic() + 10
+    while True:
+        out = cli.run("list", "-q", "zygomorphic", token=user).stdout
+        if "**zygomorphic**" in out or time.monotonic() > deadline:
+            break
+        time.sleep(0.2)
+    lines = out.splitlines()
+    assert "alpha page" in lines[1], out
+    assert lines[2].startswith("    … ") and "**zygomorphic**" in lines[2], out
+    assert cli.json("list", "-q", "zygomorphic", token=user)["parcels"][0]["match"]["segments"]
+
+
+def test_tags_archive_link_and_handle(cli: Cli, server: Server, user: str, tmp_path: Path):
+    page = tmp_path / "index.html"
+    page.write_text("<title>Report [draft] (v1)</title><a href='b.html'>b</a>")
+    second = tmp_path / "b.html"
+    second.write_text("<title>Second page</title><p>b</p>")
+    site = tmp_path / "site"
+    site.mkdir()
+    page.rename(site / "index.html")
+    second.rename(site / "b.html")
+    created = run_json(cli, "publish", str(site), "--tag", "Old_Name", token=user, cwd=tmp_path)
+    pid = created["parcel"]["id"]
+
+    tags = cli.json("tags", token=user)
+    assert tags == {"tags": [{"tag": "old-name", "count": 1}], "total": 1}
+    renamed = cli.json("tags", "rename", "old-name", "new-name", token=user)
+    assert renamed == {"updated": 1}
+    assert "new-name" in cli.run("tags", token=user).stdout
+    tagged = cli.json("tag", pid, "--add", "extra", "--remove", "new-name", token=user)
+    assert tagged["tags"] == ["extra"]
+    assert cli.json("tags", "delete", "extra", token=user) == {"updated": 1}
+
+    archived = cli.json("archive", pid, token=user)
+    assert archived["archived_at"]
+    assert cli.json("list", token=user)["parcels"] == []
+    assert [p["id"] for p in cli.json("list", "--archived-only", token=user)["parcels"]] == [pid]
+    assert cli.json("unarchive", pid, token=user)["archived_at"] is None
+
+    cli.run("update", pid, "--slug", "func/report", token=user)
+    handle = cli.json("handle", token=user)["handle"]
+    clean = f"{server.app_url}/@{handle}/func/report"
+    assert cli.run("link", pid, token=user).stdout == f"{clean}\n"
+    assert cli.run("link", pid, "--markdown", token=user).stdout == (
+        f"[Report \\[draft\\] \\(v1\\)]({clean})\n"
+    )
+    deep = cli.json("link", pid, "--page", "b.html", token=user)
+    assert deep["canonical_url"] == f"{clean}?page=b.html"
+    assert deep["url"] == f"{server.app_url}/p/{pid}?page=b.html"
+    # The deep link's page is one the viewer can open.
+    assert httpx.get(
+        f"{server.app_url}/api/v1/parcels/{pid}/view", params={"path": "b.html"},
+        headers={"Authorization": f"Bearer {user}"},
+    ).status_code == 200
+    assert cli.run("link", pid, "--page", "nope.html", token=user, check=False).returncode == 4
+    info = cli.run("info", f"@{handle}/func/report", token=user).stdout
+    assert "Pages in v1" in info and "Second page" in info
+
+    new_handle = f"h{handle[:20]}x"
+    changed = cli.json("handle", new_handle, token=user)
+    assert changed == {"handle": new_handle, "previous": handle}
+    # The old handle still resolves.
+    assert cli.json("info", f"@{handle}/func/report", token=user)["parcel"]["id"] == pid

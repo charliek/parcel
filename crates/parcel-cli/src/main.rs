@@ -10,6 +10,7 @@ mod commands;
 mod config;
 mod error;
 mod files;
+mod git;
 mod output;
 mod skill;
 

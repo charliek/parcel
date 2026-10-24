@@ -1,27 +1,32 @@
 //! `parcel publish`.
 
 use anyhow::{bail, Context, Result};
+use parcel_types::ids::ParcelRef;
 use parcel_types::media::is_entry_candidate;
 use parcel_types::paths::validate_path;
+use parcel_types::slugs::normalize_slug;
+use parcel_types::tags::MAX_TAGS;
 use parcel_types::{
-    CreateParcelMetadata, NewVersionMetadata, PublishMode, PublishResult, ServerInfo, Visibility,
+    CreateParcelMetadata, NewVersionMetadata, PublishMode, PublishResult, SourceInfo, Visibility,
 };
 use reqwest::blocking::multipart::{Form, Part};
 
-use super::{authed_api, open_in_browser, parse_ref};
+use super::tags::{normalize_arg, normalize_list};
+use super::{authed_api, open_in_browser, parse_ref, resolve_id, shown_url};
 use crate::cli::PublishArgs;
-use crate::config::Settings;
+use crate::config::{self, Settings};
 use crate::error;
 use crate::files::{self, plural, SourceKind, UploadFile};
+use crate::git::{self, Repo};
 use crate::output::{self, format_bytes, format_size};
 
-/// Whether the upload creates a parcel or adds a version, with the metadata
-/// part to send.
+/// Whether the upload creates a parcel (or, with a slug, may version the
+/// one that has it) or adds a version, with the metadata part to send.
 #[derive(Debug, PartialEq)]
 enum Target {
     Create(CreateParcelMetadata),
     Update {
-        id: String,
+        parcel: ParcelRef,
         metadata: NewVersionMetadata,
     },
 }
@@ -33,14 +38,24 @@ pub fn publish(settings: &Settings, args: PublishArgs) -> Result<()> {
         ));
     }
     let (upload, source) = files::collect(args.path.as_deref(), &args.files)?;
-    let target = plan(&args, &upload, source)?;
+    let mut target = plan(&args, &upload, source)?;
+    // --project names a new parcel's project; a bad one is a usage error
+    // before anything is sent. PARCEL_PROJECT does the same but is ambient:
+    // only the flag is a request an older server must refuse (below).
+    let project = match &target {
+        Target::Create(_) if !args.no_auto_tags => args
+            .project
+            .clone()
+            .or_else(|| config::non_empty_env("PARCEL_PROJECT"))
+            .map(|name| normalize_arg(&format!("project:{name}")))
+            .transpose()?,
+        _ => None,
+    };
+    let explicit_project = project.is_some() && args.project.is_some();
 
     let api = authed_api(settings)?;
+    let info = api.server_info()?;
     if !upload.is_empty() {
-        let info = api
-            .get::<ServerInfo>(api.endpoint(["info"]))
-            .context("reading the server's limits")?
-            .value;
         let entry = match &target {
             Target::Create(m) => m.entry.as_deref(),
             Target::Update { metadata, .. } => metadata.entry.as_deref(),
@@ -55,7 +70,56 @@ pub fn publish(settings: &Settings, args: PublishArgs) -> Result<()> {
             );
         }
     }
+    let explicit_tags = match &target {
+        Target::Create(m) => !m.tags.is_empty(),
+        Target::Update { metadata, .. } => !metadata.add_tags.is_empty(),
+    };
+    if explicit_tags || explicit_project {
+        api.require_feature("tags", "tags")?;
+    }
+    if matches!(&target, Target::Create(m) if m.slug.is_some()) {
+        api.require_feature("slugs", "slugs")?;
+    }
 
+    // What the CLI adds by itself goes only to a server that knows it (an
+    // older one refuses unknown metadata fields): the project tag on a new
+    // parcel, and where every version came from.
+    let creating = matches!(target, Target::Create(_));
+    let auto = creating && !args.no_auto_tags && api.has_feature("tags")?;
+    let with_source = !args.no_source && api.has_feature("slugs")?;
+    let repo = if (auto && project.is_none()) || with_source {
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| git::probe(&cwd))
+    } else {
+        None
+    };
+    let source_info = with_source.then(|| version_source(repo.as_ref())).flatten();
+    match &mut target {
+        Target::Create(metadata) => {
+            if auto {
+                let derived = project.or_else(|| {
+                    repo.as_ref()
+                        .and_then(|r| r.name.as_deref())
+                        .and_then(git::project_tag)
+                });
+                metadata.auto_tags = auto_tags(&metadata.tags, derived);
+            }
+            metadata.source = source_info;
+        }
+        Target::Update { metadata, .. } => metadata.source = source_info,
+    }
+
+    let (url, metadata_json) = match &target {
+        Target::Create(metadata) => (api.endpoint(["parcels"]), serde_json::to_string(metadata)?),
+        Target::Update { parcel, metadata } => {
+            let id = resolve_id(&api, parcel.clone())?;
+            (
+                api.endpoint(["parcels", &id, "versions"]),
+                serde_json::to_string(metadata)?,
+            )
+        }
+    };
     let total: u64 = upload.iter().map(|f| f.size).sum();
     if !upload.is_empty() {
         eprintln!(
@@ -64,13 +128,6 @@ pub fn publish(settings: &Settings, args: PublishArgs) -> Result<()> {
             format_bytes(total)
         );
     }
-    let (url, metadata_json) = match &target {
-        Target::Create(metadata) => (api.endpoint(["parcels"]), serde_json::to_string(metadata)?),
-        Target::Update { id, metadata } => (
-            api.endpoint(["parcels", id, "versions"]),
-            serde_json::to_string(metadata)?,
-        ),
-    };
     let form = build_form(&metadata_json, &upload)?;
     let result = api.upload::<PublishResult>(url, form)?;
 
@@ -78,18 +135,23 @@ pub fn publish(settings: &Settings, args: PublishArgs) -> Result<()> {
         output::print_json(&result.raw)?;
     } else {
         let PublishResult {
-            parcel, version, ..
+            parcel,
+            version,
+            created,
+            ..
         } = &result.value;
-        let verb = if matches!(target, Target::Create(_)) {
-            "Published"
-        } else {
-            "Updated"
+        // `created` only matters (and is only sent by a server that knows
+        // slugs) when a slug was sent: a plain create always creates.
+        let created = match &target {
+            Target::Create(m) => m.slug.is_none() || *created,
+            Target::Update { .. } => false,
         };
-        output::print(&format!(
+        let verb = if created { "Published" } else { "Updated" };
+        let mut out = format!(
             "{verb} {:?} ({})\n  url:     {}\n  id:      {}\n  version: {} ({}, {})\n",
             parcel.title,
             parcel.visibility.as_str(),
-            parcel.url,
+            shown_url(parcel),
             parcel.id,
             version.summary.version,
             plural(
@@ -97,16 +159,54 @@ pub fn publish(settings: &Settings, args: PublishArgs) -> Result<()> {
                 "file"
             ),
             format_size(version.summary.total_bytes),
-        ))?;
+        );
+        if !parcel.tags.is_empty() {
+            out.push_str(&format!("  tags:    {}\n", parcel.tags.join(", ")));
+        }
+        output::print(&out)?;
     }
     if args.open {
-        open_in_browser(&result.value.parcel.url);
+        open_in_browser(shown_url(&result.value.parcel));
     }
     Ok(())
 }
 
+/// The automatic tags to send beside the explicit ones. Explicit tags win
+/// the 20-tag cap: when the two together would pass it, the automatic ones
+/// are dropped (and one already given explicitly isn't sent twice).
+fn auto_tags(explicit: &[String], derived: Option<String>) -> Vec<String> {
+    let auto: Vec<String> = derived
+        .into_iter()
+        .filter(|t| !explicit.contains(t))
+        .collect();
+    if explicit.len() + auto.len() > MAX_TAGS {
+        Vec::new()
+    } else {
+        auto
+    }
+}
+
+/// Where this version comes from: the repository (sanitized: a credential
+/// in the remote URL never leaves the machine), branch and commit when
+/// there is one, plus the machine and this client. Fields the server would
+/// refuse are dropped rather than failing the publish.
+fn version_source(repo: Option<&Repo>) -> Option<SourceInfo> {
+    let host = gethostname::gethostname()
+        .to_string_lossy()
+        .trim()
+        .to_string();
+    SourceInfo {
+        repo: repo.and_then(|r| r.origin.clone()),
+        branch: repo.and_then(|r| r.branch.clone()),
+        commit: repo.and_then(|r| r.commit.clone()),
+        host: (!host.is_empty()).then_some(host),
+        client: Some(concat!("parcel-cli/", env!("CARGO_PKG_VERSION")).to_string()),
+    }
+    .sanitized()
+}
+
 /// Decide create vs. update and build the metadata, validating the flag
-/// combinations and the entry page before any network call.
+/// combinations, tags, slug and entry page before any network call.
 fn plan(args: &PublishArgs, upload: &[UploadFile], source: Option<SourceKind>) -> Result<Target> {
     if let Some(entry) = &args.entry {
         validate_path(entry).map_err(|e| error::usage(format!("--entry {entry:?}: {e}")))?;
@@ -117,6 +217,11 @@ fn plan(args: &PublishArgs, upload: &[UploadFile], source: Option<SourceKind>) -
         }
     }
     let visibility = args.visibility.visibility();
+    let mut tags = args.tags.clone();
+    if let Some(kind) = &args.kind {
+        tags.push(format!("kind:{kind}"));
+    }
+    let tags = normalize_list(&tags)?;
 
     let Some(parcel_ref) = &args.parcel else {
         if upload.is_empty() {
@@ -130,17 +235,25 @@ fn plan(args: &PublishArgs, upload: &[UploadFile], source: Option<SourceKind>) -
             _ => None,
         });
         check_entry_present(upload, entry.as_deref())?;
+        let slug = match &args.slug {
+            Some(slug) => Some(normalize_slug(slug).map_err(|e| error::usage(e.to_string()))?),
+            None => None,
+        };
         return Ok(Target::Create(CreateParcelMetadata {
             title: args.title.clone(),
             description: args.description.clone(),
             visibility,
             entry,
             label: args.label.clone(),
+            tags,
+            slug,
+            // clap only takes --base-version with --parcel or --slug.
+            base_version: args.base_version,
             ..CreateParcelMetadata::default()
         }));
     };
 
-    let (id, _pinned_version) = parse_ref(parcel_ref)?;
+    let parcel = parse_ref(parcel_ref)?;
     let mode = args
         .mode
         .map(PublishMode::from)
@@ -158,7 +271,7 @@ fn plan(args: &PublishArgs, upload: &[UploadFile], source: Option<SourceKind>) -
         validate_path(path).map_err(|e| error::usage(format!("--remove {path:?}: {e}")))?;
     }
     Ok(Target::Update {
-        id,
+        parcel,
         metadata: NewVersionMetadata {
             mode: Some(mode),
             remove: args.remove.clone(),
@@ -168,6 +281,7 @@ fn plan(args: &PublishArgs, upload: &[UploadFile], source: Option<SourceKind>) -
             description: args.description.clone(),
             visibility,
             base_version: args.base_version,
+            add_tags: tags,
             ..NewVersionMetadata::default()
         },
     })
@@ -211,6 +325,7 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Command};
     use clap::Parser;
+    use parcel_types::ids::RefTarget;
     use parcel_types::Visibility;
     use std::path::PathBuf;
 
@@ -250,12 +365,12 @@ mod tests {
     #[test]
     fn update_mode_defaults() {
         let a = args(&["site", "--parcel", "abcdefghijkm"]);
-        let Target::Update { id, metadata } =
+        let Target::Update { parcel, metadata } =
             plan(&a, &[file("index.html")], Some(SourceKind::Directory)).unwrap()
         else {
             panic!()
         };
-        assert_eq!(id, "abcdefghijkm");
+        assert_eq!(parcel.target, RefTarget::Id("abcdefghijkm".into()));
         assert_eq!(metadata.mode, Some(PublishMode::Replace));
         assert_eq!(metadata.entry, None);
 
@@ -295,7 +410,8 @@ mod tests {
         let err = plan(&a, &[file("index.html")], Some(SourceKind::Directory)).unwrap_err();
         assert!(err.to_string().contains("not one of the files"), "{err}");
 
-        let a = args(&["--parcel", "nope", "--file", "x.html"]);
+        // A bare word is a slug now; a near-id is no reference at all.
+        let a = args(&["--parcel", "abcdefghijk", "--file", "x.html"]);
         let err = plan(&a, &[file("x.html")], None).unwrap_err();
         assert_eq!(error::exit_code(&err), error::EXIT_USAGE);
     }
@@ -316,5 +432,133 @@ mod tests {
         assert_eq!(metadata.mode, Some(PublishMode::Merge));
         assert_eq!(metadata.remove, vec!["old.css"]);
         assert_eq!(metadata.base_version, Some(4));
+    }
+
+    #[test]
+    fn tags_kind_and_slug_are_normalized_up_front() {
+        let a = args(&[
+            "plan.md",
+            "--tag",
+            "Auth",
+            "--tag",
+            "auth",
+            "--kind",
+            "Plan",
+            "--slug",
+            " Parcel/Plan-1 ",
+            "--base-version",
+            "3",
+        ]);
+        let Target::Create(m) = plan(&a, &[file("plan.md")], Some(SourceKind::File)).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(m.tags, ["auth", "kind:plan"]);
+        assert_eq!(m.slug.as_deref(), Some("parcel/plan-1"));
+        assert_eq!(m.base_version, Some(3));
+        assert!(m.auto_tags.is_empty() && m.source.is_none(), "added later");
+
+        // On a new version, --tag/--kind are added to the parcel's tags.
+        let a = args(&["x.html", "--parcel", "@ada/plan", "--kind", "report"]);
+        let Target::Update { parcel, metadata } =
+            plan(&a, &[file("x.html")], Some(SourceKind::File)).unwrap()
+        else {
+            panic!()
+        };
+        assert!(matches!(parcel.target, RefTarget::Slug { .. }));
+        assert_eq!(metadata.add_tags, ["kind:report"]);
+
+        for bad in [
+            &["x.html", "--tag", "no way!"][..],
+            &["x.html", "--slug", "abcdefghijkm"],
+            &["x.html", "--kind", "a:b"],
+        ] {
+            let err = plan(&args(bad), &[file("x.html")], Some(SourceKind::File)).unwrap_err();
+            assert_eq!(error::exit_code(&err), error::EXIT_USAGE, "{bad:?}");
+        }
+        let many: Vec<String> = (0..21)
+            .flat_map(|i| ["--tag".into(), format!("t{i}")])
+            .collect();
+        let mut argv = vec!["x.html"];
+        argv.extend(many.iter().map(String::as_str));
+        let err = plan(&args(&argv), &[file("x.html")], Some(SourceKind::File)).unwrap_err();
+        assert!(err.to_string().contains("at most 20 tags"), "{err}");
+    }
+
+    #[test]
+    fn slug_flags_conflict_where_they_must() {
+        for bad in [
+            &[
+                "parcel",
+                "publish",
+                "x.html",
+                "--slug",
+                "s",
+                "--parcel",
+                "abcdefghijkm",
+            ][..],
+            &[
+                "parcel", "publish", "x.html", "--slug", "s", "--mode", "merge",
+            ],
+            &[
+                "parcel", "publish", "x.html", "--slug", "s", "--remove", "a.css",
+            ],
+            &["parcel", "publish", "x.html", "--base-version", "2"],
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(bad).unwrap_err().exit_code(),
+                2,
+                "{bad:?}"
+            );
+        }
+        assert!(Cli::try_parse_from([
+            "parcel",
+            "publish",
+            "x.html",
+            "--slug",
+            "s",
+            "--base-version",
+            "2"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn auto_tags_give_way_to_explicit_ones() {
+        let project = || Some("project:parcel".to_string());
+        assert_eq!(auto_tags(&[], project()), ["project:parcel"]);
+        assert!(auto_tags(&[], None).is_empty());
+        // Already explicit: not sent twice.
+        assert!(auto_tags(&["project:parcel".into()], project()).is_empty());
+        let nineteen: Vec<String> = (0..19).map(|i| format!("t{i}")).collect();
+        assert_eq!(auto_tags(&nineteen, project()), ["project:parcel"]);
+        let twenty: Vec<String> = (0..20).map(|i| format!("t{i}")).collect();
+        assert!(
+            auto_tags(&twenty, project()).is_empty(),
+            "explicit tags win the cap"
+        );
+    }
+
+    #[test]
+    fn sources_are_sanitized_before_they_are_sent() {
+        let repo = Repo {
+            name: Some("r".into()),
+            origin: Some("https://ada:ghp_CANARY@github.com/o/r.git".into()),
+            branch: Some("main".into()),
+            commit: Some("0123456789ab".into()),
+        };
+        let sent = version_source(Some(&repo)).unwrap();
+        assert_eq!(sent.repo.as_deref(), Some("https://github.com/o/r"));
+        assert_eq!(sent.branch.as_deref(), Some("main"));
+        assert!(sent.client.as_deref().unwrap().starts_with("parcel-cli/"));
+        assert!(!serde_json::to_string(&sent).unwrap().contains("CANARY"));
+
+        let refused = Repo {
+            origin: Some("git://host/o/r".into()),
+            ..repo
+        };
+        assert_eq!(version_source(Some(&refused)).unwrap().repo, None);
+        let bare = version_source(None).unwrap();
+        assert!(bare.repo.is_none() && bare.branch.is_none() && bare.client.is_some());
     }
 }
