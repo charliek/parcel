@@ -8,6 +8,7 @@ import {
   publishViaApi,
   uniq,
   uniqTag,
+  viewerAction,
 } from './helpers';
 
 const ids: string[] = [];
@@ -156,4 +157,39 @@ test('a taken handle is refused inline', async ({ page }) => {
   await dialog.getByRole('button', { name: 'Save' }).click();
   await expect(dialog.getByTestId('handle-error')).toHaveText('That handle is taken.');
   await expect(dialog).toBeVisible();
+});
+
+test('a slug freed by deleting a parcel opens its next owner, not the deleted one', async ({
+  page,
+  request,
+}) => {
+  const handle = await myHandle(request);
+  const slug = uniqTag('reuse');
+  const first = uniq('e2e-reuse-first');
+  const second = uniq('e2e-reuse-second');
+  await slugged(request, first, slug);
+
+  // Open A by its clean URL, then delete it and publish B under the same slug
+  // without reloading: the app must not answer from what it resolved a moment ago.
+  await page.goto(`/@${handle}/${slug}`);
+  await expect(parcelFrame(page).getByRole('heading', { name: first, exact: true })).toBeVisible();
+  await viewerAction(page, 'Delete parcel…');
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Delete parcel' }).click();
+  await expect(page.getByRole('heading', { name: 'My parcels', level: 1 })).toBeVisible();
+
+  await page.getByRole('link', { name: 'New parcel' }).first().click();
+  await page.getByTestId('file-input').setInputFiles({
+    name: 'index.html',
+    mimeType: 'text/html',
+    buffer: htmlPage(second),
+  });
+  await page.getByRole('textbox', { name: 'Slug' }).fill(slug);
+  await page.getByRole('button', { name: 'Publish parcel' }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/@${handle}/${slug}$`));
+  await expect(parcelFrame(page).getByRole('heading', { name: second, exact: true })).toBeVisible();
+  const detail = await (
+    await request.get(`/api/v1/parcels/by-slug?handle=${handle}&slug=${slug}`)
+  ).json();
+  ids.push(detail.parcel.id);
 });

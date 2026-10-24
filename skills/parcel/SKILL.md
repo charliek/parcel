@@ -132,7 +132,7 @@ parcel cat <ref> assets/app.js        # one file
 parcel pull <ref> ./work              # every file, to edit locally and republish with --parcel
 ```
 
-A `<ref>` is an id, a viewer URL (`…/p/<id>`, `…/@<handle>/<slug>`), `@<handle>/<slug>` or one of your slugs; a URL ending in `/v/<n>` (or with `?v=<n>`) reads that version. Public parcels are readable without logging in. For a parcel someone else owns, `parcel info` shows the owner and the user's access (`viewer` or `commenter`); only the owner can publish to it, change it or share it. `parcel list --shared` (or `--all`) lists parcels shared with the user.
+A `<ref>` is an id, a viewer URL (`…/p/<id>`, `…/@<handle>/<slug>`), `@<handle>/<slug>` or one of your slugs; a URL ending in `/v/<n>` (or a clean URL with `?v=<n>`) reads that version. Public parcels are readable without logging in. For a parcel someone else owns, `parcel info` shows the owner and the user's access (`viewer` or `commenter`); only the owner can publish to it, change it or share it. `parcel list --shared` (or `--all`) lists parcels shared with the user.
 
 ## The sandbox
 

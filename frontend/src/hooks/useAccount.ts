@@ -3,6 +3,7 @@ import { api } from '@/lib/api';
 import type { ParcelDetail, ViewGrant } from '@/lib/types';
 import { useAuthStore } from '@/stores/auth.store';
 import { queryKeys } from './queryKeys';
+import { refreshSlugResolutions } from './useParcels';
 
 /** Change the signed-in user's handle; every clean URL on screen changes with it. */
 export function useUpdateHandle() {
@@ -12,7 +13,7 @@ export function useUpdateHandle() {
     onSuccess: (me) => {
       useAuthStore.setState({ me });
       void client.invalidateQueries({ queryKey: queryKeys.allParcels });
-      void client.invalidateQueries({ queryKey: queryKeys.allBySlug });
+      void refreshSlugResolutions(client);
       // Grants carry the summary (and its canonical URL), but refetching an
       // active one would reload the frame; mark them stale for next time...
       void client.invalidateQueries({ queryKey: queryKeys.everyView, refetchType: 'none' });

@@ -3332,8 +3332,13 @@ async fn link_prints_canonical_markdown_and_json() {
         "{}",
         stderr(&out)
     );
-    let out = link(&[&format!("{ID}?v=1"), "--page", "notes/b.html"]);
+    let out = link(&[&format!("{base}/p/{ID}/v/1"), "--page", "notes/b.html"]);
     assert_code(&out, 4);
+    // `?v=` on an id URL pins nothing (the web app ignores it too): the link is
+    // the current version's, never `?v=1`.
+    let out = link(&[&format!("{base}/p/{ID}?v=1")]);
+    assert_code(&out, 0);
+    assert_eq!(stdout(&out), format!("{base}/@ada/roost/plan-14\n"));
     let out = link(&[ID, "--page", "../x"]);
     assert_code(&out, 2);
 }

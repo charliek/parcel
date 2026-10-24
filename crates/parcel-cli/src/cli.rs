@@ -334,7 +334,7 @@ pub struct ListArgs {
 pub struct InfoArgs {
     #[command(flatten)]
     pub parcel: RefArg,
-    /// Show this version's files (also taken from a …/v/<n> or ?v=<n> URL)
+    /// Show this version's files (also taken from a …/p/<id>/v/<n> or clean-URL ?v=<n> link)
     #[arg(long, value_name = "N")]
     pub version: Option<i32>,
     #[command(flatten)]

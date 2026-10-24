@@ -447,7 +447,7 @@ stable name a republish can target, and where each version came from.
 - **Slugs** (`parcels.slug`, unique per owner): 1–4 `/`-separated segments
   of `[a-z0-9]+(-[a-z0-9]+)*`, ≤ 100 characters; no segment shaped like a
   parcel id and no `p` or `v` segment, so no clean URL reads as `/p/<id>` or
-  a `/v/<n>` pin (clean URLs pin with `?v=<n>`). Renaming or clearing one
+  a `/v/<n>` pin (clean URLs pin with `?v=<n>`; an id URL pins only with `/v/<n>`, its `?v=` is ignored). Renaming or clearing one
   leaves a redirect row (`parcel_slug_redirects`) until another of the
   owner's parcels takes the name.
 - `ParcelSummary.url` stays `<app>/p/<id>`; `canonical_url` is the clean URL

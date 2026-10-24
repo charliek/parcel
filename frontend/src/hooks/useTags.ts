@@ -9,6 +9,7 @@ import {
 } from '@/lib/search-query';
 import type { TagCount } from '@/lib/types';
 import { queryKeys } from './queryKeys';
+import { refreshSlugResolutions } from './useParcels';
 
 /** The server's largest page of tags. */
 const TAG_PAGE = 1000;
@@ -74,7 +75,7 @@ function useInvalidateTagged() {
     void client.invalidateQueries({ queryKey: queryKeys.allParcels });
     void client.invalidateQueries({ queryKey: queryKeys.allParcelDetails });
     void client.invalidateQueries({ queryKey: queryKeys.everyView });
-    void client.invalidateQueries({ queryKey: queryKeys.allBySlug });
+    void refreshSlugResolutions(client);
   };
 }
 

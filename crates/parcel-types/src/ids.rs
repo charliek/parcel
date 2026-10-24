@@ -40,7 +40,9 @@ pub enum RefTarget {
 /// page and fragment it pins (if any):
 ///
 /// * a parcel id: `abcdefghijkm`;
-/// * a viewer URL: `https://…/p/<id>[/v/<n>][?page=<path>][#fragment]`;
+/// * a viewer URL: `https://…/p/<id>[/v/<n>][?page=<path>][#fragment]`
+///   (an id URL is pinned by `/v/<n>` only: a `?v=` on it is ignored, as the
+///   web app ignores it);
 /// * a clean URL: `https://…/@<handle>/<slug>[?v=<n>][&page=<path>][#fragment]`;
 /// * `@<handle>/<slug>`, or a bare slug (the caller's own).
 ///
@@ -69,7 +71,7 @@ impl ParcelRef {
         let mut page = None;
         for (key, value) in query.split('&').filter_map(|kv| kv.split_once('=')) {
             match key {
-                "v" => query_version = Some(value.parse::<i32>().ok().filter(|v| *v > 0)?),
+                "v" => query_version = Some(value),
                 "page" => {
                     let path = percent_decode(value)?;
                     crate::paths::validate_path(&path).ok()?;
@@ -88,10 +90,16 @@ impl ParcelRef {
             None => location,
         };
         let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        let found = |target| {
+        // `?v=` pins a clean URL only. On an id URL it is ignored (the SPA's
+        // `/p/:id` route ignores it too): the pin there is `/v/<n>`.
+        let query_version = || match query_version {
+            Some(v) => v.parse::<i32>().ok().filter(|v| *v > 0).map(Some),
+            None => Some(None),
+        };
+        let found = |target, version| {
             Some(ParcelRef {
                 target,
-                version: query_version,
+                version,
                 page: page.clone(),
                 fragment: fragment.clone(),
             })
@@ -104,25 +112,26 @@ impl ParcelRef {
                 (Some(&"v"), Some(v)) => v.parse::<i32>().ok(),
                 _ => None,
             };
-            let mut found = found(RefTarget::Id(id.to_string()))?;
-            found.version = pinned.or(found.version);
-            return Some(found);
+            return found(RefTarget::Id(id.to_string()), pinned);
         }
         // A clean URL, or `@handle/slug`.
         if let Some(pos) = segments.iter().position(|s| s.starts_with('@')) {
             let handle = crate::slugs::normalize_handle(&segments[pos][1..]).ok()?;
             let slug = crate::slugs::normalize_slug(&segments[pos + 1..].join("/")).ok()?;
-            return found(RefTarget::Slug {
-                handle: Some(handle),
-                slug,
-            });
+            return found(
+                RefTarget::Slug {
+                    handle: Some(handle),
+                    slug,
+                },
+                query_version()?,
+            );
         }
         if located {
             return None;
         }
         let bare = path.trim_end_matches('/');
         if is_valid_parcel_id(bare) {
-            return found(RefTarget::Id(bare.to_string()));
+            return found(RefTarget::Id(bare.to_string()), None);
         }
         if (ID_LEN - 2..=ID_LEN + 2).contains(&bare.len())
             && bare.bytes().all(|b| ID_ALPHABET.contains(&b))
@@ -130,7 +139,7 @@ impl ParcelRef {
             return None;
         }
         let slug = crate::slugs::normalize_slug(bare).ok()?;
-        found(RefTarget::Slug { handle: None, slug })
+        found(RefTarget::Slug { handle: None, slug }, query_version()?)
     }
 
     /// What a URL for this reference carries after its path: `?v=<n>`,
@@ -358,6 +367,38 @@ mod tests {
             "?page=a%20b/c%26d.html"
         );
         assert_eq!(ParcelRef::parse(id).unwrap().url_suffix(), "");
+    }
+
+    #[test]
+    fn query_version_pins_clean_urls_not_id_urls() {
+        let id = "abcdefghijkm";
+        // An id URL is pinned by its path; `?v=` is ignored, as the SPA's
+        // `/p/:id` route ignores it (even a malformed one), while `?page=` and
+        // the fragment stay.
+        for url in [
+            format!("https://x.test/p/{id}?v=1"),
+            format!("/p/{id}?v=x"),
+            format!("{id}?v=1"),
+        ] {
+            assert_eq!(ParcelRef::parse(&url), Some(id_ref(id, None)), "{url}");
+        }
+        let both =
+            ParcelRef::parse(&format!("https://x.test/p/{id}/v/3?v=1&page=b.md#top")).unwrap();
+        assert_eq!(both.version, Some(3), "the path pin wins");
+        assert_eq!(both.page.as_deref(), Some("b.md"));
+        assert_eq!(both.fragment.as_deref(), Some("top"));
+        let paged = ParcelRef::parse(&format!("/p/{id}?v=1&page=b.md#top")).unwrap();
+        assert_eq!(paged.version, None);
+        assert_eq!(paged.url_suffix(), "?page=b.md#top");
+        // A clean URL is pinned by `?v=`, and a bad pin still refuses it.
+        assert_eq!(
+            ParcelRef::parse("https://x.test/@ada/plan?v=1")
+                .unwrap()
+                .version,
+            Some(1)
+        );
+        assert_eq!(ParcelRef::parse("plan?v=2").unwrap().version, Some(2));
+        assert_eq!(ParcelRef::parse("@ada/plan?v=0"), None);
     }
 
     #[test]
