@@ -3,9 +3,11 @@
 
 use base64::Engine as _;
 use bytes::Bytes;
+use parcel_types::ids::{ParcelRef as ParsedRef, RefTarget};
 use parcel_types::{
-    CommentAnchor, CommentStatus, CreateParcelMetadata, NewComment, NewVersionMetadata,
-    ParcelAccess, PublishMode, ShareRole, SourceInfo, UpdateComment, UpdateParcelRequest,
+    ArchivedFilter, CommentAnchor, CommentStatus, CreateParcelMetadata, DeleteTagRequest,
+    ListMatch, ListScope, NewComment, NewVersionMetadata, ParcelAccess, PublishMode,
+    RenameTagRequest, ShareRole, SharedParcel, SourceInfo, UpdateComment, UpdateParcelRequest,
     Visibility,
 };
 use rmcp::handler::server::wrapper::Parameters;
@@ -18,11 +20,14 @@ use serde_json::Value;
 use stridelabs_mcp::{clamp_limit, clamp_offset, Page, ToolCall, ToolError};
 
 use super::{caller, tool_error, PUBLISH_TIMEOUT, SCOPE_READ, SCOPE_WRITE};
+use crate::auth::AuthUser;
 use crate::db::data::Write;
 use crate::http::comments as comment_api;
 use crate::http::data as data_api;
 use crate::http::parcels::{self as parcel_api, ListQuery};
-use crate::http::sharing::{self as sharing_api, SharedQuery};
+use crate::http::sharing as sharing_api;
+use crate::http::slugs as slug_api;
+use crate::http::tags::{self as tag_api, TagsQuery};
 use crate::http::versions as version_api;
 use crate::http::views::{owned, readable};
 use crate::publish;
@@ -40,10 +45,19 @@ Publishing: send one self-contained index.html (CSS in <style>, JS in <script>, 
 or as data: URIs) or several files with relative paths (assets/app.js, never /assets/app.js). \
 Give every page a <title>, the viewport meta, light and dark themes, and phone-width layout. A \
 .md entry page is rendered too. Parcels are private by default: only the owner, and people it \
-is shared with by email, can open them. Always give the user the parcel's `url`.
+is shared with by email, can open them. Always give the user the parcel's `canonical_url`.
 
 Revising: update_parcel publishes a new version to the same URL (merge keeps unsent files, \
 replace sends the whole set). Pass base_version when the user may be editing too.
+
+Finding and organizing: parcels carry tags and can have a slug. Before publishing, call \
+list_tags and reuse its vocabulary instead of inventing near-duplicates; tag what you publish \
+`project:<repo>` and `kind:<kind>` (plan, discovery, research, report, review, dashboard, \
+prototype or notes). Give plans a slug `<repo>/<plan-name>`: publishing again with that slug \
+adds a version to the same parcel instead of making a new one. Before writing something new, \
+look for earlier work with list_parcels (tags, query; which=all includes what others shared). \
+Wherever a tool takes a `parcel`, an id, a URL or `@handle/slug` works. Share the \
+`canonical_url`.
 
 Feedback: people comment in the web viewer, often pinned to an element. When the user says \
 there is feedback, list_comments (anchors name the page and the element's text or selector), \
@@ -92,22 +106,57 @@ pub enum Encoding {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListParams {
     /// `mine` (the default): parcels you own. `shared`: parcels other people shared with you.
+    /// `all`: both.
     #[serde(default)]
-    pub which: Which,
-    /// Case-insensitive match on title, description or id (your own parcels only).
+    pub which: ListScope,
+    /// Search: words from the title, description, tags or the page's text (`"exact phrase"`,
+    /// `-word` and `or` work), or part of an id or slug. Best match first.
     pub query: Option<String>,
+    /// Only parcels carrying all of these tags (e.g. `project:parcel`, `kind:plan`).
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// `exclude` (the default) leaves archived parcels out, `include` lists them too, `only`
+    /// lists just them.
+    pub archived: Option<ArchivedFilter>,
     /// Page size, 1–50 (default 20).
     pub limit: Option<i64>,
     /// Items to skip (default 0).
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum Which {
-    #[default]
-    Mine,
-    Shared,
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListTagsParams {
+    /// Whose parcels' tags to list: `mine` (the default), `shared` or `all`.
+    #[serde(default)]
+    pub which: ListScope,
+    /// Only tags starting with this, e.g. `project:` or `kind:`.
+    pub prefix: Option<String>,
+    /// Count only parcels carrying all of these tags (narrows the vocabulary to what goes with
+    /// them).
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Count only parcels matching this search (as `list_parcels`' `query`).
+    pub query: Option<String>,
+    /// `exclude` (the default), `include` or `only`.
+    pub archived: Option<ArchivedFilter>,
+    /// Page size, 1–1000 (default 200).
+    pub limit: Option<i64>,
+    /// Tags to skip (default 0).
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RenameTagParams {
+    /// The tag to rename (on all your parcels).
+    pub from: String,
+    /// Its new name. If parcels already use it, the two tags merge.
+    pub to: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeleteTagParams {
+    /// The tag to remove from all your parcels.
+    pub tag: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -118,9 +167,10 @@ pub struct ParcelRef {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadFileParams {
-    /// Parcel id or URL; a URL ending in /v/<n> reads that version.
+    /// Parcel ref (id, URL, `@handle/slug` or your own slug); a URL ending in /v/<n> or with
+    /// `?v=<n>` reads that version, and `?page=<path>` names the file.
     pub parcel: String,
-    /// The file's published path (default: the version's entry page).
+    /// The file's published path (default: the ref's page, else the version's entry page).
     pub path: Option<String>,
     /// Version number (default: the current version, or the one in the URL).
     pub version: Option<i32>,
@@ -141,11 +191,23 @@ pub struct PublishParams {
     pub entry: Option<String>,
     /// A note about this version.
     pub label: Option<String>,
+    /// Tags, e.g. `project:parcel`, `kind:plan`: lowercase words, optionally `namespace:value`.
+    /// Reuse the vocabulary `list_tags` shows. On a publish to an existing `slug` they are added.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// A name for the parcel, unique among yours: lowercase words joined by `-`, up to four
+    /// segments joined by `/` (`parcel/tags-plan`). If you already have a parcel with this slug,
+    /// this publishes a new version of it (all files replaced, only the fields you send change)
+    /// instead of creating another.
+    pub slug: Option<String>,
+    /// With `slug` only: fail unless that parcel is still at this version (someone else
+    /// published since you read it).
+    pub base_version: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdateParams {
-    /// Parcel id or URL. Only its owner can update it.
+    /// Parcel ref (id, URL, `@handle/slug` or your own slug). Only its owner can update it.
     pub parcel: String,
     /// Files for a new version: added or replaced (merge) or the whole set (replace).
     #[serde(default)]
@@ -167,11 +229,24 @@ pub struct UpdateParams {
     pub description: Option<String>,
     /// New visibility: `private`, `internal` or `public`.
     pub visibility: Option<Visibility>,
+    /// Replace the parcel's whole tag set (`[]` clears it). Not with `add_tags`/`remove_tags`.
+    pub tags: Option<Vec<String>>,
+    /// Tags to add (also allowed with a new version).
+    #[serde(default)]
+    pub add_tags: Vec<String>,
+    /// Tags to remove.
+    #[serde(default)]
+    pub remove_tags: Vec<String>,
+    /// Give the parcel this slug (`""` clears it); the old one keeps redirecting.
+    pub slug: Option<String>,
+    /// `true` archives the parcel (hidden from lists, still open by link), `false` unarchives
+    /// it. A new version unarchives it.
+    pub archived: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ShareParams {
-    /// Parcel id or URL. Only its owner can share it.
+    /// Parcel ref (id, URL, `@handle/slug` or your own slug). Only its owner can share it.
     pub parcel: String,
     /// Their email address; they get access when they sign in with it.
     pub email: String,
@@ -181,10 +256,19 @@ pub struct ShareParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UnshareParams {
-    /// Parcel id or URL.
+    /// Parcel ref: id, URL, `@handle/slug`, or the slug of one of yours.
     pub parcel: String,
     /// The email it is shared with.
     pub email: String,
+}
+
+/// A `which=shared` item: today's `SharedParcel`, plus the search snippet.
+#[derive(Debug, Serialize)]
+struct SharedItem {
+    #[serde(flatten)]
+    shared: SharedParcel,
+    #[serde(rename = "match", skip_serializing_if = "Option::is_none")]
+    matched: Option<ListMatch>,
 }
 
 #[derive(Debug, Serialize)]
@@ -210,13 +294,47 @@ fn structured<T: Serialize>(value: &T) -> Result<CallToolResult, ToolError> {
     ))
 }
 
-/// The id (and any version) in a parcel id or URL.
-fn parcel_ref(input: &str) -> Result<(String, Option<i32>), ToolError> {
-    parcel_types::ids::parse_parcel_ref(input.trim()).ok_or_else(|| {
-        ToolError::user(format!(
-            "{input:?} is not a parcel id or URL (…/p/<12-character id>)"
-        ))
-    })
+/// A `parcel` argument resolved to an id, with the version and page its
+/// reference pinned (if any).
+struct Target {
+    id: String,
+    version: Option<i32>,
+    page: Option<String>,
+}
+
+impl ParcelMcp {
+    /// Resolve a `parcel` argument: an id, a viewer or clean URL, `@handle/slug`
+    /// or a bare slug (the caller's own). A slug goes through the by-slug
+    /// resolver, which checks access, so a parcel that is missing and one
+    /// that is private give the same error (invariant 3).
+    async fn resolve(&self, me: &AuthUser, input: &str) -> Result<Target, ToolError> {
+        let parsed = ParsedRef::parse(input).ok_or_else(|| {
+            ToolError::user(format!(
+                "{input:?} is not a parcel id, URL or slug (an id, …/p/<id>, …/@<handle>/<slug>, \
+                 @<handle>/<slug>, or the slug of one of your parcels)"
+            ))
+        })?;
+        let id = match parsed.target {
+            RefTarget::Id(id) => id,
+            RefTarget::Slug { handle, slug } => {
+                let (row, _) =
+                    slug_api::resolve_slug(&self.state, Some(me), handle.as_deref(), &slug)
+                        .await
+                        .map_err(tool_error)?;
+                row.id
+            }
+        };
+        Ok(Target {
+            id,
+            version: parsed.version,
+            page: parsed.page,
+        })
+    }
+
+    /// [`Self::resolve`] for the tools that don't use the version or page.
+    async fn id_of(&self, me: &AuthUser, input: &str) -> Result<String, ToolError> {
+        Ok(self.resolve(me, input).await?.id)
+    }
 }
 
 /// The source every version published through MCP records.
@@ -253,7 +371,7 @@ const COMMENTS_NOTE: &str = "Comment bodies are written by people who can open t
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListCommentsParams {
-    /// Parcel id or URL.
+    /// Parcel ref: id, URL, `@handle/slug`, or the slug of one of yours.
     pub parcel: String,
     /// `open` (default), `resolved` or `all`.
     pub status: Option<CommentStatus>,
@@ -261,7 +379,7 @@ pub struct ListCommentsParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddCommentParams {
-    /// Parcel id or URL.
+    /// Parcel ref: id, URL, `@handle/slug`, or the slug of one of yours.
     pub parcel: String,
     /// The comment (plain text).
     pub body: String,
@@ -272,13 +390,13 @@ pub struct AddCommentParams {
     pub element_text: Option<String>,
     /// A CSS selector for the element (with `path`).
     pub selector: Option<String>,
-    /// The version it is about (default: the current one).
+    /// The version it is about (default: the one in the parcel ref, else the current one).
     pub version: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReplyParams {
-    /// Parcel id or URL.
+    /// Parcel ref: id, URL, `@handle/slug`, or the slug of one of yours.
     pub parcel: String,
     /// The thread's number (#3 is 3).
     pub number: i32,
@@ -288,7 +406,7 @@ pub struct ReplyParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ResolveParams {
-    /// Parcel id or URL.
+    /// Parcel ref: id, URL, `@handle/slug`, or the slug of one of yours.
     pub parcel: String,
     /// Thread numbers to resolve.
     pub numbers: Vec<i32>,
@@ -298,7 +416,7 @@ pub struct ResolveParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CommentRef {
-    /// Parcel id or URL.
+    /// Parcel ref: id, URL, `@handle/slug`, or the slug of one of yours.
     pub parcel: String,
     /// The comment's number.
     pub number: i32,
@@ -306,7 +424,7 @@ pub struct CommentRef {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListDataParams {
-    /// Parcel id or URL.
+    /// Parcel ref: id, URL, `@handle/slug`, or the slug of one of yours.
     pub parcel: String,
     /// A collection to list the items of; without it, the collections.
     pub collection: Option<String>,
@@ -318,7 +436,7 @@ pub struct ListDataParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DataKey {
-    /// Parcel id or URL.
+    /// Parcel ref: id, URL, `@handle/slug`, or the slug of one of yours.
     pub parcel: String,
     /// Collection name (letters, digits, `_ . : -`).
     pub collection: String,
@@ -328,7 +446,7 @@ pub struct DataKey {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetDataParams {
-    /// Parcel id or URL. Only its owner can write its data.
+    /// Parcel ref (id, URL, `@handle/slug` or your own slug). Only its owner can write its data.
     pub parcel: String,
     pub collection: String,
     pub key: String,
@@ -338,7 +456,7 @@ pub struct SetDataParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdateDataParams {
-    /// Parcel id or URL. Only its owner can write its data.
+    /// Parcel ref (id, URL, `@handle/slug` or your own slug). Only its owner can write its data.
     pub parcel: String,
     pub collection: String,
     pub key: String,
@@ -349,7 +467,7 @@ pub struct UpdateDataParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeleteDataParams {
-    /// Parcel id or URL. Only its owner can delete its data.
+    /// Parcel ref (id, URL, `@handle/slug` or your own slug). Only its owner can delete its data.
     pub parcel: String,
     pub collection: String,
     /// One item; without it, every item in the collection.
@@ -358,7 +476,7 @@ pub struct DeleteDataParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RestoreParams {
-    /// Parcel id or URL. Only its owner can restore it.
+    /// Parcel ref (id, URL, `@handle/slug` or your own slug). Only its owner can restore it.
     pub parcel: String,
     /// The version whose files become a new, current version.
     pub version: i32,
@@ -385,8 +503,14 @@ impl ParcelMcp {
     }
 
     #[tool(
-        description = "List parcels: your own (newest first, optionally filtered by `query`), or \
-            with which=shared the ones other people shared with you. Paged: {items, total, has_more}.",
+        description = "List and search parcels: your own (which=mine, the default), the ones \
+            other people shared with you (shared) or both (all), most recently updated first. \
+            `query` searches titles, descriptions, tags and the page text (best match first, \
+            with a `match` snippet when the page text matched); `tags` keeps parcels carrying \
+            all of them; archived ones are left out unless `archived` says otherwise. Items are \
+            parcels (`id`, `title`, `url`, `canonical_url`, `tags`, `slug`, …), with `shared` \
+            ({owner_name, role}) on someone else's under which=all; which=shared items are \
+            {parcel, owner_name, role, shared_at}. Paged: {items, total, has_more}.",
         annotations(read_only_hint = true)
     )]
     async fn list_parcels(
@@ -400,30 +524,137 @@ impl ParcelMcp {
                 let me = caller(&self.state, &principal).await?;
                 let limit = clamp_limit(p.limit);
                 let offset = clamp_offset(p.offset);
-                match p.which {
-                    Which::Mine => {
-                        let q = ListQuery {
-                            q: p.query,
-                            limit: Some(limit),
-                            offset: Some(offset),
-                            ..ListQuery::default()
-                        };
-                        let list = parcel_api::list(&self.state, &me, &q)
-                            .await
-                            .map_err(tool_error)?;
-                        structured(&Page::new(list.parcels, list.total, offset))
-                    }
-                    Which::Shared => {
-                        let q = SharedQuery {
-                            limit: Some(limit),
-                            offset: Some(offset),
-                        };
-                        let list = sharing_api::shared_with_me(&self.state, &me, &q)
-                            .await
-                            .map_err(tool_error)?;
-                        structured(&Page::new(list.parcels, list.total, offset))
-                    }
+                let q = ListQuery {
+                    q: p.query,
+                    scope: Some(p.which),
+                    tag: p.tags,
+                    archived: p.archived,
+                    limit: Some(limit),
+                    offset: Some(offset),
+                };
+                let list = parcel_api::list(&self.state, &me, &q)
+                    .await
+                    .map_err(tool_error)?;
+                if p.which != ListScope::Shared {
+                    return structured(&Page::new(list.parcels, list.total, offset));
                 }
+                // Shared items keep the shape this tool always gave them,
+                // plus the snippet when a query matched.
+                let items = list
+                    .parcels
+                    .into_iter()
+                    .map(|item| {
+                        let shared = item.shared.ok_or_else(|| {
+                            ToolError::internal("a shared listing item without its share")
+                        })?;
+                        Ok(SharedItem {
+                            shared: SharedParcel {
+                                parcel: item.parcel,
+                                owner_name: shared.owner_name,
+                                role: shared.role,
+                                shared_at: shared.shared_at,
+                            },
+                            matched: item.matched,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ToolError>>()?;
+                structured(&Page::new(items, list.total, offset))
+            })
+            .await
+    }
+
+    #[tool(
+        description = "The tag vocabulary: every tag on the parcels you list (which=mine by \
+            default), each with how many of those parcels carry it, most used first. Call it \
+            before tagging, and reuse these tags rather than inventing near-duplicates. `prefix` \
+            narrows to a namespace (`project:`, `kind:`); `tags`, `query` and `archived` narrow \
+            the parcels counted, as in list_parcels. Paged: {items: [{tag, count}], total, \
+            has_more}.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_tags(
+        &self,
+        Parameters(p): Parameters<ListTagsParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        ToolCall::new("list_tags")
+            .scopes([SCOPE_READ])
+            .run(&ctx, |principal| async move {
+                let me = caller(&self.state, &principal).await?;
+                let offset = clamp_offset(p.offset);
+                let q = TagsQuery {
+                    scope: Some(p.which),
+                    tag: p.tags,
+                    q: p.query,
+                    archived: p.archived,
+                    prefix: p.prefix,
+                    limit: p.limit,
+                    offset: Some(offset),
+                };
+                let list = tag_api::list(&self.state, &me, &q)
+                    .await
+                    .map_err(tool_error)?;
+                structured(&Page::new(list.tags, list.total, offset))
+            })
+            .await
+    }
+
+    #[tool(
+        description = "Rename a tag on all your parcels (it merges into the target if parcels \
+            already use that). Doesn't change what other people's parcels are tagged. Returns \
+            {updated}, how many of your parcels changed.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true
+        )
+    )]
+    async fn rename_tag(
+        &self,
+        Parameters(p): Parameters<RenameTagParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        ToolCall::new("rename_tag")
+            .scopes([SCOPE_WRITE])
+            .run(&ctx, |principal| async move {
+                let me = caller(&self.state, &principal).await?;
+                let body = RenameTagRequest {
+                    from: p.from,
+                    to: p.to,
+                };
+                structured(
+                    &tag_api::rename(&self.state, &me, &body)
+                        .await
+                        .map_err(tool_error)?,
+                )
+            })
+            .await
+    }
+
+    #[tool(
+        description = "Remove a tag from all your parcels. Returns {updated}, how many of your \
+            parcels changed.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true
+        )
+    )]
+    async fn delete_tag(
+        &self,
+        Parameters(p): Parameters<DeleteTagParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        ToolCall::new("delete_tag")
+            .scopes([SCOPE_WRITE])
+            .run(&ctx, |principal| async move {
+                let me = caller(&self.state, &principal).await?;
+                let body = DeleteTagRequest { tag: p.tag };
+                structured(
+                    &tag_api::delete(&self.state, &me, &body)
+                        .await
+                        .map_err(tool_error)?,
+                )
             })
             .await
     }
@@ -442,7 +673,7 @@ impl ParcelMcp {
             .scopes([SCOPE_READ])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 let detail = parcel_api::detail(&self.state, Some(&me), &id)
                     .await
                     .map_err(tool_error)?;
@@ -467,14 +698,18 @@ impl ParcelMcp {
             .scopes([SCOPE_READ])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, url_version) = parcel_ref(&p.parcel)?;
+                let Target {
+                    id,
+                    version: url_version,
+                    page: url_page,
+                } = self.resolve(&me, &p.parcel).await?;
                 // Also the access check: 404 unless the caller may read it.
                 let detail = parcel_api::detail(&self.state, Some(&me), &id)
                     .await
                     .map_err(tool_error)?;
                 let current = detail.parcel.current_version;
                 let version = p.version.or(url_version).unwrap_or(current);
-                let path = match p.path {
+                let path = match p.path.or(url_page) {
                     Some(path) => path,
                     None if version == current => detail.parcel.entry,
                     None => crate::db::parcels::version_entry(&self.state.db, &id, version)
@@ -522,8 +757,12 @@ impl ParcelMcp {
     }
 
     #[tool(
-        description = "Publish a new parcel from files and get its private URL. Returns the \
-            parcel (with `url`, the link to give the user) and version 1.",
+        description = "Publish a parcel from files and get its private URL. Returns {parcel, \
+            version, created}: the parcel (with `canonical_url`, the link to give the user) and \
+            its first version. With `slug`, a parcel of yours that already has that slug gets a \
+            new version instead (created=false; all its files replaced, only the fields you \
+            send change, `tags` added): the way to republish a plan or report under one link. \
+            Give `tags` (see list_tags).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -542,6 +781,12 @@ impl ParcelMcp {
                 let me = caller(&self.state, &principal).await?;
                 crate::http::views::check_visibility(&self.state.config, p.visibility)
                     .map_err(tool_error)?;
+                if p.base_version.is_some() && p.slug.is_none() {
+                    return Err(ToolError::user(
+                        "base_version goes with `slug` here; to version a parcel by id or URL, \
+                         use update_parcel",
+                    ));
+                }
                 // Large requests already hold an upload permit (`upload_gate`).
                 let uploads =
                     publish::collect_uploads(decode_files(p.files)?, &self.state.config.limits)
@@ -552,6 +797,9 @@ impl ParcelMcp {
                     visibility: p.visibility,
                     entry: p.entry,
                     label: p.label,
+                    tags: p.tags,
+                    slug: p.slug,
+                    base_version: p.base_version,
                     source: Some(mcp_source()),
                     ..CreateParcelMetadata::default()
                 };
@@ -559,7 +807,12 @@ impl ParcelMcp {
                     .await
                     .map_err(tool_error)?;
                 let id = &published.id;
-                tracing::info!(parcel = %id, user = %me.user.id, "parcel created through MCP");
+                tracing::info!(
+                    parcel = %id,
+                    user = %me.user.id,
+                    created = published.created,
+                    "parcel published through MCP"
+                );
                 let result = parcel_api::publish_result(
                     &self.state,
                     id,
@@ -575,8 +828,10 @@ impl ParcelMcp {
 
     #[tool(
         description = "Change a parcel you own. With `files`, `remove` or `entry` it publishes a \
-            new version at the same URL (merge by default); `title`, `description` and \
-            `visibility` change the parcel itself. Returns the parcel (and the new version, if any).",
+            new version at the same URL (merge by default; `add_tags` may come along). Without \
+            them, `title`, `description`, `visibility`, `tags` (replace the set), `add_tags`, \
+            `remove_tags`, `slug` and `archived` change the parcel itself (organizing it \
+            doesn't count as an edit). Returns the parcel (and the new version, if any).",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -593,13 +848,24 @@ impl ParcelMcp {
             .timeout(PUBLISH_TIMEOUT)
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 let new_version = !p.files.is_empty() || !p.remove.is_empty() || p.entry.is_some();
+                // What only the parcel itself can take, not a new version.
+                let organizing = p.tags.is_some()
+                    || !p.remove_tags.is_empty()
+                    || p.slug.is_some()
+                    || p.archived.is_some();
                 if !new_version {
-                    if p.title.is_none() && p.description.is_none() && p.visibility.is_none() {
+                    if p.title.is_none()
+                        && p.description.is_none()
+                        && p.visibility.is_none()
+                        && p.add_tags.is_empty()
+                        && !organizing
+                    {
                         return Err(ToolError::user(
-                            "nothing to change: pass files, remove, entry, title, description \
-                             or visibility",
+                            "nothing to change: pass files, remove or entry (a new version), or \
+                             title, description, visibility, tags, add_tags, remove_tags, slug \
+                             or archived",
                         ));
                     }
                     // Only a new version has a mode, a label or a base to check.
@@ -613,12 +879,25 @@ impl ParcelMcp {
                         title: p.title,
                         description: p.description,
                         visibility: p.visibility,
-                        ..UpdateParcelRequest::default()
+                        tags: p.tags,
+                        add_tags: p.add_tags,
+                        remove_tags: p.remove_tags,
+                        archived: p.archived,
+                        slug: p.slug,
                     };
                     let summary = parcel_api::update_metadata(&self.state, &me, &id, &body)
                         .await
                         .map_err(tool_error)?;
                     return structured(&serde_json::json!({ "parcel": summary }));
+                }
+                // A new version un-archives and keeps the slug; these belong to
+                // a separate call so neither half can fail the other.
+                if organizing {
+                    return Err(ToolError::user(
+                        "tags, remove_tags, slug and archived change the parcel itself: call \
+                         update_parcel again without files, remove or entry (add_tags can go \
+                         with a new version)",
+                    ));
                 }
                 // Before touching the files, as the REST handler does.
                 crate::http::views::owned(&self.state, &id, &me)
@@ -638,8 +917,8 @@ impl ParcelMcp {
                     description: p.description,
                     visibility: p.visibility,
                     base_version: p.base_version,
+                    add_tags: p.add_tags,
                     source: Some(mcp_source()),
-                    ..NewVersionMetadata::default()
                 };
                 let result = version_api::publish_version(&self.state, &me, &id, meta, uploads)
                     .await
@@ -667,7 +946,7 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 parcel_api::delete(&self.state, &me, &id)
                     .await
                     .map_err(tool_error)?;
@@ -689,7 +968,7 @@ impl ParcelMcp {
             .scopes([SCOPE_READ])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 let list = sharing_api::list(&self.state, &me, &id)
                     .await
                     .map_err(tool_error)?;
@@ -716,7 +995,7 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 let share =
                     sharing_api::put(&self.state, &me, &id, &p.email, p.role.unwrap_or_default())
                         .await
@@ -744,7 +1023,7 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 sharing_api::remove(&self.state, &me, &id, &p.email)
                     .await
                     .map_err(tool_error)?;
@@ -769,7 +1048,7 @@ impl ParcelMcp {
             .scopes([SCOPE_READ])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 let list =
                     comment_api::list(&self.state, Some(&me), &id, p.status.unwrap_or_default())
                         .await
@@ -802,8 +1081,13 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
-                let anchor = match p.path {
+                let target = self.resolve(&me, &p.parcel).await?;
+                let id = target.id;
+                // A ref's page names the element's page when only the element
+                // is given; on its own it doesn't turn this into a pinned comment.
+                let pinned = p.selector.is_some() || p.element_text.is_some();
+                let path = p.path.or(target.page.filter(|_| pinned));
+                let anchor = match path {
                     Some(path) => Some(CommentAnchor {
                         path,
                         selector: p.selector,
@@ -820,7 +1104,7 @@ impl ParcelMcp {
                 };
                 let body = NewComment {
                     body: p.body,
-                    version: p.version,
+                    version: p.version.or(target.version),
                     anchor,
                     reply_to: None,
                 };
@@ -850,7 +1134,7 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 let body = NewComment {
                     body: p.body,
                     reply_to: Some(p.number),
@@ -883,7 +1167,7 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 if p.numbers.is_empty() {
                     return Err(ToolError::user("pass the thread numbers to resolve"));
                 }
@@ -931,7 +1215,7 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 let change = UpdateComment {
                     body: None,
                     resolved: Some(false),
@@ -962,7 +1246,7 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 comment_api::delete(&self.state, &me, &id, p.number)
                     .await
                     .map_err(tool_error)?;
@@ -987,7 +1271,7 @@ impl ParcelMcp {
             .scopes([SCOPE_READ])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 let (_, access) = readable(&self.state, &id, Some(&me))
                     .await
                     .map_err(tool_error)?;
@@ -1028,7 +1312,7 @@ impl ParcelMcp {
             .scopes([SCOPE_READ])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 readable(&self.state, &id, Some(&me))
                     .await
                     .map_err(tool_error)?;
@@ -1060,7 +1344,7 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 owned(&self.state, &id, &me).await.map_err(tool_error)?;
                 structured(
                     &data_api::write_item(
@@ -1095,7 +1379,7 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 owned(&self.state, &id, &me).await.map_err(tool_error)?;
                 data_api::merge_body(&p.patch).map_err(tool_error)?;
                 structured(
@@ -1131,7 +1415,7 @@ impl ParcelMcp {
             .scopes([SCOPE_WRITE])
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 owned(&self.state, &id, &me).await.map_err(tool_error)?;
                 data_api::delete_items(&self.state, &id, &p.collection, p.key.as_deref())
                     .await
@@ -1162,7 +1446,7 @@ impl ParcelMcp {
             .timeout(PUBLISH_TIMEOUT)
             .run(&ctx, |principal| async move {
                 let me = caller(&self.state, &principal).await?;
-                let (id, _) = parcel_ref(&p.parcel)?;
+                let id = self.id_of(&me, &p.parcel).await?;
                 owned(&self.state, &id, &me).await.map_err(tool_error)?;
                 let version = publish::add_version(
                     &self.state,

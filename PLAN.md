@@ -193,9 +193,13 @@ first, so concurrent publishes stay bounded as on the REST API.
   `TRUST_EMAIL`, else a web sign-in first. MCP needs no pause rule: the
   provider expires and refreshes its own tokens, so offboarding there
   reaches them.
-- **Tools.** `whoami`, `list_parcels` (mine / shared), `get_parcel`,
-  `read_file` (≤ 1 MiB; utf8 or base64), `publish_parcel`, `update_parcel`
-  (a new version, or title/description/visibility), `restore_version`,
+- **Tools** (25). `whoami`, `list_parcels` (mine / shared / all; `query` is
+  full text, `tags` all-of, `archived`), `list_tags`, `rename_tag`,
+  `delete_tag`, `get_parcel` (with `pages`),
+  `read_file` (≤ 1 MiB; utf8 or base64), `publish_parcel` (`tags`, `slug` =
+  upsert, `created` in the result), `update_parcel`
+  (a new version with `add_tags`, or title/description/visibility/tags/slug/
+  archived), `restore_version`,
   `delete_parcel`, `list_shares`, `share_parcel`, `unshare_parcel`; comments:
   `list_comments`, `add_comment`, `reply_comment`, `resolve_comments` (with an
   optional reply), `reopen_comment`, `delete_comment`; page data: `list_data`,
@@ -204,7 +208,15 @@ first, so concurrent publishes stay bounded as on the REST API.
   stridelabs-mcp's `ToolCall` (scope check, timeout, safe errors, one audit
   line on `stridelabs.mcp.tool`) and calls the function its REST handler
   calls, returning the same JSON. `whoami` needs no scope, the other read
-  tools `parcel:read`, the rest `parcel:write`.
+  tools `parcel:read`, the rest `parcel:write` (`rename_tag`, `delete_tag`
+  included). Every `parcel` argument takes an id, a URL, `@handle/slug` or a
+  bare slug; a slug goes through the by-slug resolver, so a private parcel and
+  a missing one give the same error, and a ref's `?v=`/`?page=` are defaults
+  that explicit `version`/`path` arguments override. List output stays a
+  superset: `mine`/`all` items are the flattened summary (`shared` on others'),
+  `shared` items keep `{parcel, owner_name, role, shared_at}` (plus `match`).
+  The server instructions teach finding and organizing: reuse `list_tags`,
+  tag `project:`/`kind:`, slug plans, search before writing.
 - **The feedback loop.** The agent publishes a plan or page; people comment in
   the viewer (pinned to elements); when asked, the agent lists the comments,
   revises, and resolves what it addressed with a reply. Comments written
