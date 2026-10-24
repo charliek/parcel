@@ -5,7 +5,8 @@ use base64::Engine as _;
 use bytes::Bytes;
 use parcel_types::{
     CommentAnchor, CommentStatus, CreateParcelMetadata, NewComment, NewVersionMetadata,
-    ParcelAccess, PublishMode, ShareRole, UpdateComment, UpdateParcelRequest, Visibility,
+    ParcelAccess, PublishMode, ShareRole, SourceInfo, UpdateComment, UpdateParcelRequest,
+    Visibility,
 };
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -216,6 +217,14 @@ fn parcel_ref(input: &str) -> Result<(String, Option<i32>), ToolError> {
             "{input:?} is not a parcel id or URL (…/p/<12-character id>)"
         ))
     })
+}
+
+/// The source every version published through MCP records.
+fn mcp_source() -> SourceInfo {
+    SourceInfo {
+        client: Some("mcp".into()),
+        ..SourceInfo::default()
+    }
 }
 
 fn decode_files(files: Vec<FileInput>) -> Result<Vec<(String, Bytes)>, ToolError> {
@@ -543,15 +552,22 @@ impl ParcelMcp {
                     visibility: p.visibility,
                     entry: p.entry,
                     label: p.label,
+                    source: Some(mcp_source()),
                     ..CreateParcelMetadata::default()
                 };
-                let id = publish::create(&self.state, me.user.id, meta, uploads)
+                let published = publish::create(&self.state, me.user.id, meta, uploads)
                     .await
                     .map_err(tool_error)?;
+                let id = &published.id;
                 tracing::info!(parcel = %id, user = %me.user.id, "parcel created through MCP");
-                let result = parcel_api::publish_result(&self.state, &id, 1)
-                    .await
-                    .map_err(tool_error)?;
+                let result = parcel_api::publish_result(
+                    &self.state,
+                    id,
+                    published.version,
+                    published.created,
+                )
+                .await
+                .map_err(tool_error)?;
                 structured(&result)
             })
             .await
@@ -622,6 +638,7 @@ impl ParcelMcp {
                     description: p.description,
                     visibility: p.visibility,
                     base_version: p.base_version,
+                    source: Some(mcp_source()),
                     ..NewVersionMetadata::default()
                 };
                 let result = version_api::publish_version(&self.state, &me, &id, meta, uploads)
@@ -1158,7 +1175,7 @@ impl ParcelMcp {
                 .await
                 .map_err(tool_error)?;
                 structured(
-                    &parcel_api::publish_result(&self.state, &id, version)
+                    &parcel_api::publish_result(&self.state, &id, version, false)
                         .await
                         .map_err(tool_error)?,
                 )

@@ -99,6 +99,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     let v1 = OpenApiRouter::new()
         .merge(super::account::router())
         .merge(super::parcels::router())
+        .merge(super::slugs::router())
         .merge(super::versions::router())
         .merge(super::sharing::router())
         .merge(super::tags::router())

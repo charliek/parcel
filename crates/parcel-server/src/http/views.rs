@@ -12,7 +12,30 @@ use crate::db::{shares, users};
 use crate::error::{not_found, AppError};
 use crate::state::AppState;
 
-pub fn summary(config: &Config, row: &ParcelRow) -> ParcelSummary {
+/// Who a summary is for. Anonymous callers aren't told who owns a parcel
+/// without a slug, as they aren't told the owner's name (PLAN.md, "Handles
+/// and slugs"); a slug is the owner opting in to a readable link, and its
+/// URL holds the handle anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Audience {
+    Anonymous,
+    SignedIn,
+}
+
+impl Audience {
+    pub fn of(caller: Option<&AuthUser>) -> Self {
+        match caller {
+            Some(_) => Audience::SignedIn,
+            None => Audience::Anonymous,
+        }
+    }
+}
+
+pub fn summary(config: &Config, row: &ParcelRow, audience: Audience) -> ParcelSummary {
+    let owner_handle = match audience {
+        Audience::SignedIn => row.owner_handle.clone(),
+        Audience::Anonymous => row.slug.as_ref().and(row.owner_handle.clone()),
+    };
     ParcelSummary {
         id: row.id.clone(),
         title: row.title.clone(),
@@ -28,10 +51,18 @@ pub fn summary(config: &Config, row: &ParcelRow) -> ParcelSummary {
         open_comments: row.open_comments,
         tags: row.tags.clone(),
         archived_at: row.archived_at,
+        slug: row.slug.clone(),
+        canonical_url: config.canonical_url(
+            &row.id,
+            row.owner_handle.as_deref(),
+            row.slug.as_deref(),
+        ),
+        owner_handle,
     }
 }
 
-pub fn version_summary(v: &VersionRow) -> VersionSummary {
+/// A version as `access` may see it: its source is the owner's alone.
+pub fn version_summary(v: &VersionRow, access: ParcelAccess) -> VersionSummary {
     VersionSummary {
         version: v.version,
         entry: v.entry.clone(),
@@ -39,12 +70,13 @@ pub fn version_summary(v: &VersionRow) -> VersionSummary {
         file_count: v.file_count,
         total_bytes: v.total_bytes,
         created_at: v.created_at,
+        source: v.source.clone().filter(|_| access == ParcelAccess::Owner),
     }
 }
 
-pub fn version_detail(v: &VersionRow, files: Vec<FileRow>) -> VersionDetail {
+pub fn version_detail(v: &VersionRow, files: Vec<FileRow>, access: ParcelAccess) -> VersionDetail {
     VersionDetail {
-        summary: version_summary(v),
+        summary: version_summary(v, access),
         files: files.into_iter().map(FileEntry::from).collect(),
     }
 }

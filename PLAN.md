@@ -236,12 +236,14 @@ Types are in `crates/parcel-types/src/api.rs`.
 | GET | `/health/live`, `/health/ready` | — | plain, not in spec |
 | GET | `/auth/login`, `/auth/callback`; POST `/auth/logout` | — | browser sign-in redirects, not in spec (see v0.3) |
 | GET | `/openapi.json`; `/docs` (non-prod) | — | spec / Swagger UI |
-| GET | `/api/v1/info` | — | `ServerInfo` (with `features`: optional API features such as `tags`, `search`, `archive`) |
-| GET | `/api/v1/me` | required | `Me` |
+| GET | `/api/v1/info` | — | `ServerInfo` (with `features`: optional API features such as `tags`, `search`, `archive`, `slugs`) |
+| GET | `/api/v1/me` | required | `Me` (with `handle`) |
+| PATCH | `/api/v1/me` | required | `UpdateMeRequest` `{handle}` → `Me`; 400 malformed, 409 taken (by anyone, current or retired); the old handle stays yours and keeps resolving |
 | GET | `/api/v1/parcels?scope=&tag=&tag=&archived=&q=&limit=&offset=` | required | `ParcelList` of `ParcelListItem` (summary fields flattened, plus `match` snippet segments and `shared`); `scope` = `mine` (default) / `shared` / `all`, tags AND, `archived` = `exclude` (default) / `include` / `only`, `q` = substring or full text, ranked |
-| POST | `/api/v1/parcels` | required | multipart (`metadata` JSON part = `CreateParcelMetadata`, `file` parts whose *filename* is the published path) → 201 `PublishResult` |
+| POST | `/api/v1/parcels` | required | multipart (`metadata` JSON part = `CreateParcelMetadata`, `file` parts whose *filename* is the published path) → 201 `PublishResult`; with a `slug` you already use (or a redirect of yours), 200 and a new version of that parcel (`created: false`; see "Handles, slugs and sources") |
+| GET | `/api/v1/parcels/by-slug?handle=&slug=` | viewers | `ParcelDetail` of the parcel `/@<handle>/<slug>` names (old handles and slugs too; `parcel.canonical_url` is the current one); every miss is the same 404; `handle` defaults to yours, 400 without one when signed out |
 | GET | `/api/v1/parcels/{id}` | viewers | `ParcelDetail` (with `access`, `owner_name`) |
-| PATCH | `/api/v1/parcels/{id}` | owner | `UpdateParcelRequest` → `ParcelSummary` (`tags` replace or `add_tags`/`remove_tags`, `archived`; neither bumps `updated_at`) |
+| PATCH | `/api/v1/parcels/{id}` | owner | `UpdateParcelRequest` → `ParcelSummary` (`tags` replace or `add_tags`/`remove_tags`, `archived`, `slug` (`""` clears; 409 if another of yours has it); none of these bumps `updated_at`) |
 | DELETE | `/api/v1/parcels/{id}` | owner | 204 |
 | GET | `/api/v1/parcels/{id}/view?version=N` | viewers | `ViewGrant` (signed content URL) |
 | GET | `/api/v1/parcels/{id}/versions` | viewers | `VersionList` |
@@ -280,6 +282,51 @@ Web app routes: `/` (my parcels and "shared with me", or landing when signed
 out), `/p/:id` and `/p/:id/v/:version` (viewer; public parcels need no
 sign-in), `/new` (upload), `/tokens`, `/cli` (CLI + skill setup), `/device`
 (approve a CLI login), `/signin` (pick a provider; sign-in errors).
+
+## Handles, slugs and sources (v0.5)
+
+Clean URLs `/@<handle>/<slug>` next to `/p/<id>` (which works forever), a
+stable name a republish can target, and where each version came from.
+
+- **Handles** live in `user_handles (handle PK, user_id, is_current)`: one
+  key over current and retired handles, so a handle once used is that
+  user's for good. Allocation is one SQL function,
+  `parcel_allocate_handle(user, email)` (migration 0007), used by the
+  backfill, sign-in and lazily for a user an older revision created: the
+  email's local part (lowercased, `+suffix` dropped, `.`/`_` → `-`, other
+  characters dropped, ≤ 32), then `-2`, `-3`, … Renaming (`PATCH /me`) makes
+  the new one current; the old one keeps resolving.
+- **Slugs** (`parcels.slug`, unique per owner): 1–4 `/`-separated segments
+  of `[a-z0-9]+(-[a-z0-9]+)*`, ≤ 100 characters; no segment shaped like a
+  parcel id and no `p` or `v` segment, so no clean URL reads as `/p/<id>` or
+  a `/v/<n>` pin (clean URLs pin with `?v=<n>`). Renaming or clearing one
+  leaves a redirect row (`parcel_slug_redirects`) until another of the
+  owner's parcels takes the name.
+- `ParcelSummary.url` stays `<app>/p/<id>`; `canonical_url` is the clean URL
+  when there is a slug, else `url`. Clients show and copy `canonical_url`.
+- **Owner handle privacy (decision).** Anonymous callers never get
+  `owner_handle` for a parcel without a slug (they get no owner name
+  either). A slugged public parcel's `canonical_url` holds the handle by
+  construction: setting a slug is the owner opting in to a readable link. A
+  409 from `PATCH /me` says only that a handle is in use.
+- **by-slug** resolves handle (current or retired) → user, then slug or
+  redirect → parcel, then `readable()`. Every failure — unknown handle or
+  slug, no access, public links off, malformed input — is one constant 404
+  body with identical headers (invariant 3).
+- **Publish upsert.** `CreateParcelMetadata.slug`: when the caller has a
+  parcel with that slug, or a redirect row for it, the publish versions that
+  parcel (files replaced; only the fields sent change, the title is never
+  re-derived; `tags` added, `auto_tags` ignored; `base_version` checked;
+  un-archives), decided under the owner's advisory lock so two first
+  publishes of one slug make one parcel. Otherwise it creates the parcel
+  with that slug (`base_version` → 409, since nothing has the slug yet).
+- **Sources.** `parcel_versions.source` = `{repo, branch, commit, host,
+  client}`, each ≤ 200 printable characters; `repo` reduced to
+  `host[:port]/path` (userinfo, query, fragment and `.git` dropped; local
+  paths omitted; anything else refused with a 400 that names only the field,
+  never the value). Shown to the owner only, wherever versions are returned;
+  a restore copies the restored version's source; MCP publishes record
+  `{client: "mcp"}`.
 
 ## Comments, live updates and page data (v0.2)
 

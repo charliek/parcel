@@ -3,6 +3,7 @@
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use parcel_types::slugs::normalize_slug;
 use parcel_types::tags::{normalize_set, normalize_tags};
 use parcel_types::{
     ArchivedFilter, CreateParcelMetadata, ErrorBody, ListScope, ParcelAccess, ParcelDetail,
@@ -16,10 +17,10 @@ use utoipa_axum::routes;
 
 use crate::auth::{AuthUser, MaybeAuthUser};
 use crate::content::{self, token::Scope};
-use crate::db::parcels::{self, ListFilter, Patch, PatchRefused, SearchRow, TagsChange};
+use crate::db::parcels::{self, ListFilter, ParcelRow, Patch, PatchRefused, SearchRow, TagsChange};
 use crate::db::users;
-use crate::error::{busy, tag_error, AppError, AppResult};
-use crate::http::views::{self, owned, readable};
+use crate::error::{busy, slug_error, slug_taken, tag_error, AppError, AppResult};
+use crate::http::views::{self, owned, readable, Audience};
 use crate::publish;
 use crate::state::AppState;
 
@@ -133,7 +134,7 @@ fn list_item(state: &AppState, row: SearchRow) -> ParcelListItem {
         _ => None,
     };
     ParcelListItem {
-        parcel: views::summary(&state.config, &row.parcel),
+        parcel: views::summary(&state.config, &row.parcel, Audience::SignedIn),
         matched: row.headline.as_deref().and_then(crate::search::segments),
         shared,
     }
@@ -152,10 +153,13 @@ pub(crate) async fn upload_permit(
     .map_err(|e| AppError::Internal(e.into()))
 }
 
+/// What a publish returns. Only the owner publishes, so the version
+/// carries its source.
 pub(crate) async fn publish_result(
     state: &AppState,
     id: &str,
     version: i32,
+    created: bool,
 ) -> AppResult<PublishResult> {
     let row = parcels::get(&state.db, id)
         .await?
@@ -165,8 +169,9 @@ pub(crate) async fn publish_result(
         .ok_or_else(crate::error::not_found)?;
     let files = parcels::version_files(&state.db, id, version).await?;
     Ok(PublishResult {
-        parcel: views::summary(&state.config, &row),
-        version: views::version_detail(&v, files),
+        parcel: views::summary(&state.config, &row, Audience::SignedIn),
+        version: views::version_detail(&v, files, ParcelAccess::Owner),
+        created,
     })
 }
 
@@ -176,13 +181,17 @@ pub(crate) async fn publish_result(
     tag = "parcels",
     description = "Create a parcel from a multipart upload. Send an optional `metadata` part \
         (JSON, `CreateParcelMetadata`) and one `file` part per file whose filename is the \
-        published path (e.g. `index.html`, `assets/app.js`).",
+        published path (e.g. `index.html`, `assets/app.js`). With a `slug` the caller already \
+        uses (or used, before a rename), this publishes a new version of that parcel instead \
+        and answers 200 with `created: false`.",
     request_body(content = crate::http::openapi::PublishUpload, content_type = "multipart/form-data"),
     security(("bearer" = [])),
     responses(
-        (status = 201, body = PublishResult),
+        (status = 201, body = PublishResult, description = "Created"),
+        (status = 200, body = PublishResult, description = "A new version of the parcel with this slug"),
         (status = 400, body = ErrorBody),
         (status = 401, body = ErrorBody),
+        (status = 409, body = ErrorBody, description = "`base_version` is no longer current, or no parcel has the slug yet"),
         (status = 413, body = ErrorBody, description = "A size, count or quota limit was exceeded"),
     )
 )]
@@ -197,11 +206,18 @@ async fn create_parcel(
             views::check_visibility(&state.config, m.visibility)
         })
         .await?;
-    let id = publish::create(&state, caller.user.id, meta, uploads).await?;
-    tracing::info!(parcel = %id, user = %caller.user.id, "parcel created");
+    let published = publish::create(&state, caller.user.id, meta, uploads).await?;
+    let id = &published.id;
+    let status = if published.created {
+        tracing::info!(parcel = %id, user = %caller.user.id, "parcel created");
+        StatusCode::CREATED
+    } else {
+        tracing::info!(parcel = %id, version = published.version, "version published by slug");
+        StatusCode::OK
+    };
     Ok((
-        StatusCode::CREATED,
-        Json(publish_result(&state, &id, 1).await?),
+        status,
+        Json(publish_result(&state, id, published.version, published.created).await?),
     ))
 }
 
@@ -234,14 +250,28 @@ pub(crate) async fn detail(
     id: &str,
 ) -> AppResult<ParcelDetail> {
     let (row, access) = readable(state, id, caller).await?;
+    detail_of(state, caller, row, access).await
+}
+
+/// [`detail`] for a parcel whose access is already decided.
+pub(crate) async fn detail_of(
+    state: &AppState,
+    caller: Option<&AuthUser>,
+    row: ParcelRow,
+    access: ParcelAccess,
+) -> AppResult<ParcelDetail> {
+    let id = row.id.as_str();
     let versions = parcels::list_versions(&state.db, id).await?;
     let files = parcels::version_files(&state.db, id, row.current_version).await?;
     Ok(ParcelDetail {
-        parcel: views::summary(&state.config, &row),
+        parcel: views::summary(&state.config, &row, Audience::of(caller)),
         is_owner: access == ParcelAccess::Owner,
         access,
         owner_name: views::owner_name(state, &row, caller).await?,
-        versions: versions.iter().map(views::version_summary).collect(),
+        versions: versions
+            .iter()
+            .map(|v| views::version_summary(v, access))
+            .collect(),
         files: files.into_iter().map(Into::into).collect(),
     })
 }
@@ -252,8 +282,9 @@ pub(crate) async fn detail(
     tag = "parcels",
     description = "Change a parcel's title, description or visibility (which counts as an \
         update), or organize it: `tags` replaces the tag set, `add_tags`/`remove_tags` edit it, \
-        `archived` archives or unarchives (neither changes `updated_at`). Files change only \
-        through new versions.",
+        `archived` archives or unarchives, `slug` names it (`\"\"` clears; the old slug keeps \
+        redirecting until another of your parcels takes it). Organizing doesn't change \
+        `updated_at`. Files change only through new versions.",
     params(("id" = String, Path, description = "Parcel id")),
     request_body = UpdateParcelRequest,
     security(("bearer" = [])),
@@ -262,6 +293,7 @@ pub(crate) async fn detail(
         (status = 400, body = ErrorBody),
         (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody),
+        (status = 409, body = ErrorBody, description = "Another of your parcels has this slug"),
     )
 )]
 async fn update_parcel(
@@ -295,22 +327,29 @@ pub(crate) async fn update_metadata(
         ));
     }
     let tags = tags_change(body)?;
+    let slug = match body.slug.as_deref().map(str::trim) {
+        None => None,
+        Some("") => Some(None),
+        Some(raw) => Some(Some(normalize_slug(raw).map_err(slug_error)?)),
+    };
     let patch = Patch {
         title,
         description,
         visibility: body.visibility,
         tags,
         archived: body.archived,
+        slug: slug.as_ref().map(Option::as_deref),
     };
     match parcels::apply_patch(&state.db, caller.user.id, id, &patch).await? {
         Ok(()) => {}
         Err(PatchRefused::ParcelGone) => return Err(crate::error::not_found()),
         Err(PatchRefused::Tags(e)) => return Err(tag_error(e)),
+        Err(PatchRefused::SlugTaken) => return Err(slug_taken()),
     }
     let row = parcels::get(&state.db, id)
         .await?
         .ok_or_else(crate::error::not_found)?;
-    Ok(views::summary(&state.config, &row))
+    Ok(views::summary(&state.config, &row, Audience::SignedIn))
 }
 
 /// A PATCH's tag change: a replacement or an edit, never both. Tags are
@@ -406,8 +445,8 @@ async fn view_parcel(
     };
     let (content_url, expires_at) = content::grant_url(&state, &id, version, &v.entry, scope);
     Ok(Json(ViewGrant {
-        parcel: views::summary(&state.config, &row),
-        version: views::version_summary(&v),
+        parcel: views::summary(&state.config, &row, Audience::of(caller.as_ref())),
+        version: views::version_summary(&v, access),
         is_owner: access == ParcelAccess::Owner,
         access,
         owner_name: views::owner_name(&state, &row, caller.as_ref()).await?,

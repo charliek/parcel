@@ -4,9 +4,6 @@
 
 mod common;
 
-use std::io::Write;
-use std::sync::{Arc, Mutex};
-
 use axum::http::StatusCode;
 use common::*;
 use parcel_server::db::parcels::HEADLINE_OPTIONS;
@@ -439,27 +436,6 @@ async fn the_backfill_retries_a_bounded_number_of_times() {
     );
 }
 
-/// A `MakeWriter` that keeps everything logged.
-#[derive(Clone, Default)]
-struct Captured(Arc<Mutex<Vec<u8>>>);
-
-impl Write for Captured {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
-    type Writer = Captured;
-    fn make_writer(&'a self) -> Captured {
-        self.clone()
-    }
-}
-
 /// When storing page text fails with a database error whose message quotes
 /// the row (as a check or trigger can), the logs say only that it failed.
 #[tokio::test]
@@ -478,12 +454,7 @@ async fn indexing_failures_log_no_page_text() {
     .unwrap();
 
     let logs = Captured::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(logs.clone())
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = logs.install();
 
     let p = publish(
         &app,
@@ -497,7 +468,7 @@ async fn indexing_failures_log_no_page_text() {
         .await
         .is_err());
 
-    let logged = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    let logged = logs.text();
     assert!(
         logged.contains("indexing a parcel's page text failed"),
         "{logged}"

@@ -11,6 +11,7 @@ pub mod openapi;
 pub mod parcels;
 pub mod server;
 pub mod sharing;
+pub mod slugs;
 pub mod spa;
 pub mod tags;
 pub mod tokens;

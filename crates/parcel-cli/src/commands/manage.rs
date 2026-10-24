@@ -53,7 +53,9 @@ pub fn restore(settings: &Settings, args: RestoreArgs) -> Result<()> {
     if args.json.json {
         return output::print_json(&result.raw);
     }
-    let PublishResult { parcel, version } = result.value;
+    let PublishResult {
+        parcel, version, ..
+    } = result.value;
     output::print(&format!(
         "Restored v{} of {} as v{}\n  url: {}\n",
         args.version, parcel.id, version.summary.version, parcel.url

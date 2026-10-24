@@ -233,6 +233,13 @@ async fn publish_read_update_share_delete() {
     assert_eq!(published["parcel"]["title"], "Hello MCP");
     assert_eq!(published["parcel"]["visibility"], "private");
     assert_eq!(published["parcel"]["url"], format!("{APP_ORIGIN}/p/{id}"));
+    assert_eq!(
+        published["parcel"]["canonical_url"],
+        format!("{APP_ORIGIN}/p/{id}")
+    );
+    assert_eq!(published["created"], true);
+    // Versions published through MCP say so (shown to the owner only).
+    assert_eq!(published["version"]["source"], json!({"client": "mcp"}));
 
     let (_, list) = call(&app, &token, "list_parcels", json!({})).await;
     assert_eq!(list["total"], 1);
@@ -264,6 +271,7 @@ async fn publish_read_update_share_delete() {
     .await;
     assert!(!err, "{updated}");
     assert_eq!(updated["version"]["version"], 2);
+    assert_eq!(updated["version"]["source"], json!({"client": "mcp"}));
     let (_, detail) = call(&app, &token, "get_parcel", json!({"parcel": id})).await;
     let paths: Vec<&str> = detail["files"]
         .as_array()

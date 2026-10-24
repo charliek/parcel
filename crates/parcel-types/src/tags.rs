@@ -31,7 +31,9 @@ pub enum TagError {
     TooMany(usize),
 }
 
-fn quoted(raw: &str) -> String {
+/// `raw` quoted with `{:?}` (control characters escaped) and cut short, for
+/// error messages (slugs and handles use it too).
+pub(crate) fn quoted(raw: &str) -> String {
     let shown: String = raw.chars().take(80).collect();
     if shown.len() < raw.len() {
         format!("{shown:?}…")
@@ -40,9 +42,9 @@ fn quoted(raw: &str) -> String {
     }
 }
 
-/// The whitespace a tag may be padded or separated with (ASCII only, so the
-/// TypeScript twin matches exactly).
-fn is_space(c: char) -> bool {
+/// The whitespace a tag (or slug, or handle) may be padded with (ASCII only,
+/// so the TypeScript twins match exactly).
+pub(crate) fn is_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c')
 }
 

@@ -27,7 +27,7 @@ def found(api: httpx.Client, q: str, **params) -> dict:
 
 def test_server_lists_its_features(server):
     info = httpx.get(f"{server.app_url}/api/v1/info").json()
-    assert {"tags", "search", "archive"} <= set(info["features"])
+    assert {"tags", "search", "archive", "slugs"} <= set(info["features"])
 
 
 def test_tags_filter_count_rename_and_delete(api: Browser, stranger: Browser):

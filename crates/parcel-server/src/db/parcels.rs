@@ -1,10 +1,11 @@
 //! Parcels, their versions, and each version's files.
 
 use anyhow::{Context, Result};
-use parcel_types::{ArchivedFilter, FileEntry, ListScope, Usage, Visibility};
+use parcel_types::{ArchivedFilter, FileEntry, ListScope, SourceInfo, Usage, Visibility};
 use std::collections::BTreeSet;
 
 use parcel_types::tags::{edit_tags, TagError};
+use sqlx::types::Json;
 use sqlx::{AssertSqlSafe, PgExecutor, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -22,6 +23,10 @@ pub struct ParcelRow {
     pub updated_at: OffsetDateTime,
     pub tags: Vec<String>,
     pub archived_at: Option<OffsetDateTime>,
+    pub slug: Option<String>,
+    /// The owner's current handle (`None` only for a user an older revision
+    /// created and nothing has allocated a handle for yet).
+    pub owner_handle: Option<String>,
     pub entry: String,
     pub file_count: i32,
     pub total_bytes: i64,
@@ -42,7 +47,12 @@ pub struct VersionRow {
     pub file_count: i32,
     pub total_bytes: i64,
     pub created_at: OffsetDateTime,
+    /// Owner-only: `views::version_summary` drops it for everyone else.
+    #[sqlx(json(nullable))]
+    pub source: Option<SourceInfo>,
 }
+
+const VERSION_COLUMNS: &str = "version, entry, label, file_count, total_bytes, created_at, source";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct FileRow {
@@ -67,6 +77,7 @@ macro_rules! parcel_columns {
     () => {
         "p.id, p.owner_id, p.title, p.description, p.visibility,
             p.current_version, p.created_at, p.updated_at, p.tags, p.archived_at,
+            p.slug, ou.handle AS owner_handle,
             v.entry, v.file_count, v.total_bytes,
             (SELECT count(*) FROM comments c
               WHERE c.parcel_id = p.id AND c.parent_number IS NULL
@@ -76,12 +87,13 @@ macro_rules! parcel_columns {
 macro_rules! parcel_from {
     () => {
         "FROM parcels p
-     JOIN parcel_versions v ON v.parcel_id = p.id AND v.version = p.current_version"
+     JOIN parcel_versions v ON v.parcel_id = p.id AND v.version = p.current_version
+     LEFT JOIN user_handles ou ON ou.user_id = p.owner_id AND ou.is_current"
     };
 }
 
-/// The columns of a [`ParcelRow`] (over `p` and `v`), for queries that
-/// select more alongside them.
+/// The columns of a [`ParcelRow`] (over `p`, `v` and the owner's current
+/// handle `ou`), for queries that select more alongside them.
 pub const PARCEL_COLUMNS: &str = parcel_columns!();
 /// The `FROM` that [`PARCEL_COLUMNS`] reads, ready for more joins.
 pub const PARCEL_FROM: &str = parcel_from!();
@@ -161,7 +173,7 @@ const TAGS_CLAUSE: &str = "\n       AND p.tags @> $3::text[]";
 // numnode 0: then only the substring match applies.
 const QUERY_CLAUSE: &str = "
        AND (p.id ILIKE $5 ESCAPE '\\' OR p.title ILIKE $5 ESCAPE '\\'
-            OR p.description ILIKE $5 ESCAPE '\\'
+            OR p.description ILIKE $5 ESCAPE '\\' OR p.slug ILIKE $5 ESCAPE '\\'
             OR (numnode(params.tsq) > 0 AND p.search_vec @@ params.tsq))";
 const RANK: &str =
     "CASE WHEN numnode(params.tsq) > 0 THEN ts_rank_cd(p.search_vec, params.tsq) ELSE 0 END";
@@ -297,10 +309,10 @@ fn escape_like(s: &str) -> String {
 }
 
 pub async fn list_versions(pool: &PgPool, parcel_id: &str) -> Result<Vec<VersionRow>> {
-    sqlx::query_as::<_, VersionRow>(
-        "SELECT version, entry, label, file_count, total_bytes, created_at
-         FROM parcel_versions WHERE parcel_id = $1 ORDER BY version DESC",
-    )
+    sqlx::query_as::<_, VersionRow>(AssertSqlSafe(format!(
+        "SELECT {VERSION_COLUMNS}
+         FROM parcel_versions WHERE parcel_id = $1 ORDER BY version DESC"
+    )))
     .bind(parcel_id)
     .fetch_all(pool)
     .await
@@ -314,10 +326,10 @@ pub async fn get_version<'e>(
     parcel_id: &str,
     version: i32,
 ) -> Result<Option<VersionRow>> {
-    sqlx::query_as::<_, VersionRow>(
-        "SELECT version, entry, label, file_count, total_bytes, created_at
-         FROM parcel_versions WHERE parcel_id = $1 AND version = $2",
-    )
+    sqlx::query_as::<_, VersionRow>(AssertSqlSafe(format!(
+        "SELECT {VERSION_COLUMNS}
+         FROM parcel_versions WHERE parcel_id = $1 AND version = $2"
+    )))
     .bind(parcel_id)
     .bind(version)
     .fetch_optional(db)
@@ -435,8 +447,8 @@ pub enum TagsChange {
 }
 
 /// A PATCH of an owned parcel. Title, description and visibility are
-/// edits (they bump `updated_at`); tags and archive state are organization
-/// (they don't, so tidying never reorders the list).
+/// edits (they bump `updated_at`); tags, archive state and the slug are
+/// organization (they don't, so tidying never reorders the list).
 #[derive(Debug, Clone, Default)]
 pub struct Patch<'a> {
     pub title: Option<&'a str>,
@@ -444,12 +456,16 @@ pub struct Patch<'a> {
     pub visibility: Option<Visibility>,
     pub tags: TagsChange,
     pub archived: Option<bool>,
+    /// `Some(None)` clears the slug; `Some(Some(s))` sets it (normalized).
+    pub slug: Option<Option<&'a str>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PatchRefused {
     ParcelGone,
     Tags(TagError),
+    /// Another of the owner's parcels has this slug.
+    SlugTaken,
 }
 
 /// Apply a PATCH in one transaction: the owner's lock, then the parcel's
@@ -478,6 +494,14 @@ pub async fn apply_patch(
             Err(e) => return Ok(Err(PatchRefused::Tags(e))),
         },
     };
+    if let Some(new) = patch.slug {
+        if let Some(name) = new {
+            if super::slugs::taken_by_other(&mut tx, owner_id, name, id).await? {
+                return Ok(Err(PatchRefused::SlugTaken));
+            }
+        }
+        super::slugs::set(&mut tx, owner_id, id, locked.slug.as_deref(), new).await?;
+    }
     if tags.is_some() || patch.archived.is_some() {
         update_organization(&mut tx, id, tags.as_deref(), patch.archived).await?;
     }
@@ -554,31 +578,52 @@ pub async fn usage(pool: &PgPool, owner_id: Uuid) -> Result<Usage> {
 
 // ---- publish transaction pieces -------------------------------------------
 
+/// A brand-new parcel row.
+pub struct NewParcel<'a> {
+    pub id: &'a str,
+    pub owner_id: Uuid,
+    pub title: &'a str,
+    pub description: &'a str,
+    pub visibility: Visibility,
+    pub tags: &'a [String],
+    pub slug: Option<&'a str>,
+}
+
+/// The constraint a parcel id collision violates (the only one
+/// [`insert_parcel`]'s caller retries on).
+pub const PARCEL_PKEY: &str = "parcels_pkey";
+/// The constraint two parcels of one owner with the same slug violate.
+pub const PARCEL_SLUG_INDEX: &str = "parcels_owner_slug_idx";
+
 /// Insert a brand-new parcel row (its first version is inserted separately,
 /// in the same transaction).
-pub async fn insert_parcel(
-    tx: &mut Transaction<'_, Postgres>,
-    id: &str,
-    owner_id: Uuid,
-    title: &str,
-    description: &str,
-    visibility: Visibility,
-    tags: &[String],
-) -> Result<()> {
+pub async fn insert_parcel(tx: &mut Transaction<'_, Postgres>, p: &NewParcel<'_>) -> Result<()> {
     sqlx::query(
-        "INSERT INTO parcels (id, owner_id, title, description, visibility, tags, current_version)
-         VALUES ($1, $2, $3, $4, $5, $6, 0)",
+        "INSERT INTO parcels (id, owner_id, title, description, visibility, tags, slug, current_version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 0)",
     )
-    .bind(id)
-    .bind(owner_id)
-    .bind(title)
-    .bind(description)
-    .bind(visibility.as_str())
-    .bind(tags)
+    .bind(p.id)
+    .bind(p.owner_id)
+    .bind(p.title)
+    .bind(p.description)
+    .bind(p.visibility.as_str())
+    .bind(p.tags)
+    .bind(p.slug)
     .execute(&mut **tx)
     .await
     .context("inserting parcel")?;
     Ok(())
+}
+
+/// The name of the unique constraint `e` violated, if that is what it is.
+pub fn violated_constraint(e: &anyhow::Error) -> Option<&str> {
+    e.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<sqlx::Error>()
+            .and_then(|s| s.as_database_error())
+            .filter(|d| d.is_unique_violation())
+            .map(|d| d.constraint().unwrap_or_default())
+    })
 }
 
 /// A parcel's row, locked for the rest of the transaction.
@@ -587,6 +632,7 @@ pub struct LockedParcel {
     pub owner_id: Uuid,
     pub current_version: i32,
     pub tags: Vec<String>,
+    pub slug: Option<String>,
 }
 
 /// Lock a parcel's row. Callers that also take the owner's lock take it
@@ -595,11 +641,13 @@ pub async fn lock_for_update(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
 ) -> Result<Option<LockedParcel>> {
-    sqlx::query_as("SELECT owner_id, current_version, tags FROM parcels WHERE id = $1 FOR UPDATE")
-        .bind(id)
-        .fetch_optional(&mut **tx)
-        .await
-        .context("locking parcel")
+    sqlx::query_as(
+        "SELECT owner_id, current_version, tags, slug FROM parcels WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .context("locking parcel")
 }
 
 pub struct NewVersion<'a> {
@@ -609,6 +657,8 @@ pub struct NewVersion<'a> {
     pub label: Option<&'a str>,
     pub created_via: &'a str,
     pub files: &'a [FileRow],
+    /// Already validated (`SourceInfo::validated`).
+    pub source: Option<&'a SourceInfo>,
 }
 
 /// Insert a version and its files, and make it current.
@@ -616,8 +666,9 @@ pub async fn insert_version(tx: &mut Transaction<'_, Postgres>, v: &NewVersion<'
     let total: i64 = v.files.iter().map(|f| f.size_bytes).sum();
     let count = i32::try_from(v.files.len()).context("file count overflow")?;
     sqlx::query(
-        "INSERT INTO parcel_versions (parcel_id, version, entry, label, file_count, total_bytes, created_via)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO parcel_versions
+             (parcel_id, version, entry, label, file_count, total_bytes, created_via, source)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(v.parcel_id)
     .bind(v.version)
@@ -626,6 +677,7 @@ pub async fn insert_version(tx: &mut Transaction<'_, Postgres>, v: &NewVersion<'
     .bind(count)
     .bind(total)
     .bind(v.created_via)
+    .bind(v.source.map(Json))
     .execute(&mut **tx)
     .await
     .context("inserting version")?;

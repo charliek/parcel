@@ -728,6 +728,10 @@
           "email": {
             "type": "string"
           },
+          "handle": {
+            "description": "The user's handle: the `@<handle>` in their parcels' clean URLs.",
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -973,6 +977,10 @@
               "null"
             ]
           },
+          "canonical_url": {
+            "description": "The URL to show and share: `https://…/@<handle>/<slug>` when the\nparcel has a slug, else the same as `url`.",
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -1000,6 +1008,20 @@
             "format": "int64",
             "type": "integer"
           },
+          "owner_handle": {
+            "description": "The owner's handle. Left out for anonymous callers of a parcel\nwithout a slug (they aren't told who published it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slug": {
+            "description": "The parcel's name under its owner's handle (`parcel/plan-001`), if\nthe owner gave it one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "tags": {
             "description": "Sorted by bytes. Everyone who can view the parcel sees them.",
             "items": {
@@ -1019,7 +1041,7 @@
             "type": "string"
           },
           "url": {
-            "description": "The viewer URL in the web app (`https://…/p/<id>`).",
+            "description": "The viewer URL in the web app (`https://…/p/<id>`). Stays this\nshape for good (clients append `/v/<n>` to it); show and share\n`canonical_url`.",
             "type": "string"
           },
           "visibility": {
@@ -1044,6 +1066,10 @@
       "PublishResult": {
         "description": "Returned by both create and new-version publishes.",
         "properties": {
+          "created": {
+            "description": "Whether this publish created the parcel (a create with a `slug` the\ncaller already uses adds a version instead).",
+            "type": "boolean"
+          },
           "parcel": {
             "$ref": "#/components/schemas/ParcelSummary"
           },
@@ -1280,6 +1306,46 @@
         ],
         "type": "object"
       },
+      "SourceInfo": {
+        "description": "A version's provenance. Every field is optional.",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client": {
+            "description": "What published it: `parcel-cli/<version>`, `mcp`, `web`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commit": {
+            "description": "Commit id (usually abbreviated).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host": {
+            "description": "The machine's hostname.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "description": "The repository's remote as `host[:port]/path` (no credentials, no `.git`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "TagCount": {
         "description": "One tag and how many of the listed parcels carry it.",
         "properties": {
@@ -1367,6 +1433,20 @@
         },
         "type": "object"
       },
+      "UpdateMeRequest": {
+        "additionalProperties": false,
+        "description": "`PATCH /api/v1/me`.",
+        "properties": {
+          "handle": {
+            "description": "A new handle. The old one keeps resolving to you (and no one else\ncan take it), so links with it keep working.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "UpdateParcelRequest": {
         "additionalProperties": false,
         "description": "`PATCH /api/v1/parcels/{id}` — metadata only; files change through versions.",
@@ -1397,6 +1477,13 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "slug": {
+            "description": "Give the parcel this slug (`\"\"` clears it). The old one keeps\nredirecting here until another of your parcels takes it.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "tags": {
             "description": "Replace the tag set (`[]` clears it). Not with `add_tags`/`remove_tags`.",
@@ -1508,6 +1595,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SourceInfo",
+                "description": "Where it was published from. The owner's only: absent for everyone else."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "total_bytes": {
@@ -1858,6 +1956,70 @@
         "tags": [
           "account"
         ]
+      },
+      "patch": {
+        "description": "Change the signed-in user's handle (the `@<handle>` in their parcels' clean URLs). The old handle stays theirs and keeps resolving, so existing links keep working; taking one of your own old handles back makes it current again.",
+        "operationId": "update_me",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not a valid handle"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The handle is taken"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
       }
     },
     "/api/v1/parcels": {
@@ -1981,7 +2143,7 @@
         ]
       },
       "post": {
-        "description": "Create a parcel from a multipart upload. Send an optional `metadata` part (JSON, `CreateParcelMetadata`) and one `file` part per file whose filename is the published path (e.g. `index.html`, `assets/app.js`).",
+        "description": "Create a parcel from a multipart upload. Send an optional `metadata` part (JSON, `CreateParcelMetadata`) and one `file` part per file whose filename is the published path (e.g. `index.html`, `assets/app.js`). With a `slug` the caller already uses (or used, before a rename), this publishes a new version of that parcel instead and answers 200 with `created: false`.",
         "operationId": "create_parcel",
         "requestBody": {
           "content": {
@@ -1994,6 +2156,16 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishResult"
+                }
+              }
+            },
+            "description": "A new version of the parcel with this slug"
+          },
           "201": {
             "content": {
               "application/json": {
@@ -2024,6 +2196,16 @@
             },
             "description": "Unauthorized"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`base_version` is no longer current, or no parcel has the slug yet"
+          },
           "413": {
             "content": {
               "application/json": {
@@ -2036,6 +2218,73 @@
           }
         },
         "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "parcels"
+        ]
+      }
+    },
+    "/api/v1/parcels/by-slug": {
+      "get": {
+        "description": "Resolve a clean URL (`/@<handle>/<slug>`) to the parcel it names: through the handle (or one its user had before), the slug (or one the parcel had before), then the same access rule as `GET /parcels/{id}`. `parcel.canonical_url` is the current clean URL, which differs from the one asked for after a rename. Every miss is the same 404, whatever was missing.",
+        "operationId": "get_by_slug",
+        "parameters": [
+          {
+            "description": "The owner's handle, or one they had before. Defaults to the caller's\nown; required when signed out.",
+            "in": "query",
+            "name": "handle",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The parcel's slug, or one it had before.",
+            "in": "query",
+            "name": "slug",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelDetail"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No `slug`, or no `handle` while signed out"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {},
           {
             "bearer": []
           }
@@ -2141,7 +2390,7 @@
         ]
       },
       "patch": {
-        "description": "Change a parcel's title, description or visibility (which counts as an update), or organize it: `tags` replaces the tag set, `add_tags`/`remove_tags` edit it, `archived` archives or unarchives (neither changes `updated_at`). Files change only through new versions.",
+        "description": "Change a parcel's title, description or visibility (which counts as an update), or organize it: `tags` replaces the tag set, `add_tags`/`remove_tags` edit it, `archived` archives or unarchives, `slug` names it (`\"\"` clears; the old slug keeps redirecting until another of your parcels takes it). Organizing doesn't change `updated_at`. Files change only through new versions.",
         "operationId": "update_parcel",
         "parameters": [
           {
@@ -2204,6 +2453,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Another of your parcels has this slug"
           }
         },
         "security": [

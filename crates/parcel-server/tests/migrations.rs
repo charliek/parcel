@@ -18,6 +18,7 @@ const BEFORE_0005: [&str; 4] = [
 ];
 const DROP_USERS_SUB: &str = include_str!("../migrations/0005_drop_users_sub.sql");
 const TAGS_ARCHIVE_SEARCH: &str = include_str!("../migrations/0006_tags_archive_search.sql");
+const HANDLES_SLUGS: &str = include_str!("../migrations/0007_handles_slugs.sql");
 
 async fn apply(pool: &PgPool, sql: &str) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(AssertSqlSafe(sql.to_string()))
@@ -179,6 +180,8 @@ async fn tags_and_search_reach_existing_parcels() {
     .unwrap();
     assert!(tags.is_empty() && archived.is_none() && text.is_none() && attempts == 0);
 
+    // Today's queries read 0007's columns too (it is additive).
+    apply(&pool, HANDLES_SLUGS).await.expect("0007");
     for (query, found) in [
         (Some("ocelot"), true),    // title, full text
         (Some("quarterly"), true), // description
@@ -330,4 +333,81 @@ async fn a_version_bump_from_an_old_revision_unarchives() {
         !archived(pool.clone(), id.clone()).await,
         "the new version is live"
     );
+}
+
+/// 0007 gives every existing user a handle, oldest account first, and the
+/// adversarial cases come out valid, unique and as predicted: a base that
+/// already looks suffixed, `+tags`, `.`/`_`, nothing usable, 32-character
+/// cuts (with and without a `-` at the cut), non-ASCII letters.
+#[tokio::test]
+async fn handles_backfill_existing_users_uniquely() {
+    let pool = common::schema_pool().await;
+    apply_through_0005(&pool).await;
+    apply(&pool, TAGS_ARCHIVE_SEARCH).await.expect("0006");
+    let long = "a".repeat(40);
+    let dash_at_cut = format!("{}-yyy", "b".repeat(31));
+    let cases: Vec<(String, &str)> = vec![
+        ("alice-2@a.test".into(), "alice-2"),
+        ("alice@a.test".into(), "alice"),
+        ("Alice+work@b.test".into(), "alice-3"),
+        ("a.b@x.test".into(), "a-b"),
+        ("a_b@y.test".into(), "a-b-2"),
+        ("!!!@x.test".into(), "user"),
+        ("+tag@x.test".into(), "user-2"),
+        (format!("{long}@x.test"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        (format!("{long}@y.test"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-2"),
+        (
+            format!("{dash_at_cut}@x.test"),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ),
+        (
+            format!("{dash_at_cut}@y.test"),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-2",
+        ),
+        ("x..--__y@x.test".into(), "x-y"),
+        ("Ünïcödé@x.test".into(), "ncd"),
+        ("we@ird@x.test".into(), "weird"),
+        ("-.-@x.test".into(), "user-3"),
+    ];
+    for (i, (email, _)) in cases.iter().enumerate() {
+        // Created in this order (the backfill goes oldest first).
+        sqlx::query(
+            "INSERT INTO users (email, name, created_at)
+             VALUES ($1, '', now() - make_interval(secs => $2))",
+        )
+        .bind(email)
+        .bind(1000.0 - i as f64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    apply(&pool, HANDLES_SLUGS).await.expect("0007");
+
+    let got: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT u.email, h.handle, h.is_current FROM users u
+         JOIN user_handles h ON h.user_id = u.id ORDER BY u.created_at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(got.len(), cases.len(), "one handle per user");
+    for ((email, handle, current), (want_email, want)) in got.iter().zip(&cases) {
+        assert_eq!(email, want_email);
+        assert_eq!(handle, want, "{email}");
+        assert!(current);
+        assert_eq!(
+            parcel_types::slugs::normalize_handle(handle).as_deref(),
+            Ok(handle.as_str()),
+            "{handle} is a valid handle"
+        );
+    }
+    // Running the allocation again changes nothing.
+    let again: Vec<String> = sqlx::query_scalar(
+        "SELECT parcel_allocate_handle(id, email) FROM users ORDER BY created_at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let expected: Vec<String> = cases.iter().map(|(_, h)| h.to_string()).collect();
+    assert_eq!(again, expected);
 }

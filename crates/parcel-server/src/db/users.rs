@@ -132,6 +132,10 @@ pub async fn sign_in(
     .fetch_one(&mut *tx)
     .await
     .context("updating user at sign-in")?;
+    // A new user gets their handle here, in the transaction that creates
+    // them; one an older revision created gets theirs now (a no-op for
+    // everyone else).
+    super::handles::allocate(&mut *tx, user.id, &user.email).await?;
     tx.commit().await.context("committing sign-in")?;
     Ok(user)
 }

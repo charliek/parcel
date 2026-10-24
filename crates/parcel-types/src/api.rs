@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::source::SourceInfo;
+
 /// Who can open a parcel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -99,7 +101,9 @@ pub struct ParcelSummary {
     #[serde(with = "time::serde::rfc3339")]
     #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub updated_at: OffsetDateTime,
-    /// The viewer URL in the web app (`https://…/p/<id>`).
+    /// The viewer URL in the web app (`https://…/p/<id>`). Stays this
+    /// shape for good (clients append `/v/<n>` to it); show and share
+    /// `canonical_url`.
     pub url: String,
     /// Unresolved comment threads.
     #[serde(default)]
@@ -112,6 +116,18 @@ pub struct ParcelSummary {
     #[serde(default, with = "time::serde::rfc3339::option")]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = DateTime))]
     pub archived_at: Option<OffsetDateTime>,
+    /// The parcel's name under its owner's handle (`parcel/plan-001`), if
+    /// the owner gave it one.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// The owner's handle. Left out for anonymous callers of a parcel
+    /// without a slug (they aren't told who published it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_handle: Option<String>,
+    /// The URL to show and share: `https://…/@<handle>/<slug>` when the
+    /// parcel has a slug, else the same as `url`.
+    #[serde(default)]
+    pub canonical_url: String,
 }
 
 /// Which parcels a list covers.
@@ -208,6 +224,9 @@ pub struct VersionSummary {
     #[serde(with = "time::serde::rfc3339")]
     #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub created_at: OffsetDateTime,
+    /// Where it was published from. The owner's only: absent for everyone else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceInfo>,
 }
 
 /// One file inside a version.
@@ -289,6 +308,24 @@ pub struct CreateParcelMetadata {
     /// `project:<repo>`). Applied only when this call creates the parcel.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auto_tags: Vec<String>,
+    /// Publish under this slug: when the caller already has a parcel with
+    /// it (or had, and renamed it), this publish is a new version of that
+    /// parcel (all files replaced; only the fields sent here change; `tags`
+    /// are added; `auto_tags` ignored) and answers 200 with `created:
+    /// false`. Otherwise it creates the parcel with this slug (201).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// With `slug` only: fail with 409 unless the parcel with this slug is
+    /// still at this version (or, when none has the slug yet, always).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_version: Option<i32>,
+    /// Where this is published from (shown to the owner only).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::source::deserialize_opt"
+    )]
+    pub source: Option<SourceInfo>,
 }
 
 /// The `metadata` part of a new-version (`POST /api/v1/parcels/{id}/versions`) upload.
@@ -317,6 +354,13 @@ pub struct NewVersionMetadata {
     /// Tags to add to the parcel (existing ones are kept).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub add_tags: Vec<String>,
+    /// Where this is published from (shown to the owner only).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::source::deserialize_opt"
+    )]
+    pub source: Option<SourceInfo>,
 }
 
 /// Returned by both create and new-version publishes.
@@ -325,6 +369,10 @@ pub struct NewVersionMetadata {
 pub struct PublishResult {
     pub parcel: ParcelSummary,
     pub version: VersionDetail,
+    /// Whether this publish created the parcel (a create with a `slug` the
+    /// caller already uses adds a version instead).
+    #[serde(default)]
+    pub created: bool,
 }
 
 /// `PATCH /api/v1/parcels/{id}` — metadata only; files change through versions.
@@ -350,6 +398,10 @@ pub struct UpdateParcelRequest {
     /// Archive (`true`) or unarchive (`false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<bool>,
+    /// Give the parcel this slug (`""` clears it). The old one keeps
+    /// redirecting here until another of your parcels takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
 }
 
 /// One tag and how many of the listed parcels carry it.
@@ -458,6 +510,20 @@ pub struct Me {
     /// API tokens and dev mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signed_in_with: Option<String>,
+    /// The user's handle: the `@<handle>` in their parcels' clean URLs.
+    #[serde(default)]
+    pub handle: String,
+}
+
+/// `PATCH /api/v1/me`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UpdateMeRequest {
+    /// A new handle. The old one keeps resolving to you (and no one else
+    /// can take it), so links with it keep working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
 }
 
 /// A sign-in provider the web app can offer.
@@ -504,7 +570,7 @@ pub struct ServerInfo {
 
 /// The optional features this version of the API has, as listed in
 /// [`ServerInfo::features`]: what the server reports and what a client looks for.
-pub const FEATURES: &[&str] = &["tags", "search", "archive"];
+pub const FEATURES: &[&str] = &["tags", "search", "archive", "slugs"];
 
 /// An API token as listed (never includes the secret).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -657,6 +723,7 @@ mod tests {
                 file_count: 1,
                 total_bytes: 10,
                 created_at: OffsetDateTime::UNIX_EPOCH,
+                source: None,
             },
             files: vec![],
         };
@@ -691,6 +758,9 @@ mod tests {
             open_comments: 0,
             tags: vec!["plan".into()],
             archived_at: None,
+            slug: None,
+            owner_handle: None,
+            canonical_url: "https://x/p/abcdefghijkm".into(),
         }
     }
 
@@ -717,10 +787,19 @@ mod tests {
     fn older_server_responses_still_parse() {
         let mut json = serde_json::to_value(summary()).unwrap();
         let object = json.as_object_mut().unwrap();
-        object.remove("tags");
-        object.remove("archived_at");
+        for key in ["tags", "archived_at", "slug", "canonical_url"] {
+            object.remove(key);
+        }
         let parsed: ParcelListItem = serde_json::from_value(json).unwrap();
         assert!(parsed.tags.is_empty() && parsed.archived_at.is_none());
+        assert!(parsed.slug.is_none() && parsed.canonical_url.is_empty());
+        let result: PublishResult = serde_json::from_value(serde_json::json!({
+            "parcel": serde_json::to_value(summary()).unwrap(),
+            "version": {"version": 1, "entry": "index.html", "label": null, "file_count": 1,
+                        "total_bytes": 1, "created_at": "1970-01-01T00:00:00Z", "files": []},
+        }))
+        .unwrap();
+        assert!(!result.created && result.version.summary.source.is_none());
     }
 
     #[test]

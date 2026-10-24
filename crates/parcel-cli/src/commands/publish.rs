@@ -77,7 +77,9 @@ pub fn publish(settings: &Settings, args: PublishArgs) -> Result<()> {
     if args.json.json {
         output::print_json(&result.raw)?;
     } else {
-        let PublishResult { parcel, version } = &result.value;
+        let PublishResult {
+            parcel, version, ..
+        } = &result.value;
         let verb = if matches!(target, Target::Create(_)) {
             "Published"
         } else {

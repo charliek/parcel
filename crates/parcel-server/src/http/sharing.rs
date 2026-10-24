@@ -221,7 +221,7 @@ pub(crate) async fn shared_with_me(
         parcels: rows
             .into_iter()
             .map(|r| SharedParcel {
-                parcel: views::summary(&state.config, &r.parcel),
+                parcel: views::summary(&state.config, &r.parcel, views::Audience::SignedIn),
                 owner_name: display_name(&r.owner_name, &r.owner_email),
                 role: parcel_types::ShareRole::parse(&r.role).unwrap_or_default(),
                 shared_at: r.shared_at,

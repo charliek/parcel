@@ -41,10 +41,14 @@ async fn list_versions(
     MaybeAuthUser(caller): MaybeAuthUser,
     Path(id): Path<String>,
 ) -> AppResult<Json<VersionList>> {
-    readable(&state, &id, caller.as_ref()).await?;
+    // The access decides whether the versions carry their source (the owner's only).
+    let (_, access) = readable(&state, &id, caller.as_ref()).await?;
     let versions = parcels::list_versions(&state.db, &id).await?;
     Ok(Json(VersionList {
-        versions: versions.iter().map(views::version_summary).collect(),
+        versions: versions
+            .iter()
+            .map(|v| views::version_summary(v, access))
+            .collect(),
     }))
 }
 
@@ -105,7 +109,7 @@ pub(crate) async fn publish_version(
     )
     .await?;
     tracing::info!(parcel = %id, version, "version published");
-    publish_result(state, id, version).await
+    publish_result(state, id, version, false).await
 }
 
 #[utoipa::path(
@@ -125,13 +129,13 @@ async fn get_version(
     MaybeAuthUser(caller): MaybeAuthUser,
     Path((id, version)): Path<(String, String)>,
 ) -> AppResult<Json<VersionDetail>> {
-    let (row, _) = readable(&state, &id, caller.as_ref()).await?;
+    let (row, access) = readable(&state, &id, caller.as_ref()).await?;
     let version = parse_version(&version, row.current_version)?;
     let v = parcels::get_version(&state.db, &id, version)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("version {version} not found")))?;
     let files = parcels::version_files(&state.db, &id, version).await?;
-    Ok(Json(views::version_detail(&v, files)))
+    Ok(Json(views::version_detail(&v, files, access)))
 }
 
 #[utoipa::path(
@@ -165,7 +169,7 @@ async fn restore_version(
     .await?;
     Ok((
         StatusCode::CREATED,
-        Json(publish_result(&state, &id, new_version).await?),
+        Json(publish_result(&state, &id, new_version, false).await?),
     ))
 }
 

@@ -655,24 +655,33 @@ async fn shared_and_all_scopes_honour_every_filter() {
     assert_eq!(legacy.total, 2);
 }
 
-/// A private parcel's title, page text and tags reach no one else: not in
-/// any list, count, snippet or tag vocabulary.
+/// A private parcel's title, page text, tags, slug and source reach no one
+/// else: not in any list, count, snippet, tag vocabulary or by-slug lookup;
+/// and a shared parcel's source stays its owner's.
 #[tokio::test]
 async fn a_private_parcel_leaks_nowhere() {
     let app = TestApp::new().await;
     let owner = person("ada");
     let bob = person("bob");
     let sentinel = "xylophonesentinel";
+    let source = json!({"repo": format!("https://github.com/ada/{sentinel}"), "branch": sentinel});
     let private = publish_with(
         &app,
         &owner,
-        json!({"title": format!("Title {sentinel}"), "tags": [sentinel, format!("{sentinel}:ns")]}),
+        json!({"title": format!("Title {sentinel}"), "tags": [sentinel, format!("{sentinel}:ns")],
+               "slug": format!("plans/{sentinel}"), "source": source}),
         &format!("<p>Body {sentinel} words</p>"),
     )
     .await;
     // Bob has things of his own, and one parcel of the owner's shared with him.
     tagged(&app, &bob, "bob's", &["mine"]).await;
-    let shared = tagged(&app, &owner, "shared one", &["visible"]).await;
+    let shared = publish_with(
+        &app,
+        &owner,
+        json!({"title": "shared one", "tags": ["visible"], "source": source}),
+        "<p>page</p>",
+    )
+    .await;
     expect_status(
         app.put_json(
             &format!("/api/v1/parcels/{}/shares/{}", shared.id, bob.email),
@@ -718,6 +727,35 @@ async fn a_private_parcel_leaks_nowhere() {
             .total,
         0
     );
+    // The owner finds it by its slug; Bob gets the one constant miss.
+    let handle: parcel_types::Me = expect_json(
+        app.get("/api/v1/me", Some(&owner.token)).await,
+        StatusCode::OK,
+    )
+    .await;
+    let by_slug = format!(
+        "/api/v1/parcels/by-slug?handle={}&slug=plans/{sentinel}",
+        handle.handle
+    );
+    expect_status(app.get(&by_slug, Some(&owner.token)).await, StatusCode::OK).await;
+    let miss = expect_status(
+        app.get(&by_slug, Some(&bob.token)).await,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+    let raw = String::from_utf8(body_bytes(miss).await).unwrap();
+    assert!(!raw.contains(sentinel), "{raw}");
+    // The shared parcel's source is the owner's alone.
+    for path in [
+        format!("/api/v1/parcels/{}", shared.id),
+        format!("/api/v1/parcels/{}/versions", shared.id),
+        format!("/api/v1/parcels/{}/versions/1", shared.id),
+        format!("/api/v1/parcels/{}/view", shared.id),
+    ] {
+        let raw =
+            String::from_utf8(body_bytes(app.get(&path, Some(&bob.token)).await).await).unwrap();
+        assert!(!raw.contains(sentinel), "{path}: {raw}");
+    }
     expect_status(
         app.get(&format!("/api/v1/parcels/{}", private.id), Some(&bob.token))
             .await,

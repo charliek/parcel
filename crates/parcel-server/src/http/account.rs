@@ -2,20 +2,21 @@
 
 use axum::extract::State;
 use axum::Json;
-use parcel_types::{AuthInfo, AuthProvider, ErrorBody, Me, ServerInfo};
+use parcel_types::slugs::normalize_handle;
+use parcel_types::{AuthInfo, AuthProvider, ErrorBody, Me, ServerInfo, UpdateMeRequest};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::auth::AuthUser;
 use crate::config::AuthMode;
-use crate::db::parcels;
-use crate::error::AppResult;
+use crate::db::{handles, parcels};
+use crate::error::{slug_error, AppError, AppResult};
 use crate::state::AppState;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(get_info))
-        .routes(routes!(get_me))
+        .routes(routes!(get_me, update_me))
 }
 
 #[utoipa::path(
@@ -70,8 +71,48 @@ async fn get_info(State(state): State<AppState>) -> Json<ServerInfo> {
     responses((status = 200, body = Me), (status = 401, body = ErrorBody))
 )]
 async fn get_me(State(state): State<AppState>, caller: AuthUser) -> AppResult<Json<Me>> {
-    let usage = parcels::usage(&state.db, caller.user.id).await?;
-    Ok(Json(Me {
+    Ok(Json(me(&state, caller).await?))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/me",
+    tag = "account",
+    description = "Change the signed-in user's handle (the `@<handle>` in their parcels' clean \
+        URLs). The old handle stays theirs and keeps resolving, so existing links keep working; \
+        taking one of your own old handles back makes it current again.",
+    request_body = UpdateMeRequest,
+    security(("bearer" = [])),
+    responses(
+        (status = 200, body = Me),
+        (status = 400, body = ErrorBody, description = "Not a valid handle"),
+        (status = 401, body = ErrorBody),
+        (status = 409, body = ErrorBody, description = "The handle is taken"),
+    )
+)]
+async fn update_me(
+    State(state): State<AppState>,
+    caller: AuthUser,
+    Json(body): Json<UpdateMeRequest>,
+) -> AppResult<Json<Me>> {
+    if let Some(raw) = body.handle.as_deref() {
+        let handle = normalize_handle(raw).map_err(slug_error)?;
+        let renamed = handles::rename(&state.db, caller.user.id, &caller.user.email, &handle)
+            .await?
+            .map_err(|_| AppError::Conflict("that handle is taken".into()))?;
+        if renamed.is_some() {
+            tracing::info!(user = %caller.user.id, "handle changed");
+        }
+    }
+    Ok(Json(me(&state, caller).await?))
+}
+
+async fn me(state: &AppState, caller: AuthUser) -> AppResult<Me> {
+    let (usage, handle) = tokio::try_join!(
+        parcels::usage(&state.db, caller.user.id),
+        handles::handle_for(&state.db, &caller.user),
+    )?;
+    Ok(Me {
         id: caller.user.id.to_string(),
         email: caller.user.email,
         name: caller.user.name,
@@ -82,5 +123,6 @@ async fn get_me(State(state): State<AppState>, caller: AuthUser) -> AppResult<Js
             .as_deref()
             .and_then(|id| state.config.provider(id))
             .map(|p| p.label.clone()),
-    }))
+        handle,
+    })
 }

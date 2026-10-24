@@ -13,8 +13,10 @@ fn the_documented_path_method_set_is_exact() {
         expected_pairs(&[
             ("GET", "/api/v1/info"),
             ("GET", "/api/v1/me"),
+            ("PATCH", "/api/v1/me"),
             ("GET", "/api/v1/parcels"),
             ("POST", "/api/v1/parcels"),
+            ("GET", "/api/v1/parcels/by-slug"),
             ("GET", "/api/v1/parcels/{id}"),
             ("PATCH", "/api/v1/parcels/{id}"),
             ("DELETE", "/api/v1/parcels/{id}"),

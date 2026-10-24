@@ -15,7 +15,8 @@
 
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -521,3 +522,50 @@ impl Form {
 
 pub const PAGE: &str = "<!doctype html><html><head><title>Hello Parcel</title></head>\
     <body><h1>Hi</h1><script src=\"app.js\"></script></body></html>";
+
+/// A `MakeWriter` that keeps everything logged, for tests that prove a
+/// value never reaches the logs.
+#[derive(Clone, Default)]
+pub struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl Captured {
+    /// Capture every event (at every level) on this thread until the guard drops.
+    pub fn install(&self) -> tracing::subscriber::DefaultGuard {
+        // With a single dispatcher registered, tracing caches a callsite's
+        // interest from whichever thread hits it first: another test's
+        // thread, with no subscriber, would cache "never" and this one would
+        // miss the event. A second, process-long dispatcher makes every
+        // registration ask all of them ("sometimes": checked per event).
+        static SECOND: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+        SECOND.get_or_init(|| tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(self.clone())
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+        guard
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Captured;
+    fn make_writer(&'a self) -> Captured {
+        self.clone()
+    }
+}
