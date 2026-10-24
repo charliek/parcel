@@ -31,6 +31,8 @@ parcel-types = { workspace = true, features = ["openapi", "schemars"] }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+# `TaskTracker`: post-commit index tasks are tracked so tests can await them.
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # HTTP server
 axum = { version = "0.8", features = ["multipart"] }

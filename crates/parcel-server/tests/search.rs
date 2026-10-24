@@ -50,10 +50,12 @@ async fn new_version(
     post_files(app, token, &uri, metadata, files).await
 }
 
-/// Let every pending index task finish (they are spawned on this runtime),
-/// then sweep up anything left, as the backfill would.
+/// Wait for every post-commit index task to finish, then sweep up anything
+/// left, as the backfill would. Waiting matters: a task still in flight can
+/// store its text after a test has cleared it (a yield doesn't run it to
+/// completion, as its extraction runs on the blocking pool).
 async fn settle(app: &TestApp) {
-    tokio::task::yield_now().await;
+    search::wait_for_index_tasks(&app.state).await;
     search::drain(&app.state, None, MAX_ATTEMPTS).await.unwrap();
 }
 

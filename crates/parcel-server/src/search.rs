@@ -582,7 +582,8 @@ async fn counted(
 /// `entry` is the entry page's path and bytes when the upload carried it;
 /// otherwise (a merge that kept it, a restore) it is read from the store.
 pub fn spawn_index(state: AppState, id: String, version: i32, entry: Option<(String, Bytes)>) {
-    tokio::spawn(async move {
+    let tasks = state.index_tasks.clone();
+    tasks.spawn(async move {
         let result = match entry {
             Some((entry, bytes)) => index_bytes(&state.db, &id, version, &entry, bytes).await,
             None => index_version(&state, &id, version).await,
@@ -590,6 +591,17 @@ pub fn spawn_index(state: AppState, id: String, version: i32, entry: Option<(Str
         // Logged inside; the backfill retries a failure.
         let _ = counted(&state, &id, version, result).await;
     });
+}
+
+/// Wait until every index task [`spawn_index`] started has finished. Tests
+/// call it before they inspect or rewrite search state: a task still in
+/// flight could otherwise store its text after they look.
+pub async fn wait_for_index_tasks(state: &AppState) {
+    // `wait` returns only once the tracker is closed and empty; closing
+    // doesn't stop new spawns, and reopening restores the idle state.
+    state.index_tasks.close();
+    state.index_tasks.wait().await;
+    state.index_tasks.reopen();
 }
 
 /// What a [`drain`] did.

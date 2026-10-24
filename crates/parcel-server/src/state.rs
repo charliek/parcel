@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
+use tokio_util::task::TaskTracker;
 
 use crate::auth::oidc::Provider;
 use crate::config::Config;
@@ -32,6 +33,9 @@ pub struct AppState {
     pub upload_permits: Arc<Semaphore>,
     /// The script added to every HTML page on the content origin.
     pub helper: Arc<content::helper::Helper>,
+    /// Post-commit index tasks (`search::spawn_index`), so a caller can wait
+    /// for the ones in flight (`search::wait_for_index_tasks`).
+    pub index_tasks: TaskTracker,
 }
 
 impl AppState {
@@ -83,6 +87,7 @@ impl AppState {
             providers,
             upload_permits,
             helper,
+            index_tasks: TaskTracker::new(),
         }
     }
 
