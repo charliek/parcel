@@ -213,6 +213,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     );
     let state = AppState::new(config)?;
     if state.config.run_migrations {
+        db::check_migration_url(&state.config.database_url)?;
         db::migrate(&state.db).await?;
     } else {
         tracing::info!("RUN_MIGRATIONS=false; expecting `parcel-server migrate` to have run");

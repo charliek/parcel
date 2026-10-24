@@ -46,21 +46,29 @@ pub const CONTENT_HOST: &str = "content.parcel.test";
 const ADMIN_URL_DEFAULT: &str = "postgres://postgres:localdev@localhost:5439/postgres";
 const TEST_DB: &str = "parcel_test";
 
+/// Whether the suite runs against a `DATABASE_URL` of the caller's choosing.
+fn database_url_set() -> bool {
+    std::env::var("DATABASE_URL").is_ok_and(|u| !u.is_empty())
+}
+
 /// The database URL for tests: `DATABASE_URL` if set, else the compose
-/// Postgres's `parcel_test` database.
+/// Postgres's `parcel_test` database. A set `DATABASE_URL` must name a
+/// loopback host (this harness creates and drops schemas there), or the
+/// suite panics before connecting, without printing the URL.
 pub fn database_url() -> String {
-    std::env::var("DATABASE_URL")
-        .ok()
-        .filter(|u| !u.is_empty())
-        .unwrap_or_else(|| format!("postgres://postgres:localdev@localhost:5439/{TEST_DB}"))
+    if database_url_set() {
+        stridelabs_testing::require_local_url("DATABASE_URL")
+    } else {
+        format!("postgres://postgres:localdev@localhost:5439/{TEST_DB}")
+    }
 }
 
 /// Create `parcel_test` if it doesn't exist (only when using the default URL).
 async fn ensure_test_database() {
-    if std::env::var("DATABASE_URL").is_ok_and(|u| !u.is_empty()) {
+    if database_url_set() {
         return;
     }
-    let admin = stridelabs_testing::require_postgres(ADMIN_URL_DEFAULT).await;
+    let admin = stridelabs_testing::require_postgres_at(ADMIN_URL_DEFAULT).await;
     for attempt in 0..10 {
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)")
@@ -106,8 +114,12 @@ pub async fn migrated_pool() -> PgPool {
 /// one by one).
 pub async fn schema_pool() -> PgPool {
     ensure_test_database().await;
+    // `database_url` refuses a non-local `DATABASE_URL` before the `DROP
+    // SCHEMA … CASCADE` below can reach it.
     let base = database_url();
-    let admin = stridelabs_testing::require_postgres(&base).await;
+    // `_at`, never `require_postgres`: that one prefers a set `DATABASE_URL`
+    // over its argument, which would drop the per-test `search_path` below.
+    let admin = stridelabs_testing::require_postgres_at(&base).await;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     // DDL can't bind identifiers, so the names below are spliced in: this
     // one (and the `old` ones, which only ever match it) is `t_<secs>_<hex>`.
@@ -138,7 +150,7 @@ pub async fn schema_pool() -> PgPool {
 
     let separator = if base.contains('?') { '&' } else { '?' };
     let url = format!("{base}{separator}options=-c%20search_path%3D{schema}");
-    stridelabs_testing::require_postgres(&url).await
+    stridelabs_testing::require_postgres_at(&url).await
 }
 
 pub fn test_config(issuer: &str) -> Config {

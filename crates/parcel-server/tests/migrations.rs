@@ -19,6 +19,27 @@ async fn apply(pool: &PgPool, sql: &str) -> Result<(), sqlx::Error> {
         .map(|_| ())
 }
 
+/// Each test pool lives in a schema of its own, whether or not
+/// `DATABASE_URL` is set (`require_postgres` would let a set one replace the
+/// URL carrying the `search_path`, putting every test in `public`).
+#[tokio::test]
+async fn test_pools_keep_their_own_search_path() {
+    let pool = common::schema_pool().await;
+    let schema: String = sqlx::query_scalar("SELECT current_schema()::text")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(schema.starts_with("t_"), "{schema}");
+    let other: String = sqlx::query_scalar("SELECT current_schema()::text")
+        .fetch_one(&common::schema_pool().await)
+        .await
+        .unwrap();
+    assert!(
+        other.starts_with("t_") && other != schema,
+        "{other} vs {schema}"
+    );
+}
+
 #[tokio::test]
 async fn dropping_users_sub_refuses_to_strand_a_user() {
     let pool = common::schema_pool().await;

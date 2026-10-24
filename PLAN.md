@@ -179,7 +179,12 @@ first, so concurrent publishes stay bounded as on the REST API.
 - **Credentials.** The provider's access tokens with `aud` = the resource URL
   (so web-client tokens fail here and MCP tokens fail everywhere else), or a
   `pcl_` token under the REST API's rules (for clients that can only send a
-  header). The token is stripped before any tool runs.
+  header). The token is stripped before any tool runs. A refusal is `401
+  invalid_token` (re-authorize) only when the token itself is bad; when the
+  check can't be made it is `503` (retry with the same token): the
+  provider's JWKS unreachable or its cached set past its TTL (never served
+  stale), or a `kid` the cache has never seen inside its 30 s refetch floor
+  (possibly a key rotation not fetched yet; a retired key's `kid` is a 401).
 - **Who the caller is.** A provider identity seen before is that user (its
   allowed domains re-checked against the token's email if the provider is
   trusted with emails, else the stored one; disabled users refused). Its first use signs

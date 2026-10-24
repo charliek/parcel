@@ -42,11 +42,16 @@ async fn main() -> anyhow::Result<()> {
 
     load_dotenv();
     let config = Config::from_env().context("loading configuration")?;
-    stridelabs_observability::init_logging(config.log_format, "info,parcel_server=debug");
+    stridelabs_observability::init_logging_with(
+        config.log_format,
+        "info,parcel_server=debug",
+        &parcel_server::log_caps(),
+    );
 
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => http::server::serve(config).await,
         Command::Migrate => {
+            db::check_migration_url(&config.database_url)?;
             let state = AppState::new(config)?;
             db::migrate(&state.db).await?;
             tracing::info!("migrations applied");

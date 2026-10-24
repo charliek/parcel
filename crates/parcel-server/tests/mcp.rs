@@ -162,6 +162,35 @@ async fn metadata_and_challenge_point_at_the_provider() {
     assert_eq!(body["result"]["serverInfo"]["name"], "parcel");
 }
 
+/// A token whose `kid` the key cache has never seen, inside its refetch
+/// floor, may be a rotation not fetched yet: `503` (retry with the same
+/// token), not `401` (which would send the client back through sign-in).
+#[tokio::test]
+async fn an_unseen_kid_is_unavailable_not_invalid() {
+    let app = mcp_app(|_| {}).await;
+    known_user(&app, "sub-k", "k@example.com").await;
+    let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+
+    // A good token first, so the cache has fetched (and timed) the set.
+    let token = mcp_token(&app, "sub-k", "k@example.com", &["parcel:read"]);
+    let (status, body, _) = post_mcp(&app, "parcel.test", Some(&token), list.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let claims = TestClaims::new(app.idp.uri(), RESOURCE)
+        .subject("sub-k")
+        .email("k@example.com")
+        .claim("scope", json!("parcel:read"))
+        .claim("client_id", json!("parcel-claude"))
+        .build();
+    let unseen = TestKey::secondary().mint_with_kid("never-published", &claims);
+    let (status, body, challenge) = post_mcp(&app, "parcel.test", Some(&unseen), list).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        !challenge.is_some_and(|c| c.contains("invalid_token")),
+        "a 503 asks for no new token"
+    );
+}
+
 #[tokio::test]
 async fn off_unless_configured() {
     let app = TestApp::new().await;

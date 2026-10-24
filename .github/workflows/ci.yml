@@ -35,8 +35,20 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Clippy (production feature set)
         run: cargo clippy -p parcel-server --no-default-features --locked -- -D warnings
+      # Prebuilt binary, pinned: a cargo-deny release can't turn CI red by itself.
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          tool: cargo-deny@0.20.2
+      - name: cargo deny (advisories, licenses, bans, sources)
+        run: cargo deny --locked check
+      - name: "Guard: no ring or rsa in the graph"
+        run: scripts/crypto-guard.sh
       - name: Test
         run: cargo test --workspace --locked
+      - name: Test pools keep their search_path with DATABASE_URL set
+        env:
+          DATABASE_URL: postgres://postgres:localdev@localhost:5439/parcel_test
+        run: cargo test -p parcel-server --locked --test migrations test_pools_keep_their_own_search_path
       - name: Doc
         run: cargo doc --workspace --all-features --no-deps --locked
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
