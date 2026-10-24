@@ -12,6 +12,7 @@ pub mod parcels;
 pub mod server;
 pub mod sharing;
 pub mod spa;
+pub mod tags;
 pub mod tokens;
 pub mod versions;
 pub mod views;

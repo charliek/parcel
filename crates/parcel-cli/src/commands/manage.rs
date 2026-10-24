@@ -17,6 +17,7 @@ pub fn update(settings: &Settings, args: UpdateArgs) -> Result<()> {
         title: args.title,
         description: args.description,
         visibility: args.visibility.visibility(),
+        ..UpdateParcelRequest::default()
     };
     if request == UpdateParcelRequest::default() {
         return Err(error::usage(

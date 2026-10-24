@@ -1,0 +1,57 @@
+{
+  "_comment": "Tag normalization cases, read by crates/parcel-types/src/tags.rs's tests and frontend/src/lib/tags.test.ts so the Rust rule and its TypeScript twin can't drift.",
+  "valid": [
+    ["plan", "plan"],
+    ["  Plan  ", "plan"],
+    ["PROJECT:Parcel", "project:parcel"],
+    ["kind:plan", "kind:plan"],
+    ["rust build", "rust-build"],
+    ["rust   build", "rust-build"],
+    ["snake_case_tag", "snake-case-tag"],
+    ["a _ b", "a-b"],
+    ["a\t\nb", "a-b"],
+    ["v1.2", "v1.2"],
+    ["c++", "c++"],
+    ["foo-", "foo-"],
+    ["9lives", "9lives"],
+    ["topic:a/b", "topic:a/b"],
+    ["ns:9.x+y-z/w", "ns:9.x+y-z/w"],
+    ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+  ],
+  "invalid": [
+    "",
+    "   ",
+    "-plan",
+    ".plan",
+    "_plan",
+    "kind:",
+    ":plan",
+    "kind:-plan",
+    "a:b:c",
+    "a/b",
+    "über",
+    "a b",
+    "a﻿b",
+    "a\u0000b",
+    "tag!",
+    "<script>",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ],
+  "sets": [
+    { "input": [], "expected": [] },
+    { "input": ["b", "a", "B", " a "], "expected": ["a", "b"] },
+    {
+      "input": ["b", "a-b", "a.b", "a+b", "a:b", "a0", "ab", "a"],
+      "expected": ["a", "a+b", "a-b", "a.b", "a0", "a:b", "ab", "b"]
+    },
+    {
+      "input": ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10", "t11", "t12", "t13", "t14", "t15", "t16", "t17", "t18", "t19", "t20", "T20", "t20 "],
+      "expected": ["t1", "t10", "t11", "t12", "t13", "t14", "t15", "t16", "t17", "t18", "t19", "t2", "t20", "t3", "t4", "t5", "t6", "t7", "t8", "t9"]
+    },
+    {
+      "input": ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10", "t11", "t12", "t13", "t14", "t15", "t16", "t17", "t18", "t19", "t20", "t21"],
+      "error": "too_many"
+    },
+    { "input": ["ok", "not ok!"], "error": "invalid" }
+  ]
+}

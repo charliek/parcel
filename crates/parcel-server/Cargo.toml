@@ -40,6 +40,9 @@ tower = { version = "0.5", features = ["util", "steer"] }
 # index.html); tests/spa.rs pins what the mount answers.
 tower-http = { version = "0.7", features = ["trace", "fs", "set-header", "limit"] }
 http-body-util = "0.1"
+# `Query` for repeated parameters (`?tag=a&tag=b`), which axum's own `Query`
+# (serde_urlencoded) can't put in a `Vec`. 0.12 is the release for axum 0.8.
+axum-extra = { version = "0.12", default-features = false, features = ["query"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -139,6 +142,9 @@ schemars = "1"
 tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
 tempfile = "3"
+# Capturing log output in tests (tests/search.rs: nothing a failed indexing
+# logs may carry page text).
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 stridelabs-testing = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.10.0", features = ["postgres"] }
 stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.10.0", features = ["test-support"] }
 stridelabs-mcp = { git = "https://github.com/charliek/stridelabs-rust.git", tag = "v0.10.0", features = ["test-support"] }

@@ -134,6 +134,7 @@ fn plan(args: &PublishArgs, upload: &[UploadFile], source: Option<SourceKind>) -
             visibility,
             entry,
             label: args.label.clone(),
+            ..CreateParcelMetadata::default()
         }));
     };
 
@@ -165,6 +166,7 @@ fn plan(args: &PublishArgs, upload: &[UploadFile], source: Option<SourceKind>) -
             description: args.description.clone(),
             visibility,
             base_version: args.base_version,
+            ..NewVersionMetadata::default()
         },
     })
 }

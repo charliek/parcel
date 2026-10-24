@@ -3,9 +3,11 @@
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use parcel_types::tags::{normalize_set, normalize_tags};
 use parcel_types::{
-    CreateParcelMetadata, ErrorBody, ParcelAccess, ParcelDetail, ParcelList, ParcelSummary,
-    PublishResult, UpdateParcelRequest, ViewGrant,
+    ArchivedFilter, CreateParcelMetadata, ErrorBody, ListScope, ParcelAccess, ParcelDetail,
+    ParcelList, ParcelListItem, ParcelSummary, PublishResult, ShareRole, SharedInfo,
+    UpdateParcelRequest, ViewGrant,
 };
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -14,8 +16,9 @@ use utoipa_axum::routes;
 
 use crate::auth::{AuthUser, MaybeAuthUser};
 use crate::content::{self, token::Scope};
-use crate::db::parcels;
-use crate::error::{busy, AppError, AppResult};
+use crate::db::parcels::{self, ListFilter, Patch, PatchRefused, SearchRow, TagsChange};
+use crate::db::users;
+use crate::error::{busy, tag_error, AppError, AppResult};
 use crate::http::views::{self, owned, readable};
 use crate::publish;
 use crate::state::AppState;
@@ -27,11 +30,24 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(view_parcel))
 }
 
-#[derive(Debug, Deserialize, IntoParams)]
+#[derive(Debug, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ListQuery {
-    /// Case-insensitive match on title, description or id.
+    /// Search: a case-insensitive substring of the id, title or description,
+    /// or full text (title, description, tags and the entry page's text;
+    /// web-search syntax: `"exact phrase"`, `-word`, `or`). Results are then
+    /// ordered by relevance, and carry `match` when the page text matched.
     pub q: Option<String>,
+    /// `mine` (default), `shared` (shared with you by email) or `all`.
+    #[param(inline)]
+    pub scope: Option<ListScope>,
+    /// Only parcels carrying this tag; repeat for several (all must match).
+    #[serde(default)]
+    #[param(style = Form, explode)]
+    pub tag: Vec<String>,
+    /// `exclude` (default), `include` or `only`.
+    #[param(inline)]
+    pub archived: Option<ArchivedFilter>,
     /// Page size (1–200, default 50).
     pub limit: Option<i64>,
     /// Rows to skip (default 0).
@@ -42,23 +58,53 @@ pub struct ListQuery {
     get,
     path = "/parcels",
     tag = "parcels",
-    description = "List the caller's parcels, most recently updated first.",
+    description = "List parcels: the caller's own by default, or those shared with them \
+        (`scope=shared`), or both (`scope=all`); most recently updated first, or by relevance \
+        with `q`. Filter by tags (`tag=a&tag=b`: all of them) and archive state. Items shared \
+        with the caller carry `shared`.",
     params(ListQuery),
     security(("bearer" = [])),
     responses(
         (status = 200, body = ParcelList),
+        (status = 400, body = ErrorBody),
         (status = 401, body = ErrorBody),
     )
 )]
 async fn list_parcels(
     State(state): State<AppState>,
     caller: AuthUser,
-    Query(q): Query<ListQuery>,
+    axum_extra::extract::Query(q): axum_extra::extract::Query<ListQuery>,
 ) -> AppResult<Json<ParcelList>> {
     Ok(Json(list(&state, &caller, &q).await?))
 }
 
-/// The caller's parcels (`GET /parcels`, and the MCP `list_parcels` tool).
+/// A list's filters for `caller`, checked and normalized (`GET /parcels`,
+/// `GET /tags`, and the MCP tools).
+pub(crate) fn list_filter(
+    caller: &AuthUser,
+    scope: Option<ListScope>,
+    tags: &[String],
+    archived: Option<ArchivedFilter>,
+    q: Option<&str>,
+) -> AppResult<ListFilter> {
+    let query = q.map(str::trim).filter(|q| !q.is_empty());
+    if query.is_some_and(|q| q.chars().count() > parcels::MAX_QUERY_CHARS) {
+        return Err(AppError::BadRequest(format!(
+            "q must be at most {} characters",
+            parcels::MAX_QUERY_CHARS
+        )));
+    }
+    Ok(ListFilter {
+        scope: scope.unwrap_or_default(),
+        user_id: caller.user.id,
+        email: caller.user.email.clone(),
+        tags: normalize_tags(tags).map_err(tag_error)?,
+        archived: archived.unwrap_or_default(),
+        query: query.map(str::to_string),
+    })
+}
+
+/// Parcels the caller can list (`GET /parcels`, and the MCP `list_parcels` tool).
 pub(crate) async fn list(
     state: &AppState,
     caller: &AuthUser,
@@ -66,15 +112,31 @@ pub(crate) async fn list(
 ) -> AppResult<ParcelList> {
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let offset = q.offset.unwrap_or(0).max(0);
-    let (rows, total) =
-        parcels::list_for_owner(&state.db, caller.user.id, q.q.as_deref(), limit, offset).await?;
+    let filter = list_filter(caller, q.scope, &q.tag, q.archived, q.q.as_deref())?;
+    let (rows, total) = parcels::search(&state.db, &filter, limit, offset).await?;
     Ok(ParcelList {
-        parcels: rows
-            .iter()
-            .map(|r| views::summary(&state.config, r))
-            .collect(),
+        parcels: rows.into_iter().map(|r| list_item(state, r)).collect(),
         total,
     })
+}
+
+fn list_item(state: &AppState, row: SearchRow) -> ParcelListItem {
+    let shared = match (row.share_role, row.shared_at) {
+        (Some(role), Some(shared_at)) => Some(SharedInfo {
+            owner_name: users::display_name(
+                row.owner_name.as_deref().unwrap_or_default(),
+                row.owner_email.as_deref().unwrap_or_default(),
+            ),
+            role: ShareRole::parse(&role).unwrap_or_default(),
+            shared_at,
+        }),
+        _ => None,
+    };
+    ParcelListItem {
+        parcel: views::summary(&state.config, &row.parcel),
+        matched: row.headline.as_deref().and_then(crate::search::segments),
+        shared,
+    }
 }
 
 /// Wait briefly for an upload slot; publishes hold their bytes in memory.
@@ -188,7 +250,9 @@ pub(crate) async fn detail(
     patch,
     path = "/parcels/{id}",
     tag = "parcels",
-    description = "Change a parcel's title, description or visibility. Files change only \
+    description = "Change a parcel's title, description or visibility (which counts as an \
+        update), or organize it: `tags` replaces the tag set, `add_tags`/`remove_tags` edit it, \
+        `archived` archives or unarchives (neither changes `updated_at`). Files change only \
         through new versions.",
     params(("id" = String, Path, description = "Parcel id")),
     request_body = UpdateParcelRequest,
@@ -209,7 +273,7 @@ async fn update_parcel(
     Ok(Json(update_metadata(&state, &caller, &id, &body).await?))
 }
 
-/// Change an owned parcel's title, description or visibility.
+/// Change an owned parcel's title, description, visibility, tags or archive state.
 pub(crate) async fn update_metadata(
     state: &AppState,
     caller: &AuthUser,
@@ -230,11 +294,48 @@ pub(crate) async fn update_metadata(
             "description must be at most 4000 characters".into(),
         ));
     }
-    parcels::update_metadata(&state.db, id, title, description, body.visibility).await?;
+    let tags = tags_change(body)?;
+    let patch = Patch {
+        title,
+        description,
+        visibility: body.visibility,
+        tags,
+        archived: body.archived,
+    };
+    match parcels::apply_patch(&state.db, caller.user.id, id, &patch).await? {
+        Ok(()) => {}
+        Err(PatchRefused::ParcelGone) => return Err(crate::error::not_found()),
+        Err(PatchRefused::Tags(e)) => return Err(tag_error(e)),
+    }
     let row = parcels::get(&state.db, id)
         .await?
         .ok_or_else(crate::error::not_found)?;
     Ok(views::summary(&state.config, &row))
+}
+
+/// A PATCH's tag change: a replacement or an edit, never both. Tags are
+/// normalized before anything is counted.
+fn tags_change(body: &UpdateParcelRequest) -> AppResult<TagsChange> {
+    let editing = !body.add_tags.is_empty() || !body.remove_tags.is_empty();
+    match &body.tags {
+        Some(_) if editing => Err(AppError::BadRequest(
+            "send either `tags` (the new set) or `add_tags`/`remove_tags`, not both".into(),
+        )),
+        Some(tags) => Ok(TagsChange::Replace(
+            normalize_tags(tags).map_err(tag_error)?,
+        )),
+        None if editing => {
+            let add = normalize_set(&body.add_tags).map_err(tag_error)?;
+            let remove = normalize_set(&body.remove_tags).map_err(tag_error)?;
+            if let Some(both) = add.intersection(&remove).next() {
+                return Err(AppError::BadRequest(format!(
+                    "tag {both:?} is in both add_tags and remove_tags"
+                )));
+            }
+            Ok(TagsChange::Edit { add, remove })
+        }
+        None => Ok(TagsChange::Keep),
+    }
 }
 
 #[utoipa::path(

@@ -54,6 +54,10 @@ async fn get_info(State(state): State<AppState>) -> Json<ServerInfo> {
             .into_iter()
             .map(String::from)
             .collect(),
+        features: parcel_types::FEATURES
+            .iter()
+            .map(|f| f.to_string())
+            .collect(),
     })
 }
 

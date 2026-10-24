@@ -104,6 +104,95 @@ pub struct ParcelSummary {
     /// Unresolved comment threads.
     #[serde(default)]
     pub open_comments: i64,
+    /// Sorted by bytes. Everyone who can view the parcel sees them.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// When the owner archived it. Archived parcels stay viewable by URL but
+    /// are left out of lists, tag counts and search unless asked for.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = DateTime))]
+    pub archived_at: Option<OffsetDateTime>,
+}
+
+/// Which parcels a list covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum ListScope {
+    /// Parcels the caller owns (the default).
+    #[default]
+    Mine,
+    /// Parcels other people shared with the caller by email.
+    Shared,
+    /// Both.
+    All,
+}
+
+/// How a list treats archived parcels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum ArchivedFilter {
+    /// Leave archived parcels out (the default).
+    #[default]
+    Exclude,
+    /// Archived and live parcels alike.
+    Include,
+    /// Archived parcels only.
+    Only,
+}
+
+/// One run of a search snippet: text, and whether it is a matched word.
+/// Render it as text (never as HTML): it is the parcel's own content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MatchSegment {
+    pub text: String,
+    pub hit: bool,
+}
+
+/// Where a full-text query matched the parcel's page text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ListMatch {
+    /// The snippet, in order; concatenated they read as a passage of the page.
+    pub segments: Vec<MatchSegment>,
+}
+
+/// How a parcel in a list came to be shared with the caller.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SharedInfo {
+    pub owner_name: String,
+    pub role: crate::sharing::ShareRole,
+    #[serde(with = "time::serde::rfc3339")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
+    pub shared_at: OffsetDateTime,
+}
+
+/// A parcel in `GET /api/v1/parcels`: the summary's fields, plus what the
+/// list knows about this caller and query.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ParcelListItem {
+    #[serde(flatten)]
+    pub parcel: ParcelSummary,
+    /// Set when `q` matched the parcel's page text.
+    #[serde(rename = "match", default, skip_serializing_if = "Option::is_none")]
+    pub matched: Option<ListMatch>,
+    /// Set when the caller isn't the owner (someone shared it with them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<SharedInfo>,
+}
+
+impl std::ops::Deref for ParcelListItem {
+    type Target = ParcelSummary;
+
+    fn deref(&self) -> &ParcelSummary {
+        &self.parcel
+    }
 }
 
 /// One immutable version of a parcel.
@@ -171,7 +260,7 @@ pub struct VersionList {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ParcelList {
-    pub parcels: Vec<ParcelSummary>,
+    pub parcels: Vec<ParcelListItem>,
     /// Total number of matching parcels (for pagination).
     pub total: i64,
 }
@@ -193,6 +282,13 @@ pub struct CreateParcelMetadata {
     pub entry: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Tags to start with (normalized; at most 20 with `auto_tags`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Tags a client derives from its environment (the CLI's
+    /// `project:<repo>`). Applied only when this call creates the parcel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_tags: Vec<String>,
 }
 
 /// The `metadata` part of a new-version (`POST /api/v1/parcels/{id}/versions`) upload.
@@ -218,6 +314,9 @@ pub struct NewVersionMetadata {
     /// Optimistic concurrency: fail with 409 unless this is still the current version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_version: Option<i32>,
+    /// Tags to add to the parcel (existing ones are kept).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add_tags: Vec<String>,
 }
 
 /// Returned by both create and new-version publishes.
@@ -239,6 +338,62 @@ pub struct UpdateParcelRequest {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<Visibility>,
+    /// Replace the tag set (`[]` clears it). Not with `add_tags`/`remove_tags`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    /// Tags to add.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add_tags: Vec<String>,
+    /// Tags to remove.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remove_tags: Vec<String>,
+    /// Archive (`true`) or unarchive (`false`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
+}
+
+/// One tag and how many of the listed parcels carry it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TagCount {
+    pub tag: String,
+    pub count: i64,
+}
+
+/// `GET /api/v1/tags`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TagList {
+    /// Most used first, then by name.
+    pub tags: Vec<TagCount>,
+    /// How many distinct tags match (for paging).
+    #[serde(default)]
+    pub total: i64,
+}
+
+/// `POST /api/v1/tags/rename`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RenameTagRequest {
+    pub from: String,
+    /// May be a tag already in use: the two merge.
+    pub to: String,
+}
+
+/// `POST /api/v1/tags/delete`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DeleteTagRequest {
+    pub tag: String,
+}
+
+/// How many of the caller's parcels a tag rename or delete changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TagsUpdated {
+    pub updated: i64,
 }
 
 /// `GET /api/v1/parcels/{id}/view` — what the viewer iframe loads.
@@ -340,7 +495,16 @@ pub struct ServerInfo {
     pub allow_public: bool,
     pub limits: Limits,
     pub allowed_extensions: Vec<String>,
+    /// Optional API features this server has (`tags`, `search`, `archive`,
+    /// …), so a newer client can refuse a parameter an older server would
+    /// silently ignore.
+    #[serde(default)]
+    pub features: Vec<String>,
 }
+
+/// The optional features this version of the API has, as listed in
+/// [`ServerInfo::features`]: what the server reports and what a client looks for.
+pub const FEATURES: &[&str] = &["tags", "search", "archive"];
 
 /// An API token as listed (never includes the secret).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -509,6 +673,67 @@ mod tests {
         assert!(err.is_err());
         let ok: CreateParcelMetadata = serde_json::from_str(r#"{"visibility":"public"}"#).unwrap();
         assert_eq!(ok.visibility, Some(Visibility::Public));
+    }
+
+    fn summary() -> ParcelSummary {
+        ParcelSummary {
+            id: "abcdefghijkm".into(),
+            title: "T".into(),
+            description: String::new(),
+            visibility: Visibility::Private,
+            current_version: 1,
+            entry: "index.html".into(),
+            file_count: 1,
+            total_bytes: 1,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            url: "https://x/p/abcdefghijkm".into(),
+            open_comments: 0,
+            tags: vec!["plan".into()],
+            archived_at: None,
+        }
+    }
+
+    #[test]
+    fn list_items_flatten_and_omit_what_is_unset() {
+        let item = ParcelListItem {
+            parcel: summary(),
+            matched: None,
+            shared: None,
+        };
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["id"], "abcdefghijkm");
+        assert_eq!(json["tags"], serde_json::json!(["plan"]));
+        assert!(json.get("match").is_none() && json.get("shared").is_none());
+        // What an older client reads: every summary field, where it was.
+        let old: ParcelSummary = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(old, item.parcel);
+        let back: ParcelListItem = serde_json::from_value(json).unwrap();
+        assert_eq!(back, item);
+        assert_eq!(back.title, "T", "derefs to the summary");
+    }
+
+    #[test]
+    fn older_server_responses_still_parse() {
+        let mut json = serde_json::to_value(summary()).unwrap();
+        let object = json.as_object_mut().unwrap();
+        object.remove("tags");
+        object.remove("archived_at");
+        let parsed: ParcelListItem = serde_json::from_value(json).unwrap();
+        assert!(parsed.tags.is_empty() && parsed.archived_at.is_none());
+    }
+
+    #[test]
+    fn update_request_sends_an_empty_tag_set() {
+        let clear = UpdateParcelRequest {
+            tags: Some(vec![]),
+            ..UpdateParcelRequest::default()
+        };
+        assert_eq!(serde_json::to_string(&clear).unwrap(), r#"{"tags":[]}"#);
+        assert_eq!(
+            serde_json::to_string(&UpdateParcelRequest::default()).unwrap(),
+            "{}"
+        );
     }
 
     #[test]

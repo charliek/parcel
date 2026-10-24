@@ -9,9 +9,14 @@
 //!    and write any object the store might not have yet.
 //! 3. In one transaction: lock, check limits and quota against the locked
 //!    state, insert the version and its file rows, advance `current_version`.
+//! 4. After the commit, index the new version's entry page for search in a
+//!    background task (`search::spawn_index`); publishing doesn't wait on it.
 //!
 //! A failure after step 2 leaves only unreferenced blobs, which GC collects
 //! after the grace period.
+//!
+//! Lock order, here and in every other write that takes both: the owner's
+//! advisory lock (`lock_owner_quota`), then the parcel's row lock.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -19,13 +24,14 @@ use axum::extract::multipart::{Multipart, MultipartError};
 use bytes::{Bytes, BytesMut};
 use parcel_types::media;
 use parcel_types::paths::{self, validate_path};
+use parcel_types::tags;
 use parcel_types::{CreateParcelMetadata, Limits, NewVersionMetadata, PublishMode};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::db::{blobs, parcels, parcels::FileRow};
-use crate::error::{too_large, AppError};
+use crate::error::{tag_error, too_large, AppError};
 use crate::state::AppState;
 use crate::storage::blob_key;
 
@@ -420,6 +426,14 @@ async fn precheck_quota(state: &AppState, owner_id: Uuid, adding: i64) -> Result
     check_quota(limits, usage.stored_bytes, adding)
 }
 
+/// The entry page's path and bytes, when this upload carries it.
+fn uploaded_entry(uploads: &[Upload], entry: &str) -> Option<(String, Bytes)> {
+    uploads
+        .iter()
+        .find(|u| u.path == entry)
+        .map(|u| (u.path.clone(), u.bytes.clone()))
+}
+
 fn new_parcel_id() -> String {
     let bytes: [u8; parcel_types::ids::ID_LEN] = rand::random();
     parcel_types::ids::parcel_id_from_bytes(bytes)
@@ -458,6 +472,9 @@ pub async fn create(
         clean_text(meta.description, MAX_DESCRIPTION_CHARS, "description")?.unwrap_or_default();
     let label = clean_text(meta.label, MAX_LABEL_CHARS, "label")?.filter(|l| !l.is_empty());
     let visibility = meta.visibility.unwrap_or_default();
+    // Auto tags count only here, on the call that creates the parcel.
+    let all_tags: Vec<&String> = meta.tags.iter().chain(&meta.auto_tags).collect();
+    let tags = tags::normalize_tags(&all_tags).map_err(tag_error)?;
 
     // Cheap pre-check so a request that will be refused never writes bytes;
     // the authoritative check runs again under the quota lock below.
@@ -476,7 +493,16 @@ pub async fn create(
         parcels::lock_owner_quota(&mut tx, owner_id).await?;
         let stored = parcels::stored_bytes_tx(&mut tx, owner_id).await?;
         check_quota(limits, stored, total)?;
-        match parcels::insert_parcel(&mut tx, &id, owner_id, &title, &description, visibility).await
+        match parcels::insert_parcel(
+            &mut tx,
+            &id,
+            owner_id,
+            &title,
+            &description,
+            visibility,
+            &tags,
+        )
+        .await
         {
             Ok(()) => {}
             Err(e) if attempt < 2 && is_unique_violation(&e) => continue,
@@ -497,6 +523,8 @@ pub async fn create(
         tx.commit()
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
+        let entry_upload = uploaded_entry(&uploads, &entry);
+        crate::search::spawn_index(state.clone(), id.clone(), 1, entry_upload);
         return Ok(id);
     }
     Err(AppError::Internal(anyhow::anyhow!(
@@ -588,18 +616,24 @@ pub async fn add_version(
         MAX_DESCRIPTION_CHARS,
         "description",
     )?;
+    let add_tags = tags::normalize_set(&meta.add_tags).map_err(tag_error)?;
 
     let mut tx = state
         .db
         .begin()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-    let (owner, current) = parcels::lock_for_update(&mut tx, parcel_id)
+    // The owner's lock before the row lock (the one order; see the module
+    // docs). Taken for the caller: a non-owner only serializes with itself
+    // and is refused below.
+    parcels::lock_owner_quota(&mut tx, owner_id).await?;
+    let locked = parcels::lock_for_update(&mut tx, parcel_id)
         .await?
         .ok_or_else(crate::error::not_found)?;
-    if owner != owner_id {
+    if locked.owner_id != owner_id {
         return Err(crate::error::not_found());
     }
+    let current = locked.current_version;
     if let Some(base) = meta.base_version {
         if base != current {
             return Err(stale_base(current, base));
@@ -639,8 +673,12 @@ pub async fn add_version(
     let previous_entry = previous.as_ref().map(|v| v.entry.as_str());
     let entry = resolve_entry(meta.entry.as_deref(), &manifest, previous_entry)?;
     let total = check_version_limits(&manifest, &entry, limits)?;
+    let new_tags = if add_tags.is_empty() {
+        None
+    } else {
+        Some(tags::edit_tags(&locked.tags, &add_tags, &Default::default()).map_err(tag_error)?)
+    };
 
-    parcels::lock_owner_quota(&mut tx, owner_id).await?;
     let stored = parcels::stored_bytes_tx(&mut tx, owner_id).await?;
     check_quota(limits, stored, total)?;
 
@@ -664,11 +702,19 @@ pub async fn add_version(
         title.as_deref(),
         description.as_deref(),
         meta.visibility,
+        false,
     )
     .await?;
+    // A new version also un-archives: the version-change trigger (migration
+    // 0006) clears `archived_at`, for older revisions' publishes too.
+    if new_tags.is_some() {
+        parcels::update_organization(&mut tx, parcel_id, new_tags.as_deref(), None).await?;
+    }
     tx.commit()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
+    let entry_upload = uploaded_entry(&uploads, &entry);
+    crate::search::spawn_index(state.clone(), parcel_id.to_string(), version, entry_upload);
     Ok(version)
 }
 

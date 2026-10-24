@@ -413,6 +413,22 @@ pub fn token_for(sub: &str, email: &str) -> String {
     format!("{TEST_USER}{sub}:{email}")
 }
 
+/// A person: their stand-in credential and email.
+pub struct Person {
+    pub token: String,
+    pub email: String,
+}
+
+/// A fresh person whose email starts with `name`.
+pub fn person(name: &str) -> Person {
+    let sub = uuid::Uuid::new_v4().simple().to_string();
+    let email = format!("{name}-{sub}@example.com");
+    Person {
+        token: token_for(&sub, &email),
+        email,
+    }
+}
+
 pub async fn body_bytes(response: Response) -> Vec<u8> {
     response
         .into_body()
@@ -440,6 +456,11 @@ pub async fn expect_status(response: Response, status: StatusCode) -> Response {
         "expected {status}, got {got}: {}",
         String::from_utf8_lossy(&body)
     );
+}
+
+/// Assert a status and parse the JSON body.
+pub async fn expect_json<T: DeserializeOwned>(response: Response, status: StatusCode) -> T {
+    json(expect_status(response, status).await).await
 }
 
 /// A multipart/form-data body, built by hand so tests control every byte.

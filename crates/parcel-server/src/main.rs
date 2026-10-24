@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 
 use parcel_server::config::Config;
 use parcel_server::state::AppState;
-use parcel_server::{db, gc, http};
+use parcel_server::{db, gc, http, search};
 
 #[derive(Parser)]
 #[command(name = "parcel-server", version, about = "Parcel server")]
@@ -25,6 +25,10 @@ enum Command {
     Migrate,
     /// Garbage-collect unreferenced blobs once and exit.
     Gc,
+    /// Index every parcel whose page text isn't searchable yet (after a
+    /// deploy that adds search; the server's own loop gets there too, a
+    /// minute at a time) and exit.
+    Reindex,
 }
 
 #[tokio::main]
@@ -62,6 +66,17 @@ async fn main() -> anyhow::Result<()> {
             let grace = state.config.gc_grace;
             let report = gc::run_once(&state, grace).await?;
             tracing::info!(?report, "gc completed");
+            Ok(())
+        }
+        Command::Reindex => {
+            let state = AppState::new(config)?;
+            // No attempt cap: an operator asked for everything to be tried.
+            let report = search::drain(&state, None, i16::MAX).await?;
+            tracing::info!(
+                indexed = report.indexed,
+                failed = report.failed,
+                "reindex completed"
+            );
             Ok(())
         }
         Command::Openapi => unreachable!("handled before configuration was loaded"),

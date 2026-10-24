@@ -236,12 +236,12 @@ Types are in `crates/parcel-types/src/api.rs`.
 | GET | `/health/live`, `/health/ready` | — | plain, not in spec |
 | GET | `/auth/login`, `/auth/callback`; POST `/auth/logout` | — | browser sign-in redirects, not in spec (see v0.3) |
 | GET | `/openapi.json`; `/docs` (non-prod) | — | spec / Swagger UI |
-| GET | `/api/v1/info` | — | `ServerInfo` |
+| GET | `/api/v1/info` | — | `ServerInfo` (with `features`: optional API features such as `tags`, `search`, `archive`) |
 | GET | `/api/v1/me` | required | `Me` |
-| GET | `/api/v1/parcels?q=&limit=&offset=` | required | `ParcelList` (owned) |
+| GET | `/api/v1/parcels?scope=&tag=&tag=&archived=&q=&limit=&offset=` | required | `ParcelList` of `ParcelListItem` (summary fields flattened, plus `match` snippet segments and `shared`); `scope` = `mine` (default) / `shared` / `all`, tags AND, `archived` = `exclude` (default) / `include` / `only`, `q` = substring or full text, ranked |
 | POST | `/api/v1/parcels` | required | multipart (`metadata` JSON part = `CreateParcelMetadata`, `file` parts whose *filename* is the published path) → 201 `PublishResult` |
 | GET | `/api/v1/parcels/{id}` | viewers | `ParcelDetail` (with `access`, `owner_name`) |
-| PATCH | `/api/v1/parcels/{id}` | owner | `UpdateParcelRequest` → `ParcelSummary` |
+| PATCH | `/api/v1/parcels/{id}` | owner | `UpdateParcelRequest` → `ParcelSummary` (`tags` replace or `add_tags`/`remove_tags`, `archived`; neither bumps `updated_at`) |
 | DELETE | `/api/v1/parcels/{id}` | owner | 204 |
 | GET | `/api/v1/parcels/{id}/view?version=N` | viewers | `ViewGrant` (signed content URL) |
 | GET | `/api/v1/parcels/{id}/versions` | viewers | `VersionList` |
@@ -264,7 +264,10 @@ Types are in `crates/parcel-types/src/api.rs`.
 | GET/PUT/PATCH/DELETE | `/api/v1/parcels/{id}/data/{collection}/{key}` | read: viewers; write: owner | any JSON → `DataItem` (PATCH = RFC 7386 merge) / 204 |
 | GET | `/api/v1/parcels/{id}/shares` | owner | `ShareList` |
 | PUT/DELETE | `/api/v1/parcels/{id}/shares/{email}` | owner | `PutShareRequest` → `Share` / 204 |
-| GET | `/api/v1/shared?limit=&offset=` | required | `SharedParcelList` (shared with me by email) |
+| GET | `/api/v1/shared?limit=&offset=` | required | `SharedParcelList` (shared with me by email; legacy, unchanged: archived included) |
+| GET | `/api/v1/tags?scope=&tag=&q=&archived=&prefix=&limit=&offset=` | required | `TagList` (facet counts over the parcels the same filters select; limit ≤ 1000) |
+| POST | `/api/v1/tags/rename` | required | `RenameTagRequest` → `TagsUpdated` (the caller's parcels; merges) |
+| POST | `/api/v1/tags/delete` | required | `DeleteTagRequest` → `TagsUpdated` (the caller's parcels) |
 | GET | anything else | — | SPA (`index.html` fallback) when `PARCEL_STATIC_DIR` is set |
 
 Content host (`PARCEL_CONTENT_ORIGIN`): `GET /v/{token}/{path}` serves a file

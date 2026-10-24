@@ -14,6 +14,7 @@ pub mod gc;
 pub mod http;
 pub mod mcp;
 pub mod publish;
+pub mod search;
 pub mod state;
 pub mod storage;
 

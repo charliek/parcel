@@ -397,6 +397,7 @@ impl ParcelMcp {
                             q: p.query,
                             limit: Some(limit),
                             offset: Some(offset),
+                            ..ListQuery::default()
                         };
                         let list = parcel_api::list(&self.state, &me, &q)
                             .await
@@ -542,6 +543,7 @@ impl ParcelMcp {
                     visibility: p.visibility,
                     entry: p.entry,
                     label: p.label,
+                    ..CreateParcelMetadata::default()
                 };
                 let id = publish::create(&self.state, me.user.id, meta, uploads)
                     .await
@@ -595,6 +597,7 @@ impl ParcelMcp {
                         title: p.title,
                         description: p.description,
                         visibility: p.visibility,
+                        ..UpdateParcelRequest::default()
                     };
                     let summary = parcel_api::update_metadata(&self.state, &me, &id, &body)
                         .await
@@ -619,6 +622,7 @@ impl ParcelMcp {
                     description: p.description,
                     visibility: p.visibility,
                     base_version: p.base_version,
+                    ..NewVersionMetadata::default()
                 };
                 let result = version_api::publish_version(&self.state, &me, &id, meta, uploads)
                     .await

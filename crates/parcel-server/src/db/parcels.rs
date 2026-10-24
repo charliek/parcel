@@ -1,7 +1,10 @@
 //! Parcels, their versions, and each version's files.
 
 use anyhow::{Context, Result};
-use parcel_types::{FileEntry, Usage, Visibility};
+use parcel_types::{ArchivedFilter, FileEntry, ListScope, Usage, Visibility};
+use std::collections::BTreeSet;
+
+use parcel_types::tags::{edit_tags, TagError};
 use sqlx::{AssertSqlSafe, PgExecutor, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -17,6 +20,8 @@ pub struct ParcelRow {
     pub current_version: i32,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+    pub tags: Vec<String>,
+    pub archived_at: Option<OffsetDateTime>,
     pub entry: String,
     pub file_count: i32,
     pub total_bytes: i64,
@@ -61,7 +66,7 @@ impl From<FileRow> for FileEntry {
 macro_rules! parcel_columns {
     () => {
         "p.id, p.owner_id, p.title, p.description, p.visibility,
-            p.current_version, p.created_at, p.updated_at,
+            p.current_version, p.created_at, p.updated_at, p.tags, p.archived_at,
             v.entry, v.file_count, v.total_bytes,
             (SELECT count(*) FROM comments c
               WHERE c.parcel_id = p.id AND c.parent_number IS NULL
@@ -90,39 +95,198 @@ pub async fn get(pool: &PgPool, id: &str) -> Result<Option<ParcelRow>> {
         .context("loading parcel")
 }
 
-/// Owned parcels, most recently updated first, optionally filtered by a
-/// case-insensitive substring of title, description or id.
-pub async fn list_for_owner(
+/// What a parcel list (or its tag counts) covers. Every scope, filter and
+/// query goes through [`search`] and [`tag_counts`], which share one scoped
+/// relation, so results, totals, snippets and facet counts always agree.
+#[derive(Debug, Clone)]
+pub struct ListFilter {
+    pub scope: ListScope,
+    /// The caller: owner for `mine`, and never "shared with" themselves.
+    pub user_id: Uuid,
+    /// The caller's email, which shares are matched against.
+    pub email: String,
+    /// Normalized; a parcel must carry all of them.
+    pub tags: Vec<String>,
+    pub archived: ArchivedFilter,
+    /// Trimmed and non-empty, or `None`.
+    pub query: Option<String>,
+}
+
+/// A row of [`search`]: the parcel, how it is shared with the caller (when
+/// they aren't the owner), and the raw snippet when `query` matched page text.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SearchRow {
+    #[sqlx(flatten)]
+    pub parcel: ParcelRow,
+    pub owner_name: Option<String>,
+    pub owner_email: Option<String>,
+    pub share_role: Option<String>,
+    pub shared_at: Option<OffsetDateTime>,
+    /// `ts_headline` output, with matched words between `\x02` and `\x03`.
+    pub headline: Option<String>,
+}
+
+/// `ts_headline` options: one short fragment, matched words wrapped in
+/// control characters that extraction strips from page text, so a marker in
+/// the output can only be one `ts_headline` put there.
+pub const HEADLINE_OPTIONS: &str =
+    "MaxFragments=1, MaxWords=24, MinWords=10, StartSel=\u{2}, StopSel=\u{3}";
+
+/// Longest `q` accepted (characters).
+pub const MAX_QUERY_CHARS: usize = 500;
+
+// The scoped relation. Fixed fragments only; every value is a bound
+// parameter, numbered the same in every query built here:
+//   $1 caller id, $2 caller email, $3 tags (text[]), $4 q, $5 q as an
+//   ILIKE pattern. Queries add their own parameters from $6.
+// One relation serves every scope: the share and owner joins match only
+// parcels the caller doesn't own, so the share columns are set exactly when
+// a share brought the parcel to them, and a scope is just its WHERE. A
+// share is matched by (parcel_id, email), the primary key, so a parcel
+// joins at most one share row. Without `q`, `params.tsq` is NULL and the
+// rank is 0 throughout.
+const PARAMS_CTE: &str = "WITH params AS (SELECT websearch_to_tsquery('english', $4) AS tsq)";
+const SCOPED_FROM: &str = concat!(
+    parcel_from!(),
+    "
+     LEFT JOIN parcel_shares s
+       ON s.parcel_id = p.id AND s.email = lower($2) AND p.owner_id <> $1
+     LEFT JOIN users o ON o.id = p.owner_id AND s.parcel_id IS NOT NULL
+     CROSS JOIN params"
+);
+const SHARED_COLUMNS: &str = "o.name AS owner_name, o.email AS owner_email,
+            s.role AS share_role, s.created_at AS shared_at";
+const TAGS_CLAUSE: &str = "\n       AND p.tags @> $3::text[]";
+// A query that parses to no lexemes (only stop words or punctuation) has
+// numnode 0: then only the substring match applies.
+const QUERY_CLAUSE: &str = "
+       AND (p.id ILIKE $5 ESCAPE '\\' OR p.title ILIKE $5 ESCAPE '\\'
+            OR p.description ILIKE $5 ESCAPE '\\'
+            OR (numnode(params.tsq) > 0 AND p.search_vec @@ params.tsq))";
+const RANK: &str =
+    "CASE WHEN numnode(params.tsq) > 0 THEN ts_rank_cd(p.search_vec, params.tsq) ELSE 0 END";
+
+/// The `WHERE` conditions of the scoped relation for a filter.
+fn conditions(f: &ListFilter) -> String {
+    let scope = match f.scope {
+        ListScope::Mine => "p.owner_id = $1",
+        ListScope::Shared => "s.parcel_id IS NOT NULL",
+        ListScope::All => "(p.owner_id = $1 OR s.parcel_id IS NOT NULL)",
+    };
+    let archived = match f.archived {
+        ArchivedFilter::Exclude => "\n       AND p.archived_at IS NULL",
+        ArchivedFilter::Include => "",
+        ArchivedFilter::Only => "\n       AND p.archived_at IS NOT NULL",
+    };
+    let tags = if f.tags.is_empty() { "" } else { TAGS_CLAUSE };
+    let query = if f.query.is_some() { QUERY_CLAUSE } else { "" };
+    format!("{scope}{archived}{tags}{query}")
+}
+
+/// Bind the parameters every scoped query shares ($1–$5).
+fn bind_filter<'q, O>(
+    query: sqlx::query::QueryAs<'q, Postgres, O, sqlx::postgres::PgArguments>,
+    f: &'q ListFilter,
+) -> sqlx::query::QueryAs<'q, Postgres, O, sqlx::postgres::PgArguments> {
+    query
+        .bind(f.user_id)
+        .bind(f.email.as_str())
+        .bind(f.tags.as_slice())
+        .bind(f.query.as_deref())
+        .bind(f.query.as_deref().map(|q| format!("%{}%", escape_like(q))))
+}
+
+/// One page of a parcel list, and the total. With a query, ordered by
+/// relevance (`ts_rank_cd`, title over description and tags over page text)
+/// then recency; without, by recency. Snippets are computed only for the
+/// page's rows, after `LIMIT`.
+pub async fn search(
     pool: &PgPool,
-    owner_id: Uuid,
-    query: Option<&str>,
+    f: &ListFilter,
     limit: i64,
     offset: i64,
-) -> Result<(Vec<ParcelRow>, i64)> {
-    let pattern = query
-        .map(str::trim)
-        .filter(|q| !q.is_empty())
-        .map(|q| format!("%{}%", escape_like(q)));
-    let filter = "p.owner_id = $1 AND ($2::text IS NULL
-        OR p.title ILIKE $2 ESCAPE '\\' OR p.description ILIKE $2 ESCAPE '\\' OR p.id ILIKE $2 ESCAPE '\\')";
-    let rows = sqlx::query_as::<_, ParcelRow>(AssertSqlSafe(format!(
-        "{PARCEL_SELECT} WHERE {filter} ORDER BY p.updated_at DESC, p.id LIMIT $3 OFFSET $4"
-    )))
-    .bind(owner_id)
+) -> Result<(Vec<SearchRow>, i64)> {
+    let conditions = conditions(f);
+    let headline = if f.query.is_some() {
+        "(SELECT CASE WHEN numnode(params.tsq) > 0 AND x.search_text <> ''
+                      THEN ts_headline('english', x.search_text, params.tsq, $8) END
+            FROM parcels x WHERE x.id = page.id)"
+    } else {
+        "NULL::text"
+    };
+    let rows = bind_filter(
+        sqlx::query_as::<_, SearchRow>(AssertSqlSafe(format!(
+            "{PARAMS_CTE}, page AS (
+             SELECT {PARCEL_COLUMNS}, {SHARED_COLUMNS}, {RANK} AS search_rank
+             {SCOPED_FROM}
+             WHERE {conditions}
+             ORDER BY search_rank DESC, p.updated_at DESC, p.id
+             LIMIT $6 OFFSET $7)
+             SELECT page.*, {headline} AS headline
+             FROM page CROSS JOIN params
+             ORDER BY page.search_rank DESC, page.updated_at DESC, page.id"
+        ))),
+        f,
+    )
+    .bind(limit)
+    .bind(offset)
+    .bind(HEADLINE_OPTIONS)
+    .fetch_all(pool);
+    let total = bind_filter(
+        sqlx::query_as::<_, (i64,)>(AssertSqlSafe(format!(
+            "{PARAMS_CTE} SELECT count(*) {SCOPED_FROM} WHERE {conditions}"
+        ))),
+        f,
+    )
+    .fetch_one(pool);
+    let (rows, (total,)) =
+        tokio::try_join!(async { rows.await.context("listing parcels") }, async {
+            total.await.context("counting parcels")
+        },)?;
+    Ok((rows, total))
+}
+
+/// Tags on the parcels a filter covers, with how many of them carry each
+/// (facet counts): most used first, then by name. `prefix` (normalized)
+/// keeps tags that start with it. Returns a page and the distinct total.
+pub async fn tag_counts(
+    pool: &PgPool,
+    f: &ListFilter,
+    prefix: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<(String, i64)>, i64)> {
+    let pattern = prefix.map(|p| format!("{}%", escape_like(p)));
+    let relation = format!(
+        "{SCOPED_FROM}
+     CROSS JOIN LATERAL unnest(p.tags) AS t(tag)
+     WHERE {}
+       AND ($6::text IS NULL OR t.tag LIKE $6 ESCAPE '\\')",
+        conditions(f)
+    );
+    let rows = bind_filter(
+        sqlx::query_as::<_, (String, i64)>(AssertSqlSafe(format!(
+            "{PARAMS_CTE} SELECT t.tag, count(*) AS n {relation}
+             GROUP BY t.tag ORDER BY n DESC, t.tag COLLATE \"C\" LIMIT $7 OFFSET $8"
+        ))),
+        f,
+    )
     .bind(pattern.as_deref())
     .bind(limit)
     .bind(offset)
-    .fetch_all(pool)
-    .await
-    .context("listing parcels")?;
-    let total: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
-        "SELECT count(*) FROM parcels p WHERE {filter}"
-    )))
-    .bind(owner_id)
+    .fetch_all(pool);
+    let total = bind_filter(
+        sqlx::query_as::<_, (i64,)>(AssertSqlSafe(format!(
+            "{PARAMS_CTE} SELECT count(DISTINCT t.tag) {relation}"
+        ))),
+        f,
+    )
     .bind(pattern.as_deref())
-    .fetch_one(pool)
-    .await
-    .context("counting parcels")?;
+    .fetch_one(pool);
+    let (rows, (total,)) =
+        tokio::try_join!(async { rows.await.context("counting tags") }, async {
+            total.await.context("counting distinct tags")
+        },)?;
     Ok((rows, total))
 }
 
@@ -256,28 +420,104 @@ pub async fn version_entry(pool: &PgPool, parcel_id: &str, version: i32) -> Resu
     .context("loading version entry")
 }
 
-pub async fn update_metadata(
+/// How a PATCH changes the tag set.
+#[derive(Debug, Clone, Default)]
+pub enum TagsChange {
+    #[default]
+    Keep,
+    /// Normalized and capped already.
+    Replace(Vec<String>),
+    /// Normalized; the result is capped under the row lock.
+    Edit {
+        add: BTreeSet<String>,
+        remove: BTreeSet<String>,
+    },
+}
+
+/// A PATCH of an owned parcel. Title, description and visibility are
+/// edits (they bump `updated_at`); tags and archive state are organization
+/// (they don't, so tidying never reorders the list).
+#[derive(Debug, Clone, Default)]
+pub struct Patch<'a> {
+    pub title: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub visibility: Option<Visibility>,
+    pub tags: TagsChange,
+    pub archived: Option<bool>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PatchRefused {
+    ParcelGone,
+    Tags(TagError),
+}
+
+/// Apply a PATCH in one transaction: the owner's lock, then the parcel's
+/// row lock (the one lock order, so a concurrent publish or tag rename
+/// can't deadlock with it), then the tag edit computed against the locked
+/// row, so two concurrent edits never lose each other's tags.
+pub async fn apply_patch(
     pool: &PgPool,
+    owner_id: Uuid,
     id: &str,
-    title: Option<&str>,
-    description: Option<&str>,
-    visibility: Option<Visibility>,
+    patch: &Patch<'_>,
+) -> Result<Result<(), PatchRefused>> {
+    let mut tx = pool.begin().await.context("beginning parcel update")?;
+    lock_owner_quota(&mut tx, owner_id).await?;
+    let Some(locked) = lock_for_update(&mut tx, id).await? else {
+        return Ok(Err(PatchRefused::ParcelGone));
+    };
+    if locked.owner_id != owner_id {
+        return Ok(Err(PatchRefused::ParcelGone));
+    }
+    let tags = match &patch.tags {
+        TagsChange::Keep => None,
+        TagsChange::Replace(tags) => Some(tags.clone()),
+        TagsChange::Edit { add, remove } => match edit_tags(&locked.tags, add, remove) {
+            Ok(tags) => Some(tags),
+            Err(e) => return Ok(Err(PatchRefused::Tags(e))),
+        },
+    };
+    if tags.is_some() || patch.archived.is_some() {
+        update_organization(&mut tx, id, tags.as_deref(), patch.archived).await?;
+    }
+    if patch.title.is_some() || patch.description.is_some() || patch.visibility.is_some() {
+        update_metadata_tx(
+            &mut tx,
+            id,
+            patch.title,
+            patch.description,
+            patch.visibility,
+            true,
+        )
+        .await?;
+    }
+    tx.commit().await.context("committing parcel update")?;
+    Ok(Ok(()))
+}
+
+/// Set the tags and/or the archive state, leaving `updated_at` alone.
+/// `archived: Some(true)` keeps an existing archive time.
+pub async fn update_organization(
+    tx: &mut Transaction<'_, Postgres>,
+    id: &str,
+    tags: Option<&[String]>,
+    archived: Option<bool>,
 ) -> Result<()> {
     sqlx::query(
         "UPDATE parcels SET
-             title = COALESCE($2, title),
-             description = COALESCE($3, description),
-             visibility = COALESCE($4, visibility),
-             updated_at = now()
+             tags = COALESCE($2, tags),
+             archived_at = CASE WHEN $3::boolean IS NULL THEN archived_at
+                                WHEN $3 THEN COALESCE(archived_at, now())
+                                ELSE NULL END
          WHERE id = $1",
     )
     .bind(id)
-    .bind(title)
-    .bind(description)
-    .bind(visibility.map(Visibility::as_str))
-    .execute(pool)
+    .bind(tags)
+    .bind(archived)
+    .execute(&mut **tx)
     .await
-    .context("updating parcel")?;
+    .context("updating parcel tags or archive state")?;
     Ok(())
 }
 
@@ -323,28 +563,39 @@ pub async fn insert_parcel(
     title: &str,
     description: &str,
     visibility: Visibility,
+    tags: &[String],
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO parcels (id, owner_id, title, description, visibility, current_version)
-         VALUES ($1, $2, $3, $4, $5, 0)",
+        "INSERT INTO parcels (id, owner_id, title, description, visibility, tags, current_version)
+         VALUES ($1, $2, $3, $4, $5, $6, 0)",
     )
     .bind(id)
     .bind(owner_id)
     .bind(title)
     .bind(description)
     .bind(visibility.as_str())
+    .bind(tags)
     .execute(&mut **tx)
     .await
     .context("inserting parcel")?;
     Ok(())
 }
 
-/// Lock a parcel for a new version; returns `(owner_id, current_version)`.
+/// A parcel's row, locked for the rest of the transaction.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct LockedParcel {
+    pub owner_id: Uuid,
+    pub current_version: i32,
+    pub tags: Vec<String>,
+}
+
+/// Lock a parcel's row. Callers that also take the owner's lock take it
+/// first ([`lock_owner_quota`], then this): one order everywhere.
 pub async fn lock_for_update(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
-) -> Result<Option<(Uuid, i32)>> {
-    sqlx::query_as("SELECT owner_id, current_version FROM parcels WHERE id = $1 FOR UPDATE")
+) -> Result<Option<LockedParcel>> {
+    sqlx::query_as("SELECT owner_id, current_version, tags FROM parcels WHERE id = $1 FOR UPDATE")
         .bind(id)
         .fetch_optional(&mut **tx)
         .await
@@ -407,25 +658,29 @@ pub async fn insert_version(tx: &mut Transaction<'_, Postgres>, v: &NewVersion<'
     Ok(())
 }
 
-/// Apply optional metadata changes inside a publish transaction.
+/// Apply optional metadata changes inside a transaction. `touch` bumps
+/// `updated_at` (a PATCH; a publish has already bumped it).
 pub async fn update_metadata_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
     title: Option<&str>,
     description: Option<&str>,
     visibility: Option<Visibility>,
+    touch: bool,
 ) -> Result<()> {
     sqlx::query(
         "UPDATE parcels SET
              title = COALESCE($2, title),
              description = COALESCE($3, description),
-             visibility = COALESCE($4, visibility)
+             visibility = COALESCE($4, visibility),
+             updated_at = CASE WHEN $5 THEN now() ELSE updated_at END
          WHERE id = $1",
     )
     .bind(id)
     .bind(title)
     .bind(description)
     .bind(visibility.map(Visibility::as_str))
+    .bind(touch)
     .execute(&mut **tx)
     .await
     .context("updating parcel metadata")?;
@@ -447,7 +702,9 @@ pub async fn stored_bytes_tx(tx: &mut Transaction<'_, Postgres>, owner_id: Uuid)
 }
 
 /// Serialize a user's publishes so two concurrent uploads can't both pass
-/// the quota check. Transaction-scoped: released at commit/rollback.
+/// the quota check; also held by every other write that touches several of
+/// the owner's parcels or rewrites one's tags. Always taken before any
+/// parcel row lock. Transaction-scoped: released at commit/rollback.
 pub async fn lock_owner_quota(tx: &mut Transaction<'_, Postgres>, owner_id: Uuid) -> Result<()> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 7101))")
         .bind(owner_id)

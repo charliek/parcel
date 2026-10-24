@@ -124,6 +124,16 @@ pub async fn load_blob(state: &AppState, sha256: &str) -> anyhow::Result<Option<
     Ok(Some(bytes))
 }
 
+/// Read a blob for a bulk reader (search indexing): from the cache when it
+/// is there, but without filling it, so a sweep over many pages doesn't
+/// evict the blobs viewers are using.
+pub async fn peek_blob(state: &AppState, sha256: &str) -> anyhow::Result<Option<Bytes>> {
+    if let Some(bytes) = state.blob_cache.get(sha256).await {
+        return Ok(Some(bytes));
+    }
+    Ok(state.blobs.get(&blob_key(sha256)).await?)
+}
+
 enum Denied {
     Expired,
     Invalid,

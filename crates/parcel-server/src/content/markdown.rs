@@ -25,15 +25,17 @@ img { max-width:100%; }
 hr { border:0; border-top:1px solid var(--border); margin:24px 0; }
 "#;
 
+/// The Markdown dialect pages are written in (search indexes the same one).
+pub const OPTIONS: Options = Options::ENABLE_TABLES
+    .union(Options::ENABLE_STRIKETHROUGH)
+    .union(Options::ENABLE_TASKLISTS)
+    .union(Options::ENABLE_FOOTNOTES);
+
 /// Render Markdown into a complete HTML document.
 pub fn render(markdown: &str, fallback_title: &str) -> String {
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_FOOTNOTES;
     let title = first_heading(markdown).unwrap_or_else(|| fallback_title.to_string());
     let mut body = String::with_capacity(markdown.len() * 3 / 2);
-    html::push_html(&mut body, Parser::new_ext(markdown, options));
+    html::push_html(&mut body, Parser::new_ext(markdown, OPTIONS));
     format!(
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\

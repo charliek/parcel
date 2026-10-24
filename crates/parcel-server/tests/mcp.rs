@@ -1031,6 +1031,23 @@ async fn restore_makes_an_old_version_current() {
         &["parcel:read", "parcel:write"],
     );
     let id = publish_page(&app, &token, "<title>One</title>").await;
+    // A new version, published or restored here, un-archives as it does
+    // through the REST API (the version-change trigger, migration 0006).
+    let archive = || async {
+        sqlx::query("UPDATE parcels SET archived_at = now() WHERE id = $1")
+            .bind(&id)
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+    };
+    let archived = || async {
+        sqlx::query_scalar::<_, bool>("SELECT archived_at IS NOT NULL FROM parcels WHERE id = $1")
+            .bind(&id)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap()
+    };
+    archive().await;
     let (_, _) = call(
         &app,
         &token,
@@ -1038,6 +1055,8 @@ async fn restore_makes_an_old_version_current() {
         json!({"parcel": id, "mode": "replace", "files": [{"path": "index.html", "content": "<title>Two</title>"}]}),
     )
     .await;
+    assert!(!archived().await, "update_parcel un-archives");
+    archive().await;
     let (err, restored) = call(
         &app,
         &token,
@@ -1047,6 +1066,7 @@ async fn restore_makes_an_old_version_current() {
     .await;
     assert!(!err, "{restored}");
     assert_eq!(restored["version"]["version"], 3);
+    assert!(!archived().await, "restore_version un-archives");
     let (_, content) = read_file(&app, &token, json!({"parcel": id})).await;
     assert_eq!(content, "<title>One</title>");
 }
