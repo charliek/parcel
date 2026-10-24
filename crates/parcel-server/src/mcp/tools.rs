@@ -161,7 +161,7 @@ pub struct DeleteTagParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ParcelRef {
-    /// Parcel id (12 characters) or its URL (…/p/<id>).
+    /// Parcel ref: id, URL, `@handle/slug`, or the slug of one of yours.
     pub parcel: String,
 }
 
@@ -660,8 +660,9 @@ impl ParcelMcp {
     }
 
     #[tool(
-        description = "A parcel's details: title, url, visibility, your access, its version \
-            history and the current version's files. Works for parcels shared with you too.",
+        description = "A parcel's details: title, url, canonical_url, visibility, tags, slug, \
+            your access, its version history, and the current version's files and pages \
+            ([{path, title}]). Works for parcels shared with you too.",
         annotations(read_only_hint = true)
     )]
     async fn get_parcel(

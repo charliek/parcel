@@ -8,6 +8,8 @@
  * folded and trimmed, matching the Rust side byte for byte.
  */
 
+import { folded } from './slugs';
+
 /** Most tags one parcel may carry. */
 export const MAX_TAGS = 20;
 /** Longest tag, after normalization. */
@@ -17,7 +19,6 @@ export const MAX_TAG_CHARS = 64;
 export const TAG_RULES =
   'lowercase letters, digits, “.”, “+” and “-”, optionally as namespace:value.';
 
-const EDGE_SPACE = /^[ \t\n\r\f]+|[ \t\n\r\f]+$/g;
 const SEPARATOR_RUN = /[ \t\n\r\f_]+/g;
 const SHAPE = /^[a-z0-9][a-z0-9.+-]*(:[a-z0-9][a-z0-9.+/-]*)?$/;
 
@@ -27,10 +28,7 @@ const SHAPE = /^[a-z0-9][a-z0-9.+-]*(:[a-z0-9][a-z0-9.+/-]*)?$/;
  * when it can't be a tag.
  */
 export function normalizeTag(raw: string): string | null {
-  const tag = raw
-    .replace(EDGE_SPACE, '')
-    .replace(SEPARATOR_RUN, '-')
-    .replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const tag = folded(raw).replace(SEPARATOR_RUN, '-');
   return tag.length <= MAX_TAG_CHARS && SHAPE.test(tag) ? tag : null;
 }
 

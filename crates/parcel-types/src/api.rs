@@ -145,6 +145,17 @@ pub enum ListScope {
     All,
 }
 
+impl ListScope {
+    /// The wire name (the `scope` query parameter).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ListScope::Mine => "mine",
+            ListScope::Shared => "shared",
+            ListScope::All => "all",
+        }
+    }
+}
+
 /// How a list treats archived parcels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -158,6 +169,17 @@ pub enum ArchivedFilter {
     Include,
     /// Archived parcels only.
     Only,
+}
+
+impl ArchivedFilter {
+    /// The wire name (the `archived` query parameter).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ArchivedFilter::Exclude => "exclude",
+            ArchivedFilter::Include => "include",
+            ArchivedFilter::Only => "only",
+        }
+    }
 }
 
 /// One run of a search snippet: text, and whether it is a matched word.

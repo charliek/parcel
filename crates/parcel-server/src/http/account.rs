@@ -110,7 +110,7 @@ async fn update_me(
 async fn me(state: &AppState, caller: AuthUser) -> AppResult<Me> {
     let (usage, handle) = tokio::try_join!(
         parcels::usage(&state.db, caller.user.id),
-        handles::handle_for(&state.db, &caller.user),
+        handles::allocate(&state.db, caller.user.id, &caller.user.email),
     )?;
     Ok(Me {
         id: caller.user.id.to_string(),

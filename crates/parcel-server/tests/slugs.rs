@@ -14,8 +14,8 @@ use common::*;
 use parcel_server::db::{handles, parcels};
 use parcel_server::publish::{self, VersionSource};
 use parcel_types::{
-    CreateParcelMetadata, ErrorBody, Me, NewVersionMetadata, ParcelDetail, ParcelList,
-    ParcelSummary, PublishResult, SourceInfo, VersionDetail, VersionList, ViewGrant,
+    CreateParcelMetadata, Me, NewVersionMetadata, ParcelDetail, ParcelList, PublishResult,
+    SourceInfo, VersionDetail, VersionList, ViewGrant,
 };
 use serde_json::{json, Value};
 
@@ -47,15 +47,6 @@ async fn me(app: &TestApp, who: &Person) -> Me {
         StatusCode::OK,
     )
     .await
-}
-
-async fn patch(app: &TestApp, who: &Person, id: &str, body: Value) -> Response {
-    app.patch_json(&format!("/api/v1/parcels/{id}"), Some(&who.token), &body)
-        .await
-}
-
-async fn patched(app: &TestApp, who: &Person, id: &str, body: Value) -> ParcelSummary {
-    expect_json(patch(app, who, id, body).await, StatusCode::OK).await
 }
 
 async fn rename_handle(app: &TestApp, who: &Person, handle: &str) -> Response {
@@ -91,21 +82,6 @@ async fn share(app: &TestApp, owner: &Person, id: &str, email: &str, role: &str)
         StatusCode::OK,
     )
     .await;
-}
-
-async fn message(response: Response, status: StatusCode) -> String {
-    expect_json::<ErrorBody>(response, status)
-        .await
-        .error
-        .message
-}
-
-async fn owner_id(app: &TestApp, parcel: &str) -> uuid::Uuid {
-    sqlx::query_scalar("SELECT owner_id FROM parcels WHERE id = $1")
-        .bind(parcel)
-        .fetch_one(&app.pool)
-        .await
-        .unwrap()
 }
 
 // ---- handles ----------------------------------------------------------------
@@ -226,7 +202,7 @@ async fn patch_me_renames_and_old_handles_stay_reserved() {
         .parcel;
 
     for bad in ["-ada", "ada-", "a_b", "a.b", "@ada", "", &"a".repeat(33)] {
-        let msg = message(
+        let msg = expect_error(
             rename_handle(&app, &ada, bad).await,
             StatusCode::BAD_REQUEST,
         )
@@ -234,7 +210,7 @@ async fn patch_me_renames_and_old_handles_stay_reserved() {
         assert!(msg.contains("handle"), "{bad:?}: {msg}");
     }
     assert!(
-        message(rename_handle(&app, &ada, &bobs).await, StatusCode::CONFLICT)
+        expect_error(rename_handle(&app, &ada, &bobs).await, StatusCode::CONFLICT)
             .await
             .contains("taken")
     );
@@ -407,14 +383,14 @@ async fn slug_rules_and_clashes() {
         "/x",
         &"x".repeat(101),
     ] {
-        let msg = message(
+        let msg = expect_error(
             patch(&app, &ada, &a.id, json!({ "slug": bad })).await,
             StatusCode::BAD_REQUEST,
         )
         .await;
         assert!(msg.contains("slug"), "{bad:?}: {msg}");
         assert!(
-            message(
+            expect_error(
                 publish(&app, &ada, json!({ "slug": bad }), &page("x")).await,
                 StatusCode::BAD_REQUEST
             )
@@ -451,7 +427,7 @@ async fn slug_rules_and_clashes() {
     );
 
     // Unique per owner: 409, and nothing changed.
-    let msg = message(
+    let msg = expect_error(
         patch(
             &app,
             &ada,
@@ -556,7 +532,7 @@ async fn renamed_slugs_and_handles_redirect() {
         .unwrap();
     assert_eq!(left, 0);
     assert_eq!(
-        message(
+        expect_error(
             by_slug(&app, Some(&ada.token), "ada-l", "final-v2").await,
             StatusCode::NOT_FOUND
         )
@@ -694,7 +670,7 @@ async fn by_slug_misses_are_identical_404s() {
 async fn by_slug_is_not_routed_as_a_parcel_id() {
     let app = TestApp::new().await;
     let ada = person("ada");
-    let msg = message(
+    let msg = expect_error(
         app.get("/api/v1/parcels/by-slug", Some(&ada.token)).await,
         StatusCode::BAD_REQUEST,
     )
@@ -885,13 +861,13 @@ async fn publishing_twice_with_a_slug_versions_one_parcel() {
 async fn upsert_base_version_rules() {
     let app = TestApp::new().await;
     let ada = person("ada");
-    let msg = message(
+    let msg = expect_error(
         publish(&app, &ada, json!({"base_version": 1}), &page("x")).await,
         StatusCode::BAD_REQUEST,
     )
     .await;
     assert!(msg.contains("base_version"), "{msg}");
-    let msg = message(
+    let msg = expect_error(
         publish(
             &app,
             &ada,
@@ -904,7 +880,7 @@ async fn upsert_base_version_rules() {
     .await;
     assert!(msg.contains("no parcel has the slug"), "{msg}");
     created(&app, &ada, json!({"slug": "new"})).await;
-    let msg = message(
+    let msg = expect_error(
         publish(
             &app,
             &ada,
@@ -954,7 +930,7 @@ async fn upserts_ignore_auto_tags_and_cap_the_merged_tags() {
         .await;
         assert_eq!(r.parcel.tags, twenty, "{auto}");
     }
-    let msg = message(
+    let msg = expect_error(
         publish(
             &app,
             &ada,
@@ -1092,18 +1068,6 @@ async fn constraint_names_decide_retry_or_conflict() {
     );
 }
 
-fn upload(text: &str) -> Vec<publish::Upload> {
-    publish::collect_uploads(
-        vec![("index.html".into(), bytes::Bytes::from(text.to_string()))],
-        &parcels_limits(),
-    )
-    .unwrap()
-}
-
-fn parcels_limits() -> parcel_types::Limits {
-    test_config("http://127.0.0.1:9").limits
-}
-
 /// One round of every writer that takes both locks, on one parcel: an
 /// upsert, a plain new version, a restore and a slug rename.
 async fn every_writer(app: &Arc<TestApp>, owner: uuid::Uuid, id: &str, slug: &str, i: usize) {
@@ -1168,12 +1132,6 @@ async fn every_writer(app: &Arc<TestApp>, owner: uuid::Uuid, id: &str, slug: &st
     while let Some(done) = tasks.join_next().await {
         done.expect("writer panicked").expect("writer failed");
     }
-}
-
-async fn within_a_minute<F: std::future::Future>(what: &str, fut: F) -> F::Output {
-    tokio::time::timeout(Duration::from_secs(60), fut)
-        .await
-        .unwrap_or_else(|_| panic!("{what}: the writers didn't finish (deadlock?)"))
 }
 
 /// P1: with one lock order everywhere (owner, then row), the writers that

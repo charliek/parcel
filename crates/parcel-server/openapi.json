@@ -2068,7 +2068,7 @@
         "operationId": "list_parcels",
         "parameters": [
           {
-            "description": "Search: a case-insensitive substring of the id, title or description,\nor full text (title, description, tags and the entry page's text;\nweb-search syntax: `\"exact phrase\"`, `-word`, `or`). Results are then\nordered by relevance, and carry `match` when the page text matched.",
+            "description": "Search: a case-insensitive substring of the id, title, description or slug,\nor full text (title, description, tags and the entry page's text;\nweb-search syntax: `\"exact phrase\"`, `-word`, `or`). Results are then\nordered by relevance, and carry `match` when the page text matched.",
             "in": "query",
             "name": "q",
             "required": false,

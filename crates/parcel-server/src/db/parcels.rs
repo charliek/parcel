@@ -525,27 +525,35 @@ pub async fn apply_patch(
 }
 
 /// Set the tags and/or the archive state, leaving `updated_at` alone.
-/// `archived: Some(true)` keeps an existing archive time.
+/// `archived: Some(true)` keeps an existing archive time. Only a tags change
+/// names `tags` in its `SET`: the search trigger (0006) rebuilds the search
+/// vector whenever the column is listed, changed or not.
 pub async fn update_organization(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
     tags: Option<&[String]>,
     archived: Option<bool>,
 ) -> Result<()> {
-    sqlx::query(
-        "UPDATE parcels SET
-             tags = COALESCE($2, tags),
-             archived_at = CASE WHEN $3::boolean IS NULL THEN archived_at
-                                WHEN $3 THEN COALESCE(archived_at, now())
-                                ELSE NULL END
-         WHERE id = $1",
-    )
-    .bind(id)
-    .bind(tags)
-    .bind(archived)
-    .execute(&mut **tx)
-    .await
-    .context("updating parcel tags or archive state")?;
+    if let Some(tags) = tags {
+        sqlx::query("UPDATE parcels SET tags = $2 WHERE id = $1")
+            .bind(id)
+            .bind(tags)
+            .execute(&mut **tx)
+            .await
+            .context("updating parcel tags")?;
+    }
+    if let Some(archived) = archived {
+        sqlx::query(
+            "UPDATE parcels SET
+                 archived_at = CASE WHEN $2 THEN COALESCE(archived_at, now()) ELSE NULL END
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(archived)
+        .execute(&mut **tx)
+        .await
+        .context("updating parcel archive state")?;
+    }
     Ok(())
 }
 

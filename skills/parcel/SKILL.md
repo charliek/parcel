@@ -67,7 +67,7 @@ parcel publish report.html --title "Q3 latency report" --json
 parcel publish ./site --title "Pricing prototype" --json     # a folder; index.html is the entry
 ```
 
-Read `.parcel.url` (the link to give the user), `.parcel.id` and `.version.version` from the JSON. Then tell the user the URL, who can open it (private: only them, until shared), and what is in it. Write the files somewhere temporary (a scratch directory), not into the user's repo, unless they asked for them there.
+Read `.parcel.canonical_url` (the link to give the user: the clean URL when there is a slug), `.parcel.id` and `.version.version` from the JSON. Then tell the user the URL, who can open it (private: only them, until shared), and what is in it. Write the files somewhere temporary (a scratch directory), not into the user's repo, unless they asked for them there.
 
 - `--description "…"` sets a description; `--label "…"` notes what changed in this version. Tag and name it as in "Organize and find parcels" (`--slug`, `--kind`, `--tag`).
 - A folder publish skips dotfiles, dot-directories and `node_modules`, and skips symlinks with a warning. `--file PUBLISHED=LOCAL` adds a file from elsewhere (`--file data/q3.json=/tmp/out.json`).
@@ -103,7 +103,7 @@ parcel publish plan.md --slug myrepo/latency-plan --kind plan --tag performance 
 - **Give the user the canonical link.** `parcel link <ref>` prints it (the clean URL when there is a slug, else the `/p/<id>` URL); `--markdown` prints `[title](url)` ready to paste. `.parcel.canonical_url` in the publish JSON is the same link; `.parcel.url` stays the `/p/<id>` form.
 - **Archive** what is finished: `parcel archive <ref>` hides it from lists, tag counts and search (`list --archived` or `--archived-only` shows them; it stays openable by URL). Publishing a new version un-archives it, as does `parcel unarchive <ref>`.
 - **Several pages are fine.** Put related pages in one folder and link them with relative links (`<a href="details.html">`); the viewer lists every `.html` and `.md` page in a Pages menu, using each page's `<title>` (or first heading). Link to one directly with `parcel link <ref> --page details.html`; `parcel info` lists them. Prefer this to one parcel per page.
-- **Search** (`list -q`, the web app, MCP) needs **every word** to appear, matched by stem (`publishing` finds `publish`), in the title, description, tags or the entry page's text; an id, title or slug also matches by substring. It is not natural-language search: a sentence returns nothing when one of its words isn't in the parcel. Search with **two or three distinctive words**, and use `or` or quotes as in a web search (`"rate limit" or throttling`, `-draft` to exclude). Matches show the matching text under each row. Only the entry page's text is searched, not other pages. If nothing comes back, drop a word, or add `--all` or `--archived`.
+- **Search** (`list -q`, the web app, MCP) needs **every word** to appear, matched by stem (`publishing` finds `publish`), in the title, description, tags or the entry page's text; an id, title, description or slug also matches by substring. It is not natural-language search: a sentence returns nothing when one of its words isn't in the parcel. Search with **two or three distinctive words**, and use `or` or quotes as in a web search (`"rate limit" or throttling`, `-draft` to exclude). Matches show the matching text under each row. Only the entry page's text is searched, not other pages. If nothing comes back, drop a word, or add `--all` or `--archived`.
 
 ## Act on feedback (comments)
 
@@ -211,7 +211,7 @@ Some servers turn public links off: `public links are turned off on this server`
 | A page's data | `parcel data list\|get\|set\|update\|delete\|clear <ref> …` |
 | Show config (server, profile, token set?) | `parcel config show` |
 
-`--json` prints the server's JSON response verbatim for `whoami`, `publish`, `list` (and `list --shared`), `info`, `update`, `tag`, `archive`, `unarchive`, `tags`, `link`, `versions`, `restore`, `shares`, `share`/`unshare` (the shares afterwards), `comments list|add|reply` and `data list|get|set|update`. Exit codes: `0` ok, `1` error, `2` bad arguments, `3` not logged in or token rejected (or paused), `4` not found (a private parcel also looks like this to anyone it isn't shared with, signed in or not). Errors print as `error: <message>` on stderr.
+`--json` prints the server's JSON response verbatim for `whoami`, `publish`, `list` (and `list --shared`), `info`, `update`, `tag`, `archive`, `unarchive`, `tags rename|delete`, `versions`, `restore`, `shares`, `share`/`unshare` (the shares afterwards), `comments list|add|reply` and `data list|get|set|update`; `tags`, `link`, `open` and `handle` print JSON the CLI builds (shapes in references/cli.md). Exit codes: `0` ok, `1` error, `2` bad arguments, `3` not logged in or token rejected (or paused), `4` not found (a private parcel also looks like this to anyone it isn't shared with, signed in or not). Errors print as `error: <message>` on stderr.
 
 ## References
 

@@ -5,15 +5,14 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::http::StatusCode;
 use common::*;
 use parcel_server::db::parcels::{self, Patch, TagsChange};
 use parcel_server::publish::{self, VersionSource};
 use parcel_types::{
-    ErrorBody, NewVersionMetadata, ParcelDetail, ParcelList, ParcelSummary, PublishResult,
-    ServerInfo, ShareRole, SharedParcelList, TagList, TagsUpdated,
+    NewVersionMetadata, ParcelDetail, ParcelList, ParcelSummary, PublishResult, ServerInfo,
+    ShareRole, SharedParcelList, TagList, TagsUpdated,
 };
 use serde_json::{json, Value};
 
@@ -48,18 +47,8 @@ async fn tag_list(app: &TestApp, who: &Person, query: &str) -> TagList {
     expect_json(app.get(&uri, Some(&who.token)).await, StatusCode::OK).await
 }
 
-async fn patch(app: &TestApp, who: &Person, id: &str, body: Value) -> axum::response::Response {
-    app.patch_json(&format!("/api/v1/parcels/{id}"), Some(&who.token), &body)
-        .await
-}
-
-async fn patched(app: &TestApp, who: &Person, id: &str, body: Value) -> ParcelSummary {
-    expect_json(patch(app, who, id, body).await, StatusCode::OK).await
-}
-
 async fn bad_request(response: axum::response::Response) -> String {
-    let body: ErrorBody = expect_json(response, StatusCode::BAD_REQUEST).await;
-    body.error.message
+    expect_error(response, StatusCode::BAD_REQUEST).await
 }
 
 async fn detail(app: &TestApp, who: &Person, id: &str) -> ParcelDetail {
@@ -773,11 +762,7 @@ async fn concurrent_writers_neither_deadlock_nor_lose_tags() {
     let me = person("ada");
     let first = tagged(&app, &me, "first", &["shared-tag"]).await;
     let second = tagged(&app, &me, "second", &["shared-tag"]).await;
-    let owner_id: uuid::Uuid = sqlx::query_scalar("SELECT owner_id FROM parcels WHERE id = $1")
-        .bind(&first.id)
-        .fetch_one(&app.pool)
-        .await
-        .unwrap();
+    let owner_id = owner_id(&app, &first.id).await;
 
     let mut tasks = tokio::task::JoinSet::new();
     for i in 0..8 {
@@ -800,14 +785,6 @@ async fn concurrent_writers_neither_deadlock_nor_lose_tags() {
                     .unwrap();
             }
             // New versions (with a tag), and a restore, on both.
-            let upload = publish::collect_uploads(
-                vec![(
-                    "index.html".into(),
-                    bytes::Bytes::from(format!("<p>{i}</p>")),
-                )],
-                &state.config.limits,
-            )
-            .unwrap();
             let meta = NewVersionMetadata {
                 add_tags: vec![format!("version-{i}")],
                 ..NewVersionMetadata::default()
@@ -818,7 +795,7 @@ async fn concurrent_writers_neither_deadlock_nor_lose_tags() {
                 owner_id,
                 VersionSource::Upload {
                     meta,
-                    uploads: upload,
+                    uploads: upload(&format!("<p>{i}</p>")),
                 },
             )
             .await
@@ -850,13 +827,12 @@ async fn concurrent_writers_neither_deadlock_nor_lose_tags() {
             .unwrap();
         });
     }
-    tokio::time::timeout(Duration::from_secs(60), async {
+    within_a_minute("tag writers", async {
         while let Some(done) = tasks.join_next().await {
             done.expect("writer panicked");
         }
     })
-    .await
-    .expect("writers finished (no deadlock)");
+    .await;
 
     let a = detail(&app, &me, &first.id).await.parcel;
     let b = detail(&app, &me, &second.id).await.parcel;

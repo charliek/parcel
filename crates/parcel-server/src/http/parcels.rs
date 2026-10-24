@@ -35,7 +35,7 @@ pub fn router() -> OpenApiRouter<AppState> {
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ListQuery {
-    /// Search: a case-insensitive substring of the id, title or description,
+    /// Search: a case-insensitive substring of the id, title, description or slug,
     /// or full text (title, description, tags and the entry page's text;
     /// web-search syntax: `"exact phrase"`, `-word`, `or`). Results are then
     /// ordered by relevance, and carry `match` when the page text matched.
@@ -262,8 +262,10 @@ pub(crate) async fn detail_of(
     access: ParcelAccess,
 ) -> AppResult<ParcelDetail> {
     let id = row.id.as_str();
-    let versions = parcels::list_versions(&state.db, id).await?;
-    let files = parcels::version_files(&state.db, id, row.current_version).await?;
+    let (versions, files) = tokio::try_join!(
+        parcels::list_versions(&state.db, id),
+        parcels::version_files(&state.db, id, row.current_version),
+    )?;
     Ok(ParcelDetail {
         parcel: views::summary(&state.config, &row, Audience::of(caller)),
         is_owner: access == ParcelAccess::Owner,

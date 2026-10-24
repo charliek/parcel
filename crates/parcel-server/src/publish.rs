@@ -304,11 +304,6 @@ fn check_version_limits(
     Ok(total)
 }
 
-/// Default title: the entry's `<title>` or first `# heading`, else its file name.
-pub fn derive_title(entry: &str, bytes: &[u8]) -> String {
-    found_title(entry, bytes).unwrap_or_else(|| paths::file_name(entry).to_string())
-}
-
 /// The title a page (an HTML or Markdown file) gives itself, kept with its
 /// file row so the viewer can list the version's pages by name; `None` for
 /// other files and for a page without one.
@@ -339,13 +334,7 @@ fn html_title(html: &str) -> Option<String> {
     let open = lower.find("<title")?;
     let start = open + lower[open..].find('>')? + 1;
     let end = start + lower[start..].find("</title")?;
-    let raw = &html[start..end];
-    let decoded = raw
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
+    let decoded = crate::search::decode_entities(&html[start..end]);
     let collapsed = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
     (!collapsed.is_empty()).then_some(collapsed)
 }
@@ -491,27 +480,20 @@ struct NewParcelVersion {
 }
 
 /// Entry, limits and title for a publish that creates a parcel. `title` is
-/// the one sent (cleaned), if any; else it is derived from the entry page.
+/// the one sent (cleaned), if any; else the entry page's own title (already
+/// on its file row), else its file name.
 fn new_parcel_version(
     manifest: &Manifest,
-    uploads: &[Upload],
     entry: Option<&str>,
     title: Option<&str>,
     limits: &Limits,
 ) -> Result<NewParcelVersion, AppError> {
     let entry = resolve_entry(entry, manifest, None)?;
     let total = check_version_limits(manifest, &entry, limits)?;
-    let title = match title {
-        Some(t) => t.to_string(),
-        None => {
-            let entry_bytes = &uploads
-                .iter()
-                .find(|u| u.path == entry)
-                .expect("entry uploaded")
-                .bytes;
-            derive_title(&entry, entry_bytes)
-        }
-    };
+    let title = title
+        .map(str::to_string)
+        .or_else(|| manifest[&entry].page_title.clone())
+        .unwrap_or_else(|| paths::file_name(&entry).to_string());
     Ok(NewParcelVersion {
         entry,
         title,
@@ -568,23 +550,18 @@ pub async fn create(
     // only adds `tags`), so this is checked only for a create.
     let all_tags: Vec<&String> = meta.tags.iter().chain(&meta.auto_tags).collect();
     let create_tags = || tags::normalize_tags(&all_tags).map_err(tag_error);
+    let compute_new = |entry: Option<&str>, title: Option<&str>| {
+        Ok::<_, AppError>((
+            new_parcel_version(&manifest, entry, title, limits)?,
+            create_tags()?,
+        ))
+    };
     // Without a slug this publish can only create, so check all of it before
     // any bytes are written. With one, which it is is decided under the
     // owner's lock, and the creating branch is checked there.
     let checked_new = slug
         .is_none()
-        .then(|| {
-            Ok::<_, AppError>((
-                new_parcel_version(
-                    &manifest,
-                    &uploads,
-                    meta.entry.as_deref(),
-                    title.as_deref(),
-                    limits,
-                )?,
-                create_tags()?,
-            ))
-        })
+        .then(|| compute_new(meta.entry.as_deref(), title.as_deref()))
         .transpose()?;
     // The publish as a version: what an upsert does to the parcel that has
     // the slug (replace its files, change only what was sent, add the tags).
@@ -644,16 +621,7 @@ pub async fn create(
         let (new, new_tags) = match &checked_new {
             Some(new) => new,
             None => {
-                computed = (
-                    new_parcel_version(
-                        &manifest,
-                        &prepared.uploads,
-                        prepared.entry.as_deref(),
-                        prepared.title.as_deref(),
-                        limits,
-                    )?,
-                    create_tags()?,
-                );
+                computed = compute_new(prepared.entry.as_deref(), prepared.title.as_deref())?;
                 &computed
             }
         };
@@ -979,20 +947,18 @@ mod tests {
     }
 
     #[test]
-    fn titles() {
-        assert_eq!(
-            derive_title("index.html", b"<html><head><TITLE>\n  Q3 &amp; Q4 </title>"),
-            "Q3 & Q4"
-        );
-        assert_eq!(derive_title("notes.md", b"intro\n\n# Notes\n"), "Notes");
-        assert_eq!(
-            derive_title("dir/page.html", b"<p>no title</p>"),
-            "page.html"
-        );
-    }
-
-    #[test]
     fn page_titles() {
+        assert_eq!(
+            page_title(
+                "index.html",
+                b"<html><head><TITLE>\n  Q3 &amp; Q4 &#8212; &lt;draft&gt; </title>"
+            ),
+            Some("Q3 & Q4 \u{2014} <draft>".into())
+        );
+        assert_eq!(
+            page_title("notes.md", b"intro\n\n# Notes\n"),
+            Some("Notes".into())
+        );
         assert_eq!(page_title("dir/page.html", b"<p>no title</p>"), None);
         assert_eq!(page_title("a.htm", b"<title>A</title>"), Some("A".into()));
         assert_eq!(
@@ -1017,8 +983,8 @@ mod tests {
             page_title("a.html", long.as_bytes()).map(|t| t.chars().count()),
             Some(200)
         );
-        // The parcel title falls back to the file name; a page title doesn't.
-        assert_eq!(derive_title("a.md", b"no heading"), "a.md");
+        // No fallback here: a parcel's title falls back to the entry's file
+        // name in `new_parcel_version`; a page title doesn't.
         assert_eq!(page_title("a.md", b"no heading"), None);
     }
 

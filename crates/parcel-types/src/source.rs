@@ -118,7 +118,9 @@ fn check_plain(name: &'static str, raw: &Option<String>) -> Checked {
 
 /// A remote reduced to `host[:port]/path`; `Ok(None)` for a local path or
 /// `file://` URL (no remote); [`SourceError::Repo`] for anything not accepted.
-pub fn normalize_repo(raw: &str) -> Result<Option<String>, SourceError> {
+/// The tests' view of [`remote`].
+#[cfg(test)]
+fn normalize_repo(raw: &str) -> Result<Option<String>, SourceError> {
     remote(raw)
         .map(|r| r.map(|r| r.repo))
         .map_err(|()| SourceError::Repo)
@@ -273,7 +275,9 @@ fn finish(host: &str, path: &str) -> Result<String, ()> {
 /// string "https://user:token@…"`), and this one may hold a credential.
 /// Unknown fields are ignored (a newer client's extra field is dropped,
 /// never stored).
-pub fn deserialize_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SourceInfo>, D::Error> {
+pub(crate) fn deserialize_opt<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<SourceInfo>, D::Error> {
     use serde::de::Error;
     let value = serde_json::Value::deserialize(d)?;
     let object = match value {

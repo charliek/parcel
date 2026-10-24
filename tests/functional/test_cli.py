@@ -358,10 +358,6 @@ def git(repo: Path, *args: str) -> None:
     )
 
 
-def run_json(cli: Cli, *args: str, token: str, cwd: Path | None = None):
-    return json.loads(cli.run(*args, "--json", token=token, cwd=cwd).stdout)
-
-
 def test_publish_from_a_git_repo_tags_the_project(cli: Cli, user: str, tmp_path: Path):
     repo = tmp_path / "funcproj-checkout"
     repo.mkdir()
@@ -372,7 +368,7 @@ def test_publish_from_a_git_repo_tags_the_project(cli: Cli, user: str, tmp_path:
     page.parent.mkdir()
     page.write_text("<title>Func plan</title><p>x</p>")
 
-    created = run_json(cli, "publish", str(page), "--kind", "plan", token=user, cwd=repo)
+    created = cli.json("publish", str(page), "--kind", "plan", token=user, cwd=repo)
     parcel = created["parcel"]
     assert parcel["tags"] == ["kind:plan", "project:funcproj"]
     assert created["created"] is True
@@ -385,9 +381,9 @@ def test_publish_from_a_git_repo_tags_the_project(cli: Cli, user: str, tmp_path:
     assert "CANARY" not in json.dumps(created) + info
 
     # Suppressed, and outside any repository.
-    bare = run_json(cli, "publish", str(page), "--no-auto-tags", "--no-source", token=user, cwd=repo)
+    bare = cli.json("publish", str(page), "--no-auto-tags", "--no-source", token=user, cwd=repo)
     assert bare["parcel"]["tags"] == [] and "source" not in bare["version"]
-    outside = run_json(cli, "publish", str(page), token=user, cwd=tmp_path)
+    outside = cli.json("publish", str(page), token=user, cwd=tmp_path)
     assert outside["parcel"]["tags"] == []
     assert set(outside["version"]["source"]) <= {"host", "client"}
 
@@ -395,10 +391,10 @@ def test_publish_from_a_git_repo_tags_the_project(cli: Cli, user: str, tmp_path:
 def test_slug_upserts_and_slug_refs(cli: Cli, user: str, tmp_path: Path):
     page = tmp_path / "plan.html"
     page.write_text("<title>Upserted plan</title><p>one</p>")
-    first = run_json(cli, "publish", str(page), "--slug", "func/plan-1", token=user)
+    first = cli.json("publish", str(page), "--slug", "func/plan-1", token=user)
     page.write_text("<title>Upserted plan</title><p>two</p>")
-    second = run_json(
-        cli, "publish", str(page), "--slug", "func/plan-1", "--base-version", "1", token=user
+    second = cli.json(
+        "publish", str(page), "--slug", "func/plan-1", "--base-version", "1", token=user
     )
     pid = first["parcel"]["id"]
     assert first["created"] is True and second["created"] is False
@@ -453,7 +449,7 @@ def test_tags_archive_link_and_handle(cli: Cli, server: Server, user: str, tmp_p
     site.mkdir()
     page.rename(site / "index.html")
     second.rename(site / "b.html")
-    created = run_json(cli, "publish", str(site), "--tag", "Old_Name", token=user, cwd=tmp_path)
+    created = cli.json("publish", str(site), "--tag", "Old_Name", token=user, cwd=tmp_path)
     pid = created["parcel"]["id"]
 
     tags = cli.json("tags", token=user)

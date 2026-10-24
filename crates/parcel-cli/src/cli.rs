@@ -295,7 +295,7 @@ you see. --project / PARCEL_PROJECT names the project instead;
 
 #[derive(Debug, Args)]
 pub struct ListArgs {
-    /// Search titles, descriptions, slugs, ids and page text; a snippet of
+    /// Search titles, descriptions, tags, slugs, ids and page text; a snippet of
     /// the matching text shows under each row
     #[arg(long, short = 'q', value_name = "TEXT")]
     pub query: Option<String>,

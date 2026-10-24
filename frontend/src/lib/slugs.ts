@@ -28,7 +28,7 @@ export const HANDLE_RULES =
 const EDGE_SPACE = /^[ \t\n\r\f]+|[ \t\n\r\f]+$/g;
 
 /** ASCII-trimmed and ASCII-lowercased, as `slugs.rs`'s `folded`. */
-function folded(raw: string): string {
+export function folded(raw: string): string {
   return raw.replace(EDGE_SPACE, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 }
 

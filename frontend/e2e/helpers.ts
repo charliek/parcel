@@ -17,6 +17,9 @@ export function htmlPage(marker: string, opts: { stylesheet?: string } = {}): Bu
 
 export const PARCEL_URL = /\/p\/[a-z2-9]{12}$/;
 
+/** A viewer's `GET …/view` (each one mints a content grant). */
+export const VIEW_REQUEST = /\/api\/v1\/parcels\/[a-z2-9]{12}\/view(\?|$)/;
+
 /** The id from a viewer URL. */
 export function parcelIdFrom(page: Page): string {
   const match = new URL(page.url()).pathname.match(/^\/p\/([a-z2-9]{12})/);

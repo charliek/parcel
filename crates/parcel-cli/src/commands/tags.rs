@@ -5,7 +5,7 @@ use anyhow::Result;
 use parcel_types::tags::{normalize_set, normalize_tag, normalize_tags};
 use parcel_types::{DeleteTagRequest, ListScope, RenameTagRequest, TagCount, TagList, TagsUpdated};
 
-use super::authed_api;
+use super::{authed_api, list_scope};
 use crate::cli::{TagsArgs, TagsCommand, TagsDeleteArgs, TagsListArgs, TagsRenameArgs};
 use crate::client::Api;
 use crate::config::Settings;
@@ -56,13 +56,7 @@ pub fn run(settings: &Settings, args: TagsArgs) -> Result<()> {
 fn list(settings: &Settings, args: TagsListArgs) -> Result<()> {
     let api = authed_api(settings)?;
     api.require_feature("tags", "tags")?;
-    let scope = if args.all {
-        ListScope::All
-    } else if args.shared {
-        ListScope::Shared
-    } else {
-        ListScope::Mine
-    };
+    let scope = list_scope(args.all, args.shared);
     let tags = fetch_all(&api, scope, args.prefix.as_deref())?;
     if args.json {
         // Every page merged into one body of the server's shape.
@@ -95,14 +89,8 @@ fn fetch_all(api: &Api, scope: ListScope, prefix: Option<&str>) -> Result<Vec<Ta
         let mut url = api.endpoint(["tags"]);
         {
             let mut query = url.query_pairs_mut();
-            match scope {
-                ListScope::Mine => {}
-                ListScope::Shared => {
-                    query.append_pair("scope", "shared");
-                }
-                ListScope::All => {
-                    query.append_pair("scope", "all");
-                }
+            if scope != ListScope::Mine {
+                query.append_pair("scope", scope.as_str());
             }
             if let Some(prefix) = prefix {
                 query.append_pair("prefix", prefix);

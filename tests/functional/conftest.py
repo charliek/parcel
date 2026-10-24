@@ -755,8 +755,8 @@ class Cli:
             )
         return result
 
-    def json(self, *args: str, token: str | None = None):
-        return json.loads(self.run(*args, "--json", token=token).stdout)
+    def json(self, *args: str, token: str | None = None, cwd: Path | None = None):
+        return json.loads(self.run(*args, "--json", token=token, cwd=cwd).stdout)
 
 
 @pytest.fixture

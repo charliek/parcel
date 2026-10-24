@@ -4,8 +4,8 @@
 //! allocation goes through the `parcel_allocate_handle` SQL function
 //! (migration 0007), which returns the user's current handle or allocates
 //! one from their email: the same rule for the migration's backfill,
-//! sign-in ([`super::users::sign_in`]) and [`handle_for`], which covers a
-//! user an older revision created during a rollover.
+//! sign-in ([`super::users::sign_in`]) and `/me` (via [`allocate`]), which
+//! covers a user an older revision created during a rollover.
 
 use anyhow::{Context, Result};
 use sqlx::{PgExecutor, PgPool};
@@ -28,12 +28,6 @@ pub async fn ensure<'e>(db: impl PgExecutor<'e>, user_id: Uuid) -> Result<String
         .fetch_one(db)
         .await
         .context("allocating handle")
-}
-
-/// The user's current handle (allocating one lazily when an older revision
-/// created them without).
-pub async fn handle_for(pool: &PgPool, user: &super::users::User) -> Result<String> {
-    allocate(pool, user.id, &user.email).await
 }
 
 /// The handle a rename asked for is someone else's (current or retired).

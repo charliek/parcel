@@ -4,10 +4,10 @@ use std::io::{BufRead, IsTerminal, Write};
 
 use anyhow::{Context, Result};
 use parcel_types::slugs::normalize_slug;
-use parcel_types::{ParcelDetail, ParcelSummary, PublishResult, UpdateParcelRequest};
+use parcel_types::{ParcelSummary, PublishResult, UpdateParcelRequest};
 
 use super::tags::{normalize_each, normalize_list, split_tag_list};
-use super::{authed_api, parse_ref, resolve_id, shown_url};
+use super::{authed_api, fetch_detail, parse_ref, resolve, resolve_id, shown_url};
 use crate::cli::{DeleteArgs, RefJsonArgs, RestoreArgs, TagArgs, UpdateArgs};
 use crate::client::{Api, Fetched};
 use crate::config::Settings;
@@ -191,16 +191,15 @@ pub fn restore(settings: &Settings, args: RestoreArgs) -> Result<()> {
 pub fn delete(settings: &Settings, args: DeleteArgs) -> Result<()> {
     let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let api = authed_api(settings)?;
-    let id = resolve_id(&api, parcel_ref)?;
+    let target = resolve(&api, parcel_ref)?;
+    let id = target.id;
     if !args.yes {
         if !std::io::stdin().is_terminal() {
             return Err(error::usage(format!(
                 "refusing to delete {id} without confirmation; pass --yes"
             )));
         }
-        let detail = api
-            .get::<ParcelDetail>(api.endpoint(["parcels", &id]))?
-            .value;
+        let detail = fetch_detail(&api, &id, target.detail)?.value;
         let versions = detail.versions.len();
         eprint!(
             "Delete {:?} ({id}) and all {versions} version{}? This cannot be undone. [y/N] ",

@@ -497,7 +497,7 @@ frame just works).
   `Sec-Fetch-Dest`, an `Accept` naming `text/html`; anything else (a page's
   `fetch()`) gets the raw text. The header picks a representation, never
   access: both need the same capability and carry the same sandbox headers.
-  Both variants (304s included) carry `Vary: Sec-Fetch-Dest` and distinct
+  Both variants (304s included) carry `Vary: Sec-Fetch-Dest, Accept` and distinct
   ETags; the variant is decided before the `If-None-Match` check. A rendered
   page gets the helper like any HTML page. Raw HTML inside Markdown passes
   through, so a rendered `.md` page is equivalent to an uploaded HTML page

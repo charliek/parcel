@@ -273,12 +273,7 @@ async fn serve(
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"))
     {
         let mut response = StatusCode::NOT_MODIFIED.into_response();
-        apply_file_headers(&state, response.headers_mut(), &etag);
-        if has_variants {
-            for name in MARKDOWN_VARY {
-                add_vary(response.headers_mut(), name);
-            }
-        }
+        apply_file_headers(&state, response.headers_mut(), &etag, has_variants);
         return response;
     }
 
@@ -313,12 +308,7 @@ async fn serve(
         headers.insert(CONTENT_TYPE, v);
     }
     headers.insert(CONTENT_LENGTH, HeaderValue::from(body.len()));
-    apply_file_headers(&state, headers, &etag);
-    if has_variants {
-        for name in MARKDOWN_VARY {
-            add_vary(headers, name);
-        }
-    }
+    apply_file_headers(&state, headers, &etag, has_variants);
     response
 }
 
@@ -344,30 +334,12 @@ fn wants_document(headers: &HeaderMap) -> bool {
     })
 }
 
-/// Add `name` to the response's `Vary`, keeping whatever it already lists.
-fn add_vary(headers: &mut HeaderMap, name: &str) {
-    let mut names: Vec<String> = headers
-        .get_all(VARY)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(','))
-        .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty())
-        .collect();
-    if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
-        names.push(name.to_string());
-    }
-    if let Ok(v) = HeaderValue::from_str(&names.join(", ")) {
-        headers.insert(VARY, v);
-    }
-}
-
 const SEC_FETCH_DEST: HeaderName = HeaderName::from_static("sec-fetch-dest");
 
 /// What chooses a non-entry Markdown file's representation: `Sec-Fetch-Dest`,
 /// and `Accept` when that header is absent (P36). Both go in `Vary`, so a
 /// cache never answers a script's fetch with the rendered page or the reverse.
-const MARKDOWN_VARY: [&str; 2] = ["Sec-Fetch-Dest", "Accept"];
+const MARKDOWN_VARY: &str = "Sec-Fetch-Dest, Accept";
 
 fn is_html(content_type: &str) -> bool {
     content_type
@@ -406,8 +378,12 @@ async fn serve_helper(State(state): State<AppState>, Path(file): Path<String>) -
     response
 }
 
-fn apply_file_headers(state: &AppState, headers: &mut HeaderMap, etag: &str) {
+/// `has_variants`: the file has two representations ([`MARKDOWN_VARY`]).
+fn apply_file_headers(state: &AppState, headers: &mut HeaderMap, etag: &str, has_variants: bool) {
     apply_sandbox_headers(state, headers);
+    if has_variants {
+        headers.insert(VARY, HeaderValue::from_static(MARKDOWN_VARY));
+    }
     if let Ok(v) = HeaderValue::from_str(etag) {
         headers.insert(ETAG, v);
     }
@@ -537,22 +513,5 @@ mod tests {
         ] {
             assert_eq!(wants_document(&headers(pairs)), document, "{pairs:?}");
         }
-    }
-
-    #[test]
-    fn vary_merges() {
-        let mut h = HeaderMap::new();
-        add_vary(&mut h, "Sec-Fetch-Dest");
-        assert_eq!(h[VARY], "Sec-Fetch-Dest");
-        let mut h = headers(&[
-            ("vary", "Accept-Encoding"),
-            ("vary", "origin, sec-fetch-dest"),
-        ]);
-        add_vary(&mut h, "Sec-Fetch-Dest");
-        assert_eq!(h.get_all(VARY).iter().count(), 1);
-        assert_eq!(h[VARY], "Accept-Encoding, origin, sec-fetch-dest");
-        let mut h = headers(&[("vary", "Origin")]);
-        add_vary(&mut h, "Sec-Fetch-Dest");
-        assert_eq!(h[VARY], "Origin, Sec-Fetch-Dest");
     }
 }

@@ -15,8 +15,8 @@ use serde::Serialize;
 
 use super::tags::normalize_each;
 use super::{
-    api, authed_api, links, open_in_browser, parse_ref, resolve, resolve_id, version_segment,
-    Resolved,
+    api, authed_api, fetch_detail, links, list_scope, open_in_browser, parse_ref, resolve,
+    resolve_id, version_segment, Resolved,
 };
 use crate::cli::{CatArgs, InfoArgs, LinkArgs, ListArgs, OpenArgs, PullArgs, RefArg};
 use crate::client::{Api, Fetched};
@@ -98,13 +98,7 @@ pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
     } else {
         ArchivedFilter::Exclude
     };
-    let scope = if args.all {
-        ListScope::All
-    } else if args.shared {
-        ListScope::Shared
-    } else {
-        ListScope::Mine
-    };
+    let scope = list_scope(args.all, args.shared);
     let api = authed_api(settings)?;
     // A plain `--shared` keeps the endpoint (and the JSON) it always had.
     if scope == ListScope::Shared
@@ -128,16 +122,12 @@ pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
         ListScope::All => api.require_feature("search", "--all")?,
     }
     let mut filters: Vec<(&str, String)> = Vec::new();
-    match scope {
-        ListScope::Mine => {}
-        ListScope::Shared => filters.push(("scope", "shared".into())),
-        ListScope::All => filters.push(("scope", "all".into())),
+    if scope != ListScope::Mine {
+        filters.push(("scope", scope.as_str().into()));
     }
     filters.extend(tags.iter().map(|t| ("tag", t.clone())));
-    match archived {
-        ArchivedFilter::Exclude => {}
-        ArchivedFilter::Include => filters.push(("archived", "include".into())),
-        ArchivedFilter::Only => filters.push(("archived", "only".into())),
+    if archived != ArchivedFilter::Exclude {
+        filters.push(("archived", archived.as_str().into()));
     }
     let list = api.get::<ParcelList>(list_url_with(&api, "parcels", &args, &filters))?;
     if args.json.json {
@@ -300,7 +290,7 @@ fn open_comments(n: i64) -> String {
     }
 }
 
-fn get_detail(api: &Api, id: &str) -> Result<Fetched<ParcelDetail>> {
+pub(crate) fn get_detail(api: &Api, id: &str) -> Result<Fetched<ParcelDetail>> {
     api.get::<ParcelDetail>(api.endpoint(["parcels", id]))
         .map_err(|e| signed_out_hint(e, api.has_token()))
 }
@@ -332,10 +322,7 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
     let target = resolve(&api, parcel_ref)?;
     let version = args.version.or(target.version);
     let id = target.id;
-    let detail = match target.detail {
-        Some(detail) => detail,
-        None => get_detail(&api, &id)?,
-    };
+    let detail = fetch_detail(&api, &id, target.detail)?;
     let pinned_detail = match version {
         Some(v) => Some(get_version(&api, &id, Some(v))?),
         None => None,
@@ -601,7 +588,7 @@ pub fn cat(settings: &Settings, args: CatArgs) -> Result<()> {
         // The current entry, pinned to the current version number so the two
         // requests can't straddle a publish.
         (None, None) => {
-            let detail = get_detail(&api, &id)?.value;
+            let detail = fetch_detail(&api, &id, target.detail)?.value;
             (
                 detail.parcel.current_version.to_string(),
                 detail.parcel.entry,
@@ -788,10 +775,7 @@ fn deep_link(api: &Api, target: Resolved, page_flag: Option<String>) -> Result<L
     if page.is_some() {
         api.require_feature("pages", "pages")?;
     }
-    let detail = match detail {
-        Some(detail) => detail.value,
-        None => get_detail(api, &id)?.value,
-    };
+    let detail = fetch_detail(api, &id, detail)?.value;
     if let Some(page) = &page {
         let shown = version.unwrap_or(detail.parcel.current_version);
         let pages = if shown == detail.parcel.current_version {

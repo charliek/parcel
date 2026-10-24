@@ -104,8 +104,8 @@ src/
   stores/       zustand: server info, session, theme
   hooks/        React Query hooks, session hooks
   components/   ui/ (shadcn-style primitives), layout/, viewer/, upload/, tokens/, auth/,
-                dashboard/ (facets, search box), tags/ (chips, chip input, slug field),
-                account/ (handle)
+                parcels/ (cards and rows), common/ (badges), dashboard/ (facets,
+                search box), tags/ (chips, chip input, slug field), account/ (handle)
   pages/        one component per route
 e2e/            Playwright specs
 ```

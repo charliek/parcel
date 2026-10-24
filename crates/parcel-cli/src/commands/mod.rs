@@ -15,7 +15,7 @@ use std::io::Read;
 
 use anyhow::{Context, Result};
 use parcel_types::ids::{ParcelRef, RefTarget};
-use parcel_types::{ParcelDetail, ParcelSummary};
+use parcel_types::{ListScope, ParcelDetail, ParcelSummary};
 
 use crate::cli::{Cli, Command};
 use crate::client::{Api, Fetched};
@@ -148,6 +148,26 @@ pub fn resolve(api: &Api, parcel_ref: ParcelRef) -> Result<Resolved> {
         fragment,
         detail,
     })
+}
+
+/// The parcel's detail: the one [`resolve`] already fetched, else a request.
+pub fn fetch_detail(
+    api: &Api,
+    id: &str,
+    fetched: Option<Fetched<ParcelDetail>>,
+) -> Result<Fetched<ParcelDetail>> {
+    fetched.map_or_else(|| read::get_detail(api, id), Ok)
+}
+
+/// `--all` / `--shared` as a list scope.
+pub fn list_scope(all: bool, shared: bool) -> ListScope {
+    if all {
+        ListScope::All
+    } else if shared {
+        ListScope::Shared
+    } else {
+        ListScope::Mine
+    }
 }
 
 /// [`resolve`], for commands that only need the id.

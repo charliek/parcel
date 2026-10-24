@@ -26,14 +26,18 @@ export async function fetchAllTags(filters: TagFilters): Promise<TagCount[]> {
   }
 }
 
-/** Tag counts for the parcels matching `filters` (the dashboard's facets, autocomplete). */
-export function useTagCounts(filters: TagFilters, enabled = true) {
-  return useQuery({
+/** The query for {@link fetchAllTags}; the last counts stay up while new ones load. */
+function tagCountsQuery(filters: TagFilters) {
+  return {
     queryKey: queryKeys.tags(filters),
     queryFn: () => fetchAllTags(filters),
-    enabled,
-    placeholderData: (previous) => previous,
-  });
+    placeholderData: (previous: TagCount[] | undefined) => previous,
+  };
+}
+
+/** Tag counts for the parcels matching `filters` (the dashboard's facets, autocomplete). */
+export function useTagCounts(filters: TagFilters, enabled = true) {
+  return useQuery({ ...tagCountsQuery(filters), enabled });
 }
 
 /** Every tag the caller uses on their own parcels, archived ones included. */
@@ -48,11 +52,7 @@ export function useFacetCounts(query: DashboardQuery): TagCount[] | undefined {
   const main = useTagCounts(listFilters(query));
   const swaps = swapFacetFilters(query);
   const results = useQueries({
-    queries: swaps.map((swap) => ({
-      queryKey: queryKeys.tags(swap.filters),
-      queryFn: () => fetchAllTags(swap.filters),
-      placeholderData: (previous: TagCount[] | undefined) => previous,
-    })),
+    queries: swaps.map((swap) => tagCountsQuery(swap.filters)),
   });
   // While a new filter's counts load, the last complete set stays up (no
   // skeleton flashing in the sidebar at every click).

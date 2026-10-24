@@ -28,6 +28,7 @@ use parcel_server::config::{AuthMode, Config, ProviderConfig};
 use parcel_server::db::users;
 use parcel_server::state::AppState;
 use parcel_server::storage::MemoryBlobStore;
+use parcel_types::{ErrorBody, ParcelSummary};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::{AssertSqlSafe, PgPool};
@@ -462,6 +463,50 @@ pub async fn expect_status(response: Response, status: StatusCode) -> Response {
 /// Assert a status and parse the JSON body.
 pub async fn expect_json<T: DeserializeOwned>(response: Response, status: StatusCode) -> T {
     json(expect_status(response, status).await).await
+}
+
+/// Assert an error status and return its message.
+pub async fn expect_error(response: Response, status: StatusCode) -> String {
+    expect_json::<ErrorBody>(response, status)
+        .await
+        .error
+        .message
+}
+
+/// `PATCH /parcels/{id}` as `who`.
+pub async fn patch(app: &TestApp, who: &Person, id: &str, body: Value) -> Response {
+    app.patch_json(&format!("/api/v1/parcels/{id}"), Some(&who.token), &body)
+        .await
+}
+
+/// [`patch`], expecting success.
+pub async fn patched(app: &TestApp, who: &Person, id: &str, body: Value) -> ParcelSummary {
+    expect_json(patch(app, who, id, body).await, StatusCode::OK).await
+}
+
+/// The owner of a parcel, for driving the db and publish layers directly.
+pub async fn owner_id(app: &TestApp, parcel: &str) -> uuid::Uuid {
+    sqlx::query_scalar("SELECT owner_id FROM parcels WHERE id = $1")
+        .bind(parcel)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap()
+}
+
+/// One `index.html` upload, for [`parcel_server::publish`] calls.
+pub fn upload(text: &str) -> Vec<parcel_server::publish::Upload> {
+    parcel_server::publish::collect_uploads(
+        vec![("index.html".into(), bytes::Bytes::from(text.to_string()))],
+        &test_config("http://127.0.0.1:9").limits,
+    )
+    .unwrap()
+}
+
+/// Await concurrent writers, failing (as a likely deadlock) after a minute.
+pub async fn within_a_minute<F: std::future::Future>(what: &str, fut: F) -> F::Output {
+    tokio::time::timeout(std::time::Duration::from_secs(60), fut)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: the writers didn't finish (deadlock?)"))
 }
 
 /// A multipart/form-data body, built by hand so tests control every byte.

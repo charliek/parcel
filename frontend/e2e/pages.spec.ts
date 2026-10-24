@@ -1,5 +1,5 @@
 import { expect, type Locator, type Page, test } from '@playwright/test';
-import { deleteParcelViaApi, parcelFrame, publishViaApi, uniq } from './helpers';
+import { deleteParcelViaApi, parcelFrame, publishViaApi, uniq, VIEW_REQUEST } from './helpers';
 
 let parcelId = '';
 
@@ -41,7 +41,7 @@ function pagesMenu(page: Page): Locator {
 function countGrants(page: Page): { count: () => number } {
   let n = 0;
   page.on('request', (r) => {
-    if (/\/api\/v1\/parcels\/[a-z2-9]{12}\/view/.test(r.url())) n += 1;
+    if (VIEW_REQUEST.test(r.url())) n += 1;
   });
   return { count: () => n };
 }

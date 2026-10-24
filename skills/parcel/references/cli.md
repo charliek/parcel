@@ -72,7 +72,7 @@ id, or `p` or `v`.
 | `parcel versions <ref> [--json]` | Version history |
 | `parcel restore <ref> --version N [--json]` | Publish a copy of version N as the newest version |
 | `parcel delete <ref> [--yes]` | Delete the parcel and every version. Prompts on a terminal; needs `--yes` otherwise |
-| `parcel open <ref> [--page PATH] [--json]` | Print the viewer URL and open it in a browser (`--json` prints `{url}`) |
+| `parcel open <ref> [--page PATH] [--json]` | Print the link (as `link` does: the clean URL when it has a slug, else `/p/<id>`, with the ref's `?v=` and `?page=`) and open it in a browser (`--json` prints `{url}`) |
 | `parcel comments list <ref> [--status open\|resolved\|all] [--json]` | Comment threads (default: open ones), with page, element, author and replies |
 | `parcel comments add <ref> <TEXT> [--version N] [--json]` | A general comment about the whole parcel |
 | `parcel comments reply <ref> <N> <TEXT> [--json]` | Reply to thread `#N` |
@@ -108,7 +108,7 @@ id, or `p` or `v`.
 | `--parcel <ref>` (alias `--update`) | Publish a new version of this parcel instead of creating one |
 | `--mode merge\|replace` | With `--parcel`. Default: `replace` for a directory, `merge` for a single file or bare `--file`/`--remove` |
 | `--remove <path>` | With `--parcel`, merge mode: drop a path from the previous version (repeatable) |
-| `--base-version N` | With `--parcel`: fail (HTTP 409) unless the current version is still N |
+| `--base-version N` | With `--parcel` or `--slug`: fail (HTTP 409) unless the current version is still N (with `--slug`, also when nothing has the slug yet) |
 | `--open` | Open the result in a browser |
 | `--json` | Print the `PublishResult` JSON |
 
@@ -197,7 +197,8 @@ A parcel's data is JSON its pages keep between visits (`window.parcel.data`), in
 
 ## JSON shapes
 
-`--json` prints the server's response unchanged. Timestamps are RFC 3339 UTC
+`--json` prints the server's response unchanged, except for `tags`, `link`, `open`
+and `handle`, whose JSON the CLI builds (shapes below). Timestamps are RFC 3339 UTC
 strings, sizes are bytes.
 
 **ParcelSummary** — one parcel (in lists, `publish`, `update`); `visibility` is `private`, `internal` or `public`:
@@ -286,8 +287,9 @@ signed-out callers of a parcel without a slug.
 The CLI reads the server's `features` (`tags`, `search`, `archive`, `slugs`,
 `pages`; from `GET /info`, once per run) before it sends anything an older server
 would ignore or refuse. Asking for something the server lacks fails with
-`this server doesn't support <tags|slugs|searching shared parcels|archiving|pages> yet
-(it is older than this CLI)` rather than returning an unfiltered list. What the CLI
+`this server doesn't support <what> yet (it is older than this CLI)`, where `<what>`
+names the flag's feature (tags, slugs, handles, archiving, archived parcels, searching
+shared parcels, `--all`, pages), rather than returning an unfiltered list. What the CLI
 adds on its own (the automatic `project:` tag and the version source) is silently
 left out there. A plain `list`, `list -q` on your own parcels, `info`, `cat`,
 `pull` and `publish` work against any server.
@@ -299,7 +301,7 @@ non-zero exit code (see [troubleshooting.md](troubleshooting.md)).
 
 ```bash
 # Publish, capture the link
-url=$(parcel publish report.html --title "Q3 latency" --json | jq -r .parcel.url)
+url=$(parcel publish report.html --title "Q3 latency" --json | jq -r .parcel.canonical_url)
 
 # Revise in place, guarding against concurrent edits
 v=$(parcel info "$url" --json | jq .parcel.current_version)

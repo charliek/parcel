@@ -46,9 +46,8 @@ pub async fn delete(pool: &PgPool, owner_id: Uuid, tag: &str) -> Result<i64> {
     let mut tx = pool.begin().await.context("beginning tag delete")?;
     lock_owner_quota(&mut tx, owner_id).await?;
     let updated = sqlx::query(
-        "UPDATE parcels p SET tags = COALESCE((
-             SELECT array_agg(DISTINCT (t COLLATE \"C\") ORDER BY (t COLLATE \"C\"))
-             FROM unnest(p.tags) AS u(t) WHERE t <> $2), '{}')
+        // Tags are stored sorted and distinct; removing one keeps them so.
+        "UPDATE parcels p SET tags = array_remove(p.tags, $2)
          WHERE p.owner_id = $1 AND p.tags @> ARRAY[$2]::text[]",
     )
     .bind(owner_id)

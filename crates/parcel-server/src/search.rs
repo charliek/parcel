@@ -357,7 +357,7 @@ impl PlainText {
 
 /// Decode `&name;`, `&#n;` and `&#xh;`. Unknown or unterminated references
 /// stay as written; a number that isn't a character becomes U+FFFD.
-fn decode_entities(s: &str) -> String {
+pub(crate) fn decode_entities(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(amp) = rest.find('&') {
