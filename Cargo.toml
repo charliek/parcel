@@ -21,5 +21,10 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 
+# Cheap debug info in dev (and none for dependencies), as slaudio and imgmcp
+# do, so incremental builds and the target dir stay small.
 [profile.dev]
-debug = "limited"
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
