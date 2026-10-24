@@ -7,13 +7,14 @@
 use std::fs;
 
 use anyhow::{bail, Context, Result};
+use parcel_types::ids::ParcelRef;
 use parcel_types::{validate_data_name, DataItem, DataSummary};
 use reqwest::{Method, Url};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
 use super::read::signed_out_hint;
-use super::{api, authed_api, parse_ref, read_stdin};
+use super::{api, authed_api, parse_ref, read_stdin, resolve_id};
 use crate::cli::{
     DataCollectionArgs, DataCommand, DataGetArgs, DataItemArgs, DataListArgs, DataSetArgs,
     DataUpdateArgs,
@@ -43,12 +44,12 @@ fn check_name(kind: &str, name: &str) -> Result<()> {
     validate_data_name(kind, name).map_err(|e| error::usage(format!("{name:?}: {e}")))
 }
 
-/// The parcel id, once the collection and key names are known to be valid.
-fn item_ref(args: &DataItemArgs) -> Result<String> {
-    let (id, _) = parse_ref(&args.parcel.parcel)?;
+/// The parcel reference, once the collection and key names are known to be valid.
+fn item_ref(args: &DataItemArgs) -> Result<ParcelRef> {
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     check_name("collection", &args.collection)?;
     check_name("key", &args.key)?;
-    Ok(id)
+    Ok(parcel_ref)
 }
 
 fn data_url(api: &Api, id: &str, rest: &[&str]) -> Url {
@@ -75,11 +76,12 @@ struct RawItem {
 }
 
 pub fn list(settings: &Settings, args: DataListArgs) -> Result<()> {
-    let (id, _) = parse_ref(&args.parcel.parcel)?;
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     if let Some(collection) = &args.collection {
         check_name("collection", collection)?;
     }
     let api = api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     match &args.collection {
         None => list_collections(&api, &id, args.json),
         Some(collection) => list_items(&api, &id, collection, args.json),
@@ -183,8 +185,9 @@ fn list_items(api: &Api, id: &str, collection: &str, json: bool) -> Result<()> {
 }
 
 pub fn get(settings: &Settings, args: DataGetArgs) -> Result<()> {
-    let id = item_ref(&args.item)?;
+    let parcel_ref = item_ref(&args.item)?;
     let api = api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     let item = api
         .get::<RawItem>(data_url(
             &api,
@@ -271,10 +274,11 @@ fn write(
 }
 
 pub fn set(settings: &Settings, args: DataSetArgs) -> Result<()> {
-    let id = item_ref(&args.item)?;
+    let parcel_ref = item_ref(&args.item)?;
     let (text, from_stream) = value_source(&args.value)?;
     let body = set_body(&text, from_stream, args.string)?;
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     let item = write(&api, &id, &args.item, Method::PUT, "application/json", body)?;
     if args.json.json {
         return output::print_json(&item.raw);
@@ -288,10 +292,11 @@ pub fn set(settings: &Settings, args: DataSetArgs) -> Result<()> {
 }
 
 pub fn update(settings: &Settings, args: DataUpdateArgs) -> Result<()> {
-    let id = item_ref(&args.item)?;
+    let parcel_ref = item_ref(&args.item)?;
     let (text, _) = value_source(&args.patch)?;
     let body = patch_body(&text)?;
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     let item = write(
         &api,
         &id,
@@ -312,8 +317,9 @@ pub fn update(settings: &Settings, args: DataUpdateArgs) -> Result<()> {
 }
 
 pub fn delete(settings: &Settings, args: DataItemArgs) -> Result<()> {
-    let id = item_ref(&args)?;
+    let parcel_ref = item_ref(&args)?;
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     api.delete(data_url(&api, &id, &[&args.collection, &args.key]))?;
     output::print(&format!(
         "Deleted {}/{} from {id}\n",
@@ -322,9 +328,10 @@ pub fn delete(settings: &Settings, args: DataItemArgs) -> Result<()> {
 }
 
 pub fn clear(settings: &Settings, args: DataCollectionArgs) -> Result<()> {
-    let (id, _) = parse_ref(&args.parcel.parcel)?;
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     check_name("collection", &args.collection)?;
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     api.delete(data_url(&api, &id, &[&args.collection]))?;
     output::print(&format!("Cleared {} on {id}\n", args.collection))
 }

@@ -31,7 +31,7 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::http::{auth, health, openapi, spa};
 use crate::state::AppState;
-use crate::{content, db, gc};
+use crate::{content, db, gc, search};
 
 /// Build the complete application. Tests drive this with `oneshot`.
 pub fn build_app(state: AppState) -> Router {
@@ -213,11 +213,13 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     );
     let state = AppState::new(config)?;
     if state.config.run_migrations {
+        db::check_migration_url(&state.config.database_url)?;
         db::migrate(&state.db).await?;
     } else {
         tracing::info!("RUN_MIGRATIONS=false; expecting `parcel-server migrate` to have run");
     }
     gc::spawn(state.clone());
+    search::spawn_backfill(state.clone());
 
     let app = build_app(state);
     let listener = tokio::net::TcpListener::bind(addr)

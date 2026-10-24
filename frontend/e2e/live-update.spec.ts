@@ -6,6 +6,7 @@ import {
   parcelFrame,
   publishVersionViaApi,
   uniq,
+  VIEW_REQUEST,
 } from './helpers';
 
 // The viewer polls every 5 s; allow a few polls.
@@ -115,8 +116,6 @@ test('a half-written comment holds off the reload', async ({ page, request }) =>
   await expect(frame.getByRole('heading', { name: v2 })).toBeVisible({ timeout: POLL_TIMEOUT });
   await expect(banner).toHaveCount(0);
 });
-
-const VIEW_REQUEST = /\/api\/v1\/parcels\/[a-z2-9]{12}\/view(\?|$)/;
 
 test('a comment started while the reload is in flight keeps the frame', async ({
   page,

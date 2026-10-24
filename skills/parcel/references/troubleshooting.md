@@ -32,6 +32,12 @@ Errors print one line (sometimes followed by an indented list) on stderr as
 | conflict / HTTP 409 with `--base-version` | Someone published a newer version | `parcel info <ref>` to see it, merge the changes, publish with the new base |
 | `refusing to overwrite existing files (pass --force)` | `pull` target already has those files | Pull into an empty directory, or `--force` if overwriting is intended |
 | `refusing to delete <id> without confirmation; pass --yes` | `delete` without a terminal | Confirm with the user, then add `--yes` |
+| `this server doesn't support <tags\|slugs\|archiving\|…> yet (it is older than this CLI)` | The server predates the feature the flag needs | Drop the flag, or ask the operator to upgrade the server |
+| `tag "x" is not valid: …` / `a parcel may have at most 20 tags …` | A tag outside `a-z 0-9 . + -` (optionally `namespace:value`), or too many | Fix the tag (`parcel tags` shows the vocabulary); remove some with `parcel tag <ref> --remove T` |
+| `another of your parcels already has this slug` (409) | `--slug` on `update` (or `PATCH`) names a slug another of your parcels holds | Pick another slug; to version that parcel, `publish --slug` instead |
+| `no parcel has the slug "x" yet, so there is no base_version to check` (409) | `publish --slug S --base-version N` before the first publish | Drop `--base-version` for the first publish |
+| `"x" is not a parcel id or URL (expected a 12-character id, …)` | A bare ref that is neither an id nor a valid slug: often a one-segment slug of 10–14 id-alphabet letters (`management`) | Use `@<handle>/<slug>` or the clean URL |
+| `list -q` finds nothing, though the parcel exists | Search needs every word (stemmed) in the title, description, tags or entry page's text | Use two or three distinctive words, `or` or quotes; add `--all` / `--archived` |
 | `could not connect to <server>` | Server down, wrong URL, or offline | `parcel config show` to check the server; retry later |
 | `warning: skipping symlink …` | Folder publishes don't follow symlinks | `--file <published>=<target>` to include it explicitly |
 

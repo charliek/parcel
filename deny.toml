@@ -1,0 +1,65 @@
+# cargo-deny configuration: advisories, licenses, bans and sources for the
+# whole workspace. `make lint` runs `cargo deny --locked check` (every
+# section) and fails on any finding, as CI's rust job does. A finding is fixed
+# with a targeted `cargo update -p <crate>` (CLAUDE.md), or, when no fixed
+# release exists, a one-line reasoned `ignore` below; never by loosening a
+# section.
+#
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Every feature combination: what `make lint` and CI build (`--all-features`)
+# and the production image (`--no-default-features`) are both subsets.
+all-features = true
+
+[advisories]
+# No `ignore` entries. `rsa` (RUSTSEC-2023-0071, no fix) stays out of the
+# lock by construction (jsonwebtoken `aws_lc_rs`, sqlx 0.9); the crypto guard
+# in `make lint` keeps it out.
+ignore = []
+# cargo-deny's defaults skip unsoundness advisories in transitive crates and
+# only warn on yanked releases; this gate covers the whole graph.
+unsound = "all"
+yanked = "deny"
+
+[licenses]
+# Permissive licenses only, each derived from `cargo deny list` over this
+# graph rather than copied blind. Dual-licensed crates (`MIT OR Apache-2.0`,
+# r-efi's `MIT OR Apache-2.0 OR LGPL-2.1-or-later`, dunce's `CC0-1.0 OR
+# MIT-0 OR Apache-2.0`) pass on any allowed term, so their other terms need
+# no entry.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    # The crypto under TLS and JWT: aws-lc-rs/aws-lc-sys, rustls,
+    # rustls-webpki, untrusted, simple_asn1.
+    "ISC",
+    # unicode-ident and the ICU crates under url's IDNA support.
+    "Unicode-3.0",
+    # webpki-roots / webpki-root-certs: Mozilla's root bundle (data).
+    "CDLA-Permissive-2.0",
+    # ryu, whoami.
+    "BSL-1.0",
+    # aho-corasick, memchr, walkdir and friends (`MIT OR Unlicense`).
+    "Unlicense",
+    # zlib-rs, foldhash, miniz_oxide's alternatives.
+    "Zlib",
+    # option-ext (dirs-sys, under the CLI's `directories`): file-level copyleft
+    # on that crate's own files only; nothing here modifies them.
+    "MPL-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Two versions of one crate are normal in a resolved graph this size.
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# The StrideLabs shared crates (public, pinned by tag in
+# crates/parcel-server/Cargo.toml).
+allow-git = ["https://github.com/charliek/stridelabs-rust.git"]

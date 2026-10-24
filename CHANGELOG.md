@@ -1,5 +1,105 @@
 # Changelog
 
+## [Unreleased]
+
+Tags, slugs, archive, full-text search and pages (PLAN.md, "Tags, slugs,
+archive and search (v0.5)"). Everything is additive: an older CLI keeps
+working against the new server, and the server deploys before the CLI.
+
+### Added
+- **Tags and archive.** Up to 20 free-form tags per parcel (the conventions
+  `project:<repo>` and `kind:<plan|discovery|research|report|review|dashboard|
+  prototype|notes>`; others are topics), `GET /api/v1/tags` (counts over the
+  parcels a filter selects), `POST /api/v1/tags/rename` (merges) and
+  `/tags/delete`, and `archived` on `PATCH` (archived parcels stay viewable by
+  URL; a new version un-archives). Migration 0006.
+- **Unified, searchable listing.** `GET /api/v1/parcels` takes `scope`
+  (`mine`, `shared`, `all`), repeated `tag` (all of them), `archived` and `q`:
+  full text over title, description, tags and the entry page's text
+  (stemmed, every word must appear; quotes, `or`, `-word`), with ids, titles,
+  descriptions and slugs also matched by substring. Results are ranked and
+  carry a `match` snippet as text segments. Page text is extracted after a
+  publish commits and swept up by a backfill loop every minute;
+  **`parcel-server reindex`** drains the backlog at once (run it after the
+  deploy that adds search). `/api/v1/shared` is unchanged.
+- **Handles, slugs and clean URLs.** `/@<handle>/<slug>` next to `/p/<id>`
+  (which works forever). Each user has a handle (`PATCH /api/v1/me`; old
+  handles stay reserved and keep resolving), a parcel an optional slug
+  (`<repo>/<plan-name>`, up to four segments), and a renamed slug redirects.
+  `GET /api/v1/parcels/by-slug`; a miss and a private parcel are the same 404.
+  `ParcelSummary` gains `tags`, `archived_at`, `slug`, `owner_handle` and
+  `canonical_url`; `url` stays `<app>/p/<id>`. Migration 0007.
+- **Publish upsert.** `slug` on a publish creates the parcel the first time
+  and adds a version to it after that, from any machine, following the
+  owner's redirects; two first publishes of one slug make one parcel.
+  `PublishResult.created`; `base_version` is honoured.
+- **Version source.** Each version records where it came from (repository
+  without credentials, branch, commit, machine, client), visible to the owner
+  only, never holding a credential.
+- **Pages within a parcel.** A version's `.html`/`.md` files are listed with
+  their titles (`pages`, `FileEntry.page_title`, migration 0008); the viewer
+  has a Pages menu and `?page=` deep links, `view?path=` mints a grant for one
+  page, and a non-entry Markdown file renders as a styled page when opened as
+  one (`fetch()` still gets the raw text; `Vary: Sec-Fetch-Dest, Accept`). The
+  page helper reports the URL fragment.
+- **`ServerInfo.features`** (`tags`, `search`, `archive`, `slugs`, `pages`),
+  so a newer client refuses a parameter an older server would ignore.
+- **CLI.** `parcel publish --tag/--kind/--project/--slug/--no-auto-tags/
+  --no-source` (inside a git repository a new parcel gets `project:<repo>`),
+  `parcel list --tag/--project/--kind/-q/--shared/--all/--archived/
+  --archived-only` (snippets under matching rows), `parcel update
+  --add-tag/--remove-tag/--set-tags/--slug/--archive/--unarchive`, and the
+  new `tags` (`rename`, `delete`), `tag`, `archive`, `unarchive`, `link`
+  (`--page`, `--markdown`), `handle` commands; `open --page`. Every REF takes
+  an id, a `/p/<id>` or `/@handle/slug` URL, `@handle/slug` or one of your
+  slugs. `PARCEL_PROJECT` names the project.
+- **MCP** (25 tools, was 22): `list_tags`, `rename_tag`, `delete_tag`;
+  `list_parcels` takes `which`, `query`, `tags` and `archived`;
+  `publish_parcel` takes `tags` and `slug` (upsert); `update_parcel` takes the
+  organization fields; `get_parcel` returns `pages`; every `parcel` argument
+  takes the ref forms. Output stays a superset of what existing clients read.
+- **Web app.** Dashboard with a Mine/Shared/All toggle, facet sidebar
+  (projects, kinds, tags with filter-scoped counts), token search with
+  autocomplete, filter chips, snippets, a show-archived toggle and shareable
+  URL state; tags and slug in Edit details and Upload; a Tags page to rename,
+  merge and delete; a handle dialog; viewer badges, canonical link, Source
+  block for the owner.
+- **Skills.** The CLI skill and the `parcel-mcp` skill teach "organize and
+  find": look before publishing, tag `project:`/`kind:`, slug plans
+  `<repo>/<plan-name>`, `parcel link`, archive, pages and how search matches.
+
+### Changed
+- **stridelabs-rust v0.6.0 → v0.10.0** (all crates; adds stridelabs-postgres).
+  `/mcp` answers 503 (not 401) for a token whose `kid` the key cache hasn't
+  seen yet; JWKS sets are never served past their TTL. Advisory fixes in the
+  lock: tokio 1.54.1 (RUSTSEC-2026-0386), rustls-webpki, webpki roots,
+  ctutils, and `zip` 9 via utoipa-swagger-ui 10.0.2 (RUSTSEC-2026-0367/8/9).
+- **Operator-facing:** `DATABASE_URL` is checked before sqlx parses it, so a
+  bad URL's error no longer quotes it; a **`channel_binding` parameter is
+  refused** at startup (sqlx can't do channel binding; store the URL without
+  it, as deploy/README.md says), and `migrate` and `serve` with
+  `RUN_MIGRATIONS` **refuse a Neon pooled URL** (use the direct one for
+  migrations) with a message that doesn't contain the URL. Check the
+  `DATABASE_URL` secrets before deploying.
+- Logging silences sqlx's pool and URL-option targets, which can print raw
+  errors and URL parameter values; migration and readiness errors are
+  rendered without row or URL text.
+- Mixed-revision rollover: a publish by the previous revision still
+  invalidates search text and un-archives (database triggers); in the window
+  where both revisions run, a transaction can fail with a deadlock (40P01)
+  and the client retries.
+- Dev builds use line-tables-only debug info (none for dependencies).
+
+### Security
+- `make lint` and CI now run `cargo deny --locked check` (advisories, yanked
+  and unsound crates over the whole graph) and `scripts/crypto-guard.sh`
+  (neither `ring` nor `rsa` anywhere in the graph).
+- The test harness refuses a `DATABASE_URL` that isn't local before it drops
+  or creates schemas, and test pools keep their own `search_path` when
+  `DATABASE_URL` is set (`make test` runs that check a second time).
+- Snippets and page text are rendered as text everywhere (React text nodes,
+  the CLI's `printable()`); Biome's `noDangerouslySetInnerHtml` is an error.
+
 ## v0.1.2
 
 The first release of the `parcel` CLI and the two Claude Code plugins

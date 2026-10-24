@@ -15,7 +15,8 @@
 
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -27,6 +28,7 @@ use parcel_server::config::{AuthMode, Config, ProviderConfig};
 use parcel_server::db::users;
 use parcel_server::state::AppState;
 use parcel_server::storage::MemoryBlobStore;
+use parcel_types::{ErrorBody, ParcelSummary};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::{AssertSqlSafe, PgPool};
@@ -46,21 +48,29 @@ pub const CONTENT_HOST: &str = "content.parcel.test";
 const ADMIN_URL_DEFAULT: &str = "postgres://postgres:localdev@localhost:5439/postgres";
 const TEST_DB: &str = "parcel_test";
 
+/// Whether the suite runs against a `DATABASE_URL` of the caller's choosing.
+fn database_url_set() -> bool {
+    std::env::var("DATABASE_URL").is_ok_and(|u| !u.is_empty())
+}
+
 /// The database URL for tests: `DATABASE_URL` if set, else the compose
-/// Postgres's `parcel_test` database.
+/// Postgres's `parcel_test` database. A set `DATABASE_URL` must name a
+/// loopback host (this harness creates and drops schemas there), or the
+/// suite panics before connecting, without printing the URL.
 pub fn database_url() -> String {
-    std::env::var("DATABASE_URL")
-        .ok()
-        .filter(|u| !u.is_empty())
-        .unwrap_or_else(|| format!("postgres://postgres:localdev@localhost:5439/{TEST_DB}"))
+    if database_url_set() {
+        stridelabs_testing::require_local_url("DATABASE_URL")
+    } else {
+        format!("postgres://postgres:localdev@localhost:5439/{TEST_DB}")
+    }
 }
 
 /// Create `parcel_test` if it doesn't exist (only when using the default URL).
 async fn ensure_test_database() {
-    if std::env::var("DATABASE_URL").is_ok_and(|u| !u.is_empty()) {
+    if database_url_set() {
         return;
     }
-    let admin = stridelabs_testing::require_postgres(ADMIN_URL_DEFAULT).await;
+    let admin = stridelabs_testing::require_postgres_at(ADMIN_URL_DEFAULT).await;
     for attempt in 0..10 {
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)")
@@ -106,8 +116,12 @@ pub async fn migrated_pool() -> PgPool {
 /// one by one).
 pub async fn schema_pool() -> PgPool {
     ensure_test_database().await;
+    // `database_url` refuses a non-local `DATABASE_URL` before the `DROP
+    // SCHEMA … CASCADE` below can reach it.
     let base = database_url();
-    let admin = stridelabs_testing::require_postgres(&base).await;
+    // `_at`, never `require_postgres`: that one prefers a set `DATABASE_URL`
+    // over its argument, which would drop the per-test `search_path` below.
+    let admin = stridelabs_testing::require_postgres_at(&base).await;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     // DDL can't bind identifiers, so the names below are spliced in: this
     // one (and the `old` ones, which only ever match it) is `t_<secs>_<hex>`.
@@ -138,7 +152,7 @@ pub async fn schema_pool() -> PgPool {
 
     let separator = if base.contains('?') { '&' } else { '?' };
     let url = format!("{base}{separator}options=-c%20search_path%3D{schema}");
-    stridelabs_testing::require_postgres(&url).await
+    stridelabs_testing::require_postgres_at(&url).await
 }
 
 pub fn test_config(issuer: &str) -> Config {
@@ -401,6 +415,22 @@ pub fn token_for(sub: &str, email: &str) -> String {
     format!("{TEST_USER}{sub}:{email}")
 }
 
+/// A person: their stand-in credential and email.
+pub struct Person {
+    pub token: String,
+    pub email: String,
+}
+
+/// A fresh person whose email starts with `name`.
+pub fn person(name: &str) -> Person {
+    let sub = uuid::Uuid::new_v4().simple().to_string();
+    let email = format!("{name}-{sub}@example.com");
+    Person {
+        token: token_for(&sub, &email),
+        email,
+    }
+}
+
 pub async fn body_bytes(response: Response) -> Vec<u8> {
     response
         .into_body()
@@ -428,6 +458,55 @@ pub async fn expect_status(response: Response, status: StatusCode) -> Response {
         "expected {status}, got {got}: {}",
         String::from_utf8_lossy(&body)
     );
+}
+
+/// Assert a status and parse the JSON body.
+pub async fn expect_json<T: DeserializeOwned>(response: Response, status: StatusCode) -> T {
+    json(expect_status(response, status).await).await
+}
+
+/// Assert an error status and return its message.
+pub async fn expect_error(response: Response, status: StatusCode) -> String {
+    expect_json::<ErrorBody>(response, status)
+        .await
+        .error
+        .message
+}
+
+/// `PATCH /parcels/{id}` as `who`.
+pub async fn patch(app: &TestApp, who: &Person, id: &str, body: Value) -> Response {
+    app.patch_json(&format!("/api/v1/parcels/{id}"), Some(&who.token), &body)
+        .await
+}
+
+/// [`patch`], expecting success.
+pub async fn patched(app: &TestApp, who: &Person, id: &str, body: Value) -> ParcelSummary {
+    expect_json(patch(app, who, id, body).await, StatusCode::OK).await
+}
+
+/// The owner of a parcel, for driving the db and publish layers directly.
+pub async fn owner_id(app: &TestApp, parcel: &str) -> uuid::Uuid {
+    sqlx::query_scalar("SELECT owner_id FROM parcels WHERE id = $1")
+        .bind(parcel)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap()
+}
+
+/// One `index.html` upload, for [`parcel_server::publish`] calls.
+pub fn upload(text: &str) -> Vec<parcel_server::publish::Upload> {
+    parcel_server::publish::collect_uploads(
+        vec![("index.html".into(), bytes::Bytes::from(text.to_string()))],
+        &test_config("http://127.0.0.1:9").limits,
+    )
+    .unwrap()
+}
+
+/// Await concurrent writers, failing (as a likely deadlock) after a minute.
+pub async fn within_a_minute<F: std::future::Future>(what: &str, fut: F) -> F::Output {
+    tokio::time::timeout(std::time::Duration::from_secs(60), fut)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: the writers didn't finish (deadlock?)"))
 }
 
 /// A multipart/form-data body, built by hand so tests control every byte.
@@ -488,3 +567,50 @@ impl Form {
 
 pub const PAGE: &str = "<!doctype html><html><head><title>Hello Parcel</title></head>\
     <body><h1>Hi</h1><script src=\"app.js\"></script></body></html>";
+
+/// A `MakeWriter` that keeps everything logged, for tests that prove a
+/// value never reaches the logs.
+#[derive(Clone, Default)]
+pub struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl Captured {
+    /// Capture every event (at every level) on this thread until the guard drops.
+    pub fn install(&self) -> tracing::subscriber::DefaultGuard {
+        // With a single dispatcher registered, tracing caches a callsite's
+        // interest from whichever thread hits it first: another test's
+        // thread, with no subscriber, would cache "never" and this one would
+        // miss the event. A second, process-long dispatcher makes every
+        // registration ask all of them ("sometimes": checked per event).
+        static SECOND: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+        SECOND.get_or_init(|| tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(self.clone())
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+        guard
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Captured;
+    fn make_writer(&'a self) -> Captured {
+        self.clone()
+    }
+}

@@ -6,8 +6,9 @@ import { CliPage } from '@/pages/CliPage';
 import { DevicePage } from '@/pages/DevicePage';
 import { HomePage } from '@/pages/HomePage';
 import { NewParcelPage } from '@/pages/NewParcelPage';
-import { NotFoundPage } from '@/pages/NotFoundPage';
 import { SignInPage } from '@/pages/SignInPage';
+import { CatchAllPage } from '@/pages/SlugViewerPage';
+import { TagsPage } from '@/pages/TagsPage';
 import { TokensPage } from '@/pages/TokensPage';
 import { ViewerPage } from '@/pages/ViewerPage';
 
@@ -23,7 +24,10 @@ function ScrollToTop() {
 
 export default function App() {
   return (
-    <BrowserRouter>
+    // Address changes render right away, not as transitions: the dashboard's
+    // filters and the viewer's `?page=` are controlled by the address, and a
+    // deferred render would leave a checkbox or a key handler a step behind.
+    <BrowserRouter useTransitions={false}>
       <ScrollToTop />
       <BootGate>
         <Routes>
@@ -44,6 +48,14 @@ export default function App() {
             element={
               <RequireAuth signInDescription="Sign in to publish a new parcel.">
                 <NewParcelPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/tags"
+            element={
+              <RequireAuth signInDescription="Sign in to manage your tags.">
+                <TagsPage />
               </RequireAuth>
             }
           />
@@ -75,7 +87,9 @@ export default function App() {
             }
           />
 
-          <Route path="*" element={<NotFoundPage />} />
+          {/* Clean parcel URLs (`/@handle/slug`, optional auth like `/p/:id`),
+              else the not-found page. */}
+          <Route path="*" element={<CatchAllPage />} />
         </Routes>
       </BootGate>
     </BrowserRouter>

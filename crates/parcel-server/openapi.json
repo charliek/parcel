@@ -445,6 +445,19 @@
         ],
         "type": "object"
       },
+      "DeleteTagRequest": {
+        "additionalProperties": false,
+        "description": "`POST /api/v1/tags/delete`.",
+        "properties": {
+          "tag": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag"
+        ],
+        "type": "object"
+      },
       "DeviceInfo": {
         "description": "`GET /api/v1/cli/device/{user_code}` — what the approval page shows.",
         "properties": {
@@ -603,6 +616,13 @@
           "content_type": {
             "type": "string"
           },
+          "page_title": {
+            "description": "A page's (`.html`, `.htm`, `.md`, `.markdown`) `<title>` or first\n`# heading`, read when it was published. Absent for other files, for\na page without one, and for pages published before titles were kept.\nPlain text: show it as text, never as markup.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "path": {
             "type": "string"
           },
@@ -677,10 +697,46 @@
         ],
         "type": "object"
       },
+      "ListMatch": {
+        "description": "Where a full-text query matched the parcel's page text.",
+        "properties": {
+          "segments": {
+            "description": "The snippet, in order; concatenated they read as a passage of the page.",
+            "items": {
+              "$ref": "#/components/schemas/MatchSegment"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "segments"
+        ],
+        "type": "object"
+      },
+      "MatchSegment": {
+        "description": "One run of a search snippet: text, and whether it is a matched word.\nRender it as text (never as HTML): it is the parcel's own content.",
+        "properties": {
+          "hit": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "hit"
+        ],
+        "type": "object"
+      },
       "Me": {
         "description": "`GET /api/v1/me`.",
         "properties": {
           "email": {
+            "type": "string"
+          },
+          "handle": {
+            "description": "The user's handle: the `@<handle>` in their parcels' clean URLs.",
             "type": "string"
           },
           "id": {
@@ -776,6 +832,25 @@
         ],
         "type": "object"
       },
+      "PageEntry": {
+        "description": "One page of a version: a file the viewer can open (HTML or Markdown).",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "title": {
+            "description": "The page's title (plain text), or null when it has none on record\n(show the path instead).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
       "ParcelAccess": {
         "description": "What the caller may do with a parcel.",
         "enum": [
@@ -841,6 +916,13 @@
               "null"
             ]
           },
+          "pages": {
+            "description": "Pages of the current version: the entry first, then the others by path.",
+            "items": {
+              "$ref": "#/components/schemas/PageEntry"
+            },
+            "type": "array"
+          },
           "parcel": {
             "$ref": "#/components/schemas/ParcelSummary"
           },
@@ -866,7 +948,7 @@
         "properties": {
           "parcels": {
             "items": {
-              "$ref": "#/components/schemas/ParcelSummary"
+              "$ref": "#/components/schemas/ParcelListItem"
             },
             "type": "array"
           },
@@ -882,9 +964,56 @@
         ],
         "type": "object"
       },
+      "ParcelListItem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ParcelSummary"
+          },
+          {
+            "properties": {
+              "match": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ListMatch",
+                    "description": "Set when `q` matched the parcel's page text."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "shared": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/SharedInfo",
+                    "description": "Set when the caller isn't the owner (someone shared it with them)."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "description": "A parcel in `GET /api/v1/parcels`: the summary's fields, plus what the\nlist knows about this caller and query."
+      },
       "ParcelSummary": {
         "description": "A parcel as it appears in lists.",
         "properties": {
+          "archived_at": {
+            "description": "When the owner archived it. Archived parcels stay viewable by URL but\nare left out of lists, tag counts and search unless asked for.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "canonical_url": {
+            "description": "The URL to show and share: `https://…/@<handle>/<slug>` when the\nparcel has a slug, else the same as `url`.",
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -912,6 +1041,27 @@
             "format": "int64",
             "type": "integer"
           },
+          "owner_handle": {
+            "description": "The owner's handle. Left out for anonymous callers of a parcel\nwithout a slug (they aren't told who published it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slug": {
+            "description": "The parcel's name under its owner's handle (`parcel/plan-001`), if\nthe owner gave it one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "description": "Sorted by bytes. Everyone who can view the parcel sees them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "title": {
             "type": "string"
           },
@@ -924,7 +1074,7 @@
             "type": "string"
           },
           "url": {
-            "description": "The viewer URL in the web app (`https://…/p/<id>`).",
+            "description": "The viewer URL in the web app (`https://…/p/<id>`). Stays this\nshape for good (clients append `/v/<n>` to it); show and share\n`canonical_url`.",
             "type": "string"
           },
           "visibility": {
@@ -949,6 +1099,10 @@
       "PublishResult": {
         "description": "Returned by both create and new-version publishes.",
         "properties": {
+          "created": {
+            "description": "Whether this publish created the parcel (a create with a `slug` the\ncaller already uses adds a version instead).",
+            "type": "boolean"
+          },
           "parcel": {
             "$ref": "#/components/schemas/ParcelSummary"
           },
@@ -996,6 +1150,24 @@
         },
         "type": "object"
       },
+      "RenameTagRequest": {
+        "additionalProperties": false,
+        "description": "`POST /api/v1/tags/rename`.",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "description": "May be a tag already in use: the two merge.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
       "ServerInfo": {
         "description": "`GET /api/v1/info` — unauthenticated server description.",
         "properties": {
@@ -1017,6 +1189,13 @@
           },
           "content_origin": {
             "type": "string"
+          },
+          "features": {
+            "description": "Optional API features this server has (`tags`, `search`, `archive`,\n…), so a newer client can refuse a parameter an older server would\nsilently ignore.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "limits": {
             "$ref": "#/components/schemas/Limits"
@@ -1093,6 +1272,27 @@
         ],
         "type": "string"
       },
+      "SharedInfo": {
+        "description": "How a parcel in a list came to be shared with the caller.",
+        "properties": {
+          "owner_name": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/ShareRole"
+          },
+          "shared_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner_name",
+          "role",
+          "shared_at"
+        ],
+        "type": "object"
+      },
       "SharedParcel": {
         "description": "A parcel someone shared with the caller by name.",
         "properties": {
@@ -1139,6 +1339,97 @@
         ],
         "type": "object"
       },
+      "SourceInfo": {
+        "description": "A version's provenance. Every field is optional.",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client": {
+            "description": "What published it: `parcel-cli/<version>`, `mcp`, `web`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commit": {
+            "description": "Commit id (usually abbreviated).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host": {
+            "description": "The machine's hostname.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "description": "The repository's remote as `host[:port]/path` (no credentials, no `.git`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "TagCount": {
+        "description": "One tag and how many of the listed parcels carry it.",
+        "properties": {
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "tag": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag",
+          "count"
+        ],
+        "type": "object"
+      },
+      "TagList": {
+        "description": "`GET /api/v1/tags`.",
+        "properties": {
+          "tags": {
+            "description": "Most used first, then by name.",
+            "items": {
+              "$ref": "#/components/schemas/TagCount"
+            },
+            "type": "array"
+          },
+          "total": {
+            "description": "How many distinct tags match (for paging).",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tags"
+        ],
+        "type": "object"
+      },
+      "TagsUpdated": {
+        "description": "How many of the caller's parcels a tag rename or delete changed.",
+        "properties": {
+          "updated": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "updated"
+        ],
+        "type": "object"
+      },
       "TokenList": {
         "description": "`GET /api/v1/tokens`.",
         "properties": {
@@ -1175,13 +1466,65 @@
         },
         "type": "object"
       },
+      "UpdateMeRequest": {
+        "additionalProperties": false,
+        "description": "`PATCH /api/v1/me`.",
+        "properties": {
+          "handle": {
+            "description": "A new handle. The old one keeps resolving to you (and no one else\ncan take it), so links with it keep working.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "UpdateParcelRequest": {
         "additionalProperties": false,
         "description": "`PATCH /api/v1/parcels/{id}` — metadata only; files change through versions.",
         "properties": {
+          "add_tags": {
+            "description": "Tags to add.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "archived": {
+            "description": "Archive (`true`) or unarchive (`false`).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "description": {
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "remove_tags": {
+            "description": "Tags to remove.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "slug": {
+            "description": "Give the parcel this slug (`\"\"` clears it). The old one keeps\nredirecting here until another of your parcels takes it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "description": "Replace the tag set (`[]` clears it). Not with `add_tags`/`remove_tags`.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
               "null"
             ]
           },
@@ -1240,6 +1583,13 @@
                   "$ref": "#/components/schemas/FileEntry"
                 },
                 "type": "array"
+              },
+              "pages": {
+                "description": "The version's pages: the entry first, then the others by path.",
+                "items": {
+                  "$ref": "#/components/schemas/PageEntry"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -1285,6 +1635,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SourceInfo",
+                "description": "Where it was published from. The owner's only: absent for everyone else."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "total_bytes": {
@@ -1635,19 +1996,127 @@
         "tags": [
           "account"
         ]
+      },
+      "patch": {
+        "description": "Change the signed-in user's handle (the `@<handle>` in their parcels' clean URLs). The old handle stays theirs and keeps resolving, so existing links keep working; taking one of your own old handles back makes it current again.",
+        "operationId": "update_me",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not a valid handle"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The handle is taken"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
       }
     },
     "/api/v1/parcels": {
       "get": {
-        "description": "List the caller's parcels, most recently updated first.",
+        "description": "List parcels: the caller's own by default, or those shared with them (`scope=shared`), or both (`scope=all`); most recently updated first, or by relevance with `q`. Filter by tags (`tag=a&tag=b`: all of them) and archive state. Items shared with the caller carry `shared`.",
         "operationId": "list_parcels",
         "parameters": [
           {
-            "description": "Case-insensitive match on title, description or id.",
+            "description": "Search: a case-insensitive substring of the id, title, description or slug,\nor full text (title, description, tags and the entry page's text;\nweb-search syntax: `\"exact phrase\"`, `-word`, `or`). Results are then\nordered by relevance, and carry `match` when the page text matched.",
             "in": "query",
             "name": "q",
             "required": false,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`mine` (default), `shared` (shared with you by email) or `all`.",
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "description": "Which parcels a list covers.",
+              "enum": [
+                "mine",
+                "shared",
+                "all"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only parcels carrying this tag; repeat for several (all must match).",
+            "explode": true,
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "description": "`exclude` (default), `include` or `only`.",
+            "in": "query",
+            "name": "archived",
+            "required": false,
+            "schema": {
+              "description": "How a list treats archived parcels.",
+              "enum": [
+                "exclude",
+                "include",
+                "only"
+              ],
               "type": "string"
             }
           },
@@ -1683,6 +2152,16 @@
             },
             "description": "OK"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -1704,7 +2183,7 @@
         ]
       },
       "post": {
-        "description": "Create a parcel from a multipart upload. Send an optional `metadata` part (JSON, `CreateParcelMetadata`) and one `file` part per file whose filename is the published path (e.g. `index.html`, `assets/app.js`).",
+        "description": "Create a parcel from a multipart upload. Send an optional `metadata` part (JSON, `CreateParcelMetadata`) and one `file` part per file whose filename is the published path (e.g. `index.html`, `assets/app.js`). With a `slug` the caller already uses (or used, before a rename), this publishes a new version of that parcel instead and answers 200 with `created: false`.",
         "operationId": "create_parcel",
         "requestBody": {
           "content": {
@@ -1717,6 +2196,16 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishResult"
+                }
+              }
+            },
+            "description": "A new version of the parcel with this slug"
+          },
           "201": {
             "content": {
               "application/json": {
@@ -1747,6 +2236,16 @@
             },
             "description": "Unauthorized"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`base_version` is no longer current, or no parcel has the slug yet"
+          },
           "413": {
             "content": {
               "application/json": {
@@ -1759,6 +2258,73 @@
           }
         },
         "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "parcels"
+        ]
+      }
+    },
+    "/api/v1/parcels/by-slug": {
+      "get": {
+        "description": "Resolve a clean URL (`/@<handle>/<slug>`) to the parcel it names: through the handle (or one its user had before), the slug (or one the parcel had before), then the same access rule as `GET /parcels/{id}`. `parcel.canonical_url` is the current clean URL, which differs from the one asked for after a rename. Every miss is the same 404, whatever was missing.",
+        "operationId": "get_by_slug",
+        "parameters": [
+          {
+            "description": "The owner's handle, or one they had before. Defaults to the caller's\nown; required when signed out.",
+            "in": "query",
+            "name": "handle",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The parcel's slug, or one it had before.",
+            "in": "query",
+            "name": "slug",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParcelDetail"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No `slug`, or no `handle` while signed out"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {},
           {
             "bearer": []
           }
@@ -1864,7 +2430,7 @@
         ]
       },
       "patch": {
-        "description": "Change a parcel's title, description or visibility. Files change only through new versions.",
+        "description": "Change a parcel's title, description or visibility (which counts as an update), or organize it: `tags` replaces the tag set, `add_tags`/`remove_tags` edit it, `archived` archives or unarchives, `slug` names it (`\"\"` clears; the old slug keeps redirecting until another of your parcels takes it). Organizing doesn't change `updated_at`. Files change only through new versions.",
         "operationId": "update_parcel",
         "parameters": [
           {
@@ -1927,6 +2493,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Another of your parcels has this slug"
           }
         },
         "security": [
@@ -3354,7 +3930,7 @@
     },
     "/api/v1/parcels/{id}/view": {
       "get": {
-        "description": "A short-lived signed URL on the sandboxed content origin for one version's entry page — what the viewer iframe loads.",
+        "description": "A short-lived signed URL on the sandboxed content origin for one page of a version (its entry unless `path` names another of its `pages`) — what the viewer iframe loads. The URL's capability covers the whole version, so the page's relative links to its other files and pages work.",
         "operationId": "view_parcel",
         "parameters": [
           {
@@ -3374,6 +3950,15 @@
             "schema": {
               "format": "int32",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Page to open (one of the version's `pages`; default: its entry).",
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3396,7 +3981,7 @@
                 }
               }
             },
-            "description": "Not Found"
+            "description": "No such parcel or version, or `path` is not a page of that version"
           }
         },
         "security": [
@@ -3465,6 +4050,248 @@
         ],
         "tags": [
           "sharing"
+        ]
+      }
+    },
+    "/api/v1/tags": {
+      "get": {
+        "description": "The tags on the parcels the filters select, each with how many of those parcels carry it (facet counts): most used first, then by name. Takes the same `scope`, `tag`, `q` and `archived` filters as `GET /parcels`.",
+        "operationId": "list_tags",
+        "parameters": [
+          {
+            "description": "Whose parcels to count: `mine` (default), `shared` or `all`.",
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "description": "Which parcels a list covers.",
+              "enum": [
+                "mine",
+                "shared",
+                "all"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Count only parcels carrying this tag; repeat for several (all must match).",
+            "explode": true,
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "description": "Count only parcels matching this search (as `GET /parcels`).",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`exclude` (default), `include` or `only`.",
+            "in": "query",
+            "name": "archived",
+            "required": false,
+            "schema": {
+              "description": "How a list treats archived parcels.",
+              "enum": [
+                "exclude",
+                "include",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only tags starting with this, e.g. `project:`.",
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (1–1000, default 200).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Tags to skip (default 0).",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagList"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "tags"
+        ]
+      }
+    },
+    "/api/v1/tags/delete": {
+      "post": {
+        "description": "Remove a tag from every parcel the caller owns (a tag can hold `/`, so it goes in the body). Doesn't change any parcel's `updated_at`.",
+        "operationId": "delete_tag",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteTagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagsUpdated"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "tags"
+        ]
+      }
+    },
+    "/api/v1/tags/rename": {
+      "post": {
+        "description": "Rename a tag on every parcel the caller owns. Renaming into a tag that is already in use merges the two. Doesn't change any parcel's `updated_at`.",
+        "operationId": "rename_tag",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameTagRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagsUpdated"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "tags"
         ]
       }
     },
@@ -3660,6 +4487,10 @@
     {
       "description": "Who a parcel is shared with, and what is shared with you.",
       "name": "sharing"
+    },
+    {
+      "description": "The tag vocabulary with counts, and renaming or deleting a tag across your parcels.",
+      "name": "tags"
     },
     {
       "description": "Feedback threads pinned to spots on a parcel's page.",

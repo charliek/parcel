@@ -219,6 +219,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-extra"
+version = "0.12.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be44683b41ccb9ab2d23a5230015c9c3c55be97a25e4428366de8873103f7970"
+dependencies = [
+ "axum-core",
+ "bytes",
+ "form_urlencoded",
+ "futures-core",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "serde_core",
+ "serde_html_form",
+ "serde_path_to_error",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -517,9 +540,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
 dependencies = [
  "cmov",
 ]
@@ -694,7 +717,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1595,6 +1618,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1711,6 +1746,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "axum-extra",
  "base64 0.22.1",
  "bytes",
  "clap",
@@ -1737,15 +1773,18 @@ dependencies = [
  "stridelabs-http",
  "stridelabs-mcp",
  "stridelabs-observability",
+ "stridelabs-postgres",
  "stridelabs-testing",
  "subtle",
  "tempfile",
  "thiserror",
  "time",
  "tokio",
+ "tokio-util",
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "tracing-subscriber",
  "url",
  "utoipa",
  "utoipa-axum",
@@ -1931,7 +1970,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2084,12 +2123,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http 0.6.11",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -2177,7 +2218,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2234,7 +2275,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2245,9 +2286,9 @@ checksum = "eec689c0bc40ff2458a5977b6619cb718087084a18e02a131c599b62d05e1a5f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -2394,6 +2435,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "serde_html_form"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2f2d7ff8a2140333718bb329f5c40fc5f0865b84c426183ce14c97d2ab8154f"
+dependencies = [
+ "form_urlencoded",
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde_core",
 ]
 
 [[package]]
@@ -2778,10 +2832,12 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stridelabs-auth"
-version = "0.6.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.6.0#31a01aaa82aa4f361f09c3813688f0d4334ae38a"
+version = "0.10.0"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.10.0#2acd464ef5519339fc24c7db1c773ca544f241eb"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "futures-util",
  "http",
  "jsonwebtoken",
  "rand",
@@ -2793,12 +2849,13 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "stridelabs-config"
-version = "0.6.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.6.0#31a01aaa82aa4f361f09c3813688f0d4334ae38a"
+version = "0.10.0"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.10.0#2acd464ef5519339fc24c7db1c773ca544f241eb"
 dependencies = [
  "serde",
  "serde_json",
@@ -2809,25 +2866,29 @@ dependencies = [
 
 [[package]]
 name = "stridelabs-http"
-version = "0.6.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.6.0#31a01aaa82aa4f361f09c3813688f0d4334ae38a"
+version = "0.10.0"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.10.0#2acd464ef5519339fc24c7db1c773ca544f241eb"
 dependencies = [
  "anyhow",
  "axum",
+ "bytes",
+ "futures",
  "http",
+ "reqwest",
  "serde_json",
  "thiserror",
  "tokio",
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "url",
  "utoipa",
 ]
 
 [[package]]
 name = "stridelabs-mcp"
-version = "0.6.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.6.0#31a01aaa82aa4f361f09c3813688f0d4334ae38a"
+version = "0.10.0"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.10.0#2acd464ef5519339fc24c7db1c773ca544f241eb"
 dependencies = [
  "axum",
  "futures",
@@ -2836,30 +2897,47 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "stridelabs-auth",
+ "stridelabs-http",
  "thiserror",
  "tokio",
  "tower",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
 name = "stridelabs-observability"
-version = "0.6.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.6.0#31a01aaa82aa4f361f09c3813688f0d4334ae38a"
+version = "0.10.0"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.10.0#2acd464ef5519339fc24c7db1c773ca544f241eb"
 dependencies = [
  "http",
  "rand",
  "serde_json",
+ "thiserror",
  "tower",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
 ]
 
 [[package]]
+name = "stridelabs-postgres"
+version = "0.10.0"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.10.0#2acd464ef5519339fc24c7db1c773ca544f241eb"
+dependencies = [
+ "percent-encoding",
+ "sqlx",
+ "thiserror",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "stridelabs-testing"
-version = "0.6.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.6.0#31a01aaa82aa4f361f09c3813688f0d4334ae38a"
+version = "0.10.0"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.10.0#2acd464ef5519339fc24c7db1c773ca544f241eb"
 dependencies = [
  "axum",
  "http",
@@ -2952,7 +3030,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3041,9 +3119,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "bytes",
  "libc",
@@ -3097,6 +3175,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",
@@ -3296,9 +3375,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "typed-path"
-version = "0.12.3"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
 
 [[package]]
 name = "typenum"
@@ -3414,9 +3493,9 @@ dependencies = [
 
 [[package]]
 name = "utoipa-swagger-ui"
-version = "10.0.1"
+version = "10.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f5ec9d7816e4ce8ccb7e0bd7276e090cad0fcb1def4f3540e5b0f7485d7583e"
+checksum = "4f1fd2f9615838885c6ff4115fde8a2b58825dc7b4617f78d29c167377a15c92"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3547,6 +3626,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-streams"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3568,18 +3660,18 @@ dependencies = [
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.9"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+checksum = "e49d0e65abc00c142e8f9428da991da9f1a250c39be97459901eb12b9b49f62a"
 dependencies = [
  "rustls-pki-types",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -3596,7 +3688,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3887,15 +3979,18 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "8.6.0"
+version = "9.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+checksum = "2886b00003a72c4ccee3f42cfc34908d33b2508a74d827dc2a4244706475c704"
 dependencies = [
  "crc32fast",
  "flate2",
+ "getrandom 0.4.3",
  "indexmap",
  "memchr",
+ "nix",
  "typed-path",
+ "windows-sys 0.61.2",
  "zopfli",
 ]
 

@@ -2,6 +2,8 @@
 CARGO ?= cargo
 IMAGE ?= us-central1-docker.pkg.dev/projects-413401/stridelabs/parcel
 TAG ?= dev
+# The compose Postgres's test database (tests/common/mod.rs's default).
+TEST_DATABASE_URL ?= postgres://postgres:localdev@localhost:5439/parcel_test
 
 .DEFAULT_GOAL := help
 
@@ -47,13 +49,19 @@ fmt-check:
 	$(CARGO) fmt --all -- --check
 
 .PHONY: lint
-lint:  ## Clippy, warnings as errors (default and production feature sets)
+lint:  ## Clippy (default + production features), cargo deny, the crypto guard
 	$(CARGO) clippy --workspace --all-targets --all-features -- -D warnings
 	$(CARGO) clippy -p parcel-server --no-default-features -- -D warnings
+	$(CARGO) deny --locked check
+	CARGO="$(CARGO)" scripts/crypto-guard.sh
 
 .PHONY: test
 test:  ## Rust unit + integration tests (REQUIRES `make up`; fails loudly, never skips)
 	$(CARGO) test --workspace
+	@# Again with DATABASE_URL set: test pools must keep their own search_path.
+	@# Quoted (a URL holds `&`), and not echoed (it may hold a password).
+	@echo "$(CARGO) test (DATABASE_URL=<TEST_DATABASE_URL>) … test_pools_keep_their_own_search_path"
+	@DATABASE_URL='$(TEST_DATABASE_URL)' $(CARGO) test -p parcel-server --test migrations test_pools_keep_their_own_search_path
 
 .PHONY: spectral
 spectral:  ## Lint the committed OpenAPI document

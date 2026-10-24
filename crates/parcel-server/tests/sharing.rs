@@ -10,21 +10,6 @@ use parcel_types::{
 };
 use serde_json::{json, Value};
 
-/// A person: their stand-in credential and email.
-struct Person {
-    token: String,
-    email: String,
-}
-
-fn person(name: &str) -> Person {
-    let sub = uuid::Uuid::new_v4().simple().to_string();
-    let email = format!("{name}-{sub}@example.com");
-    Person {
-        token: token_for(&sub, &email),
-        email,
-    }
-}
-
 async fn publish(app: &TestApp, owner: &Person, visibility: &str) -> String {
     let form = Form::new()
         .metadata(json!({"visibility": visibility}))

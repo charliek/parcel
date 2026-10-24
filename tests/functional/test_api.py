@@ -102,6 +102,49 @@ def test_publish_view_and_serve_multi_file_parcel(server: Server, api: httpx.Cli
         assert stored.text == PAGE
 
 
+def test_pages_open_by_path_and_markdown_renders_only_as_a_page(server: Server, api: httpx.Client):
+    response = publish(
+        api,
+        {
+            "index.html": '<title>Home</title><a href="notes.md">notes</a>',
+            "notes.md": "# Notes\n\nbody\n",
+            "app.js": "1",
+        },
+    )
+    assert response.status_code == 201, response.text
+    pid = response.json()["parcel"]["id"]
+    detail = api.get(f"/api/v1/parcels/{pid}").json()
+    assert detail["pages"] == [
+        {"path": "index.html", "title": "Home"},
+        {"path": "notes.md", "title": "Notes"},
+    ]
+    assert api.get(f"/api/v1/parcels/{pid}/view", params={"path": "app.js"}).status_code == 404
+    grant = api.get(f"/api/v1/parcels/{pid}/view", params={"path": "notes.md"}).json()
+    assert grant["content_url"].endswith("/notes.md")
+
+    with server.content() as content:
+        # A plain HTTP client (no Sec-Fetch-Dest, Accept */*) gets the text…
+        raw = content.get(grant["content_url"])
+        assert raw.status_code == 200
+        assert raw.headers["content-type"] == "text/markdown; charset=utf-8"
+        assert raw.text == "# Notes\n\nbody\n"
+        # …a frame navigation the styled page, with the helper.
+        page = content.get(grant["content_url"], headers={"Sec-Fetch-Dest": "iframe"})
+        assert page.headers["content-type"] == "text/html; charset=utf-8"
+        assert "<h1>Notes</h1>" in page.text and HELPER_TAG.search(page.text)
+        for r in (raw, page):
+            assert r.headers["vary"] == "Sec-Fetch-Dest, Accept"
+            assert r.headers["content-security-policy"].startswith("sandbox allow-scripts")
+            assert "allow-same-origin" not in r.headers["content-security-policy"]
+        assert raw.headers["etag"] != page.headers["etag"]
+        cached = content.get(
+            grant["content_url"],
+            headers={"Sec-Fetch-Dest": "iframe", "If-None-Match": page.headers["etag"]},
+        )
+        assert cached.status_code == 304
+        assert cached.headers["vary"] == "Sec-Fetch-Dest, Accept"
+
+
 def test_origins_are_isolated(server: Server, api: httpx.Client, user: str):
     parcel = publish(api, {"index.html": PAGE}).json()["parcel"]
     grant = api.get(f"/api/v1/parcels/{parcel['id']}/view").json()

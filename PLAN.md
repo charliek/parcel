@@ -78,7 +78,9 @@ path, totals) → `version_files` (path → blob sha256, size, content type).
 `blobs` are content-addressed (`blobs/sha256/ab/<hash>`) and deduplicated across
 versions; unreferenced blobs are garbage-collected after a grace period.
 `api_tokens` (`pcl_…`, SHA-256 hashed, revocable) and `device_authorizations`
-(CLI device login) round it out.
+(CLI device login) round it out. v0.5 adds tags, archiving, full-text search,
+handles, slugs, version sources and page titles; see "Tags, slugs, archive and
+search (v0.5)".
 
 ### Publishing semantics (mirrors Claude artifacts)
 
@@ -179,7 +181,12 @@ first, so concurrent publishes stay bounded as on the REST API.
 - **Credentials.** The provider's access tokens with `aud` = the resource URL
   (so web-client tokens fail here and MCP tokens fail everywhere else), or a
   `pcl_` token under the REST API's rules (for clients that can only send a
-  header). The token is stripped before any tool runs.
+  header). The token is stripped before any tool runs. A refusal is `401
+  invalid_token` (re-authorize) only when the token itself is bad; when the
+  check can't be made it is `503` (retry with the same token): the
+  provider's JWKS unreachable or its cached set past its TTL (never served
+  stale), or a `kid` the cache has never seen inside its 30 s refetch floor
+  (possibly a key rotation not fetched yet; a retired key's `kid` is a 401).
 - **Who the caller is.** A provider identity seen before is that user (its
   allowed domains re-checked against the token's email if the provider is
   trusted with emails, else the stored one; disabled users refused). Its first use signs
@@ -188,9 +195,13 @@ first, so concurrent publishes stay bounded as on the REST API.
   `TRUST_EMAIL`, else a web sign-in first. MCP needs no pause rule: the
   provider expires and refreshes its own tokens, so offboarding there
   reaches them.
-- **Tools.** `whoami`, `list_parcels` (mine / shared), `get_parcel`,
-  `read_file` (≤ 1 MiB; utf8 or base64), `publish_parcel`, `update_parcel`
-  (a new version, or title/description/visibility), `restore_version`,
+- **Tools** (25). `whoami`, `list_parcels` (mine / shared / all; `query` is
+  full text, `tags` all-of, `archived`), `list_tags`, `rename_tag`,
+  `delete_tag`, `get_parcel` (with `pages`),
+  `read_file` (≤ 1 MiB; utf8 or base64), `publish_parcel` (`tags`, `slug` =
+  upsert, `created` in the result), `update_parcel`
+  (a new version with `add_tags`, or title/description/visibility/tags/slug/
+  archived), `restore_version`,
   `delete_parcel`, `list_shares`, `share_parcel`, `unshare_parcel`; comments:
   `list_comments`, `add_comment`, `reply_comment`, `resolve_comments` (with an
   optional reply), `reopen_comment`, `delete_comment`; page data: `list_data`,
@@ -199,7 +210,15 @@ first, so concurrent publishes stay bounded as on the REST API.
   stridelabs-mcp's `ToolCall` (scope check, timeout, safe errors, one audit
   line on `stridelabs.mcp.tool`) and calls the function its REST handler
   calls, returning the same JSON. `whoami` needs no scope, the other read
-  tools `parcel:read`, the rest `parcel:write`.
+  tools `parcel:read`, the rest `parcel:write` (`rename_tag`, `delete_tag`
+  included). Every `parcel` argument takes an id, a URL, `@handle/slug` or a
+  bare slug; a slug goes through the by-slug resolver, so a private parcel and
+  a missing one give the same error, and a ref's `?v=`/`?page=` are defaults
+  that explicit `version`/`path` arguments override. List output stays a
+  superset: `mine`/`all` items are the flattened summary (`shared` on others'),
+  `shared` items keep `{parcel, owner_name, role, shared_at}` (plus `match`).
+  The server instructions teach finding and organizing: reuse `list_tags`,
+  tag `project:`/`kind:`, slug plans, search before writing.
 - **The feedback loop.** The agent publishes a plan or page; people comment in
   the viewer (pinned to elements); when asked, the agent lists the comments,
   revises, and resolves what it addressed with a reply. Comments written
@@ -216,7 +235,6 @@ first, so concurrent publishes stay bounded as on the REST API.
 ## Later
 
 - Per-parcel origins (wildcard subdomain) to allow storage inside parcels.
-- MCP tools for comments and page data.
 
 ## HTTP surface (MVP)
 
@@ -231,14 +249,16 @@ Types are in `crates/parcel-types/src/api.rs`.
 | GET | `/health/live`, `/health/ready` | — | plain, not in spec |
 | GET | `/auth/login`, `/auth/callback`; POST `/auth/logout` | — | browser sign-in redirects, not in spec (see v0.3) |
 | GET | `/openapi.json`; `/docs` (non-prod) | — | spec / Swagger UI |
-| GET | `/api/v1/info` | — | `ServerInfo` |
-| GET | `/api/v1/me` | required | `Me` |
-| GET | `/api/v1/parcels?q=&limit=&offset=` | required | `ParcelList` (owned) |
-| POST | `/api/v1/parcels` | required | multipart (`metadata` JSON part = `CreateParcelMetadata`, `file` parts whose *filename* is the published path) → 201 `PublishResult` |
-| GET | `/api/v1/parcels/{id}` | viewers | `ParcelDetail` (with `access`, `owner_name`) |
-| PATCH | `/api/v1/parcels/{id}` | owner | `UpdateParcelRequest` → `ParcelSummary` |
+| GET | `/api/v1/info` | — | `ServerInfo` (with `features`: optional API features such as `tags`, `search`, `archive`, `slugs`) |
+| GET | `/api/v1/me` | required | `Me` (with `handle`) |
+| PATCH | `/api/v1/me` | required | `UpdateMeRequest` `{handle}` → `Me`; 400 malformed, 409 taken (by anyone, current or retired); the old handle stays yours and keeps resolving |
+| GET | `/api/v1/parcels?scope=&tag=&tag=&archived=&q=&limit=&offset=` | required | `ParcelList` of `ParcelListItem` (summary fields flattened, plus `match` snippet segments and `shared`); `scope` = `mine` (default) / `shared` / `all`, tags AND, `archived` = `exclude` (default) / `include` / `only`, `q` = substring or full text, ranked |
+| POST | `/api/v1/parcels` | required | multipart (`metadata` JSON part = `CreateParcelMetadata`, `file` parts whose *filename* is the published path) → 201 `PublishResult`; with a `slug` you already use (or a redirect of yours), 200 and a new version of that parcel (`created: false`; see "Handles, slugs and sources") |
+| GET | `/api/v1/parcels/by-slug?handle=&slug=` | viewers | `ParcelDetail` of the parcel `/@<handle>/<slug>` names (old handles and slugs too; `parcel.canonical_url` is the current one); every miss is the same 404; `handle` defaults to yours, 400 without one when signed out |
+| GET | `/api/v1/parcels/{id}` | viewers | `ParcelDetail` (with `access`, `owner_name`, `pages`) |
+| PATCH | `/api/v1/parcels/{id}` | owner | `UpdateParcelRequest` → `ParcelSummary` (`tags` replace or `add_tags`/`remove_tags`, `archived`, `slug` (`""` clears; 409 if another of yours has it); none of these bumps `updated_at`) |
 | DELETE | `/api/v1/parcels/{id}` | owner | 204 |
-| GET | `/api/v1/parcels/{id}/view?version=N` | viewers | `ViewGrant` (signed content URL) |
+| GET | `/api/v1/parcels/{id}/view?version=N&path=P` | viewers | `ViewGrant` (signed content URL of the entry, or of page `P`; 404 if `P` isn't a page of that version) |
 | GET | `/api/v1/parcels/{id}/versions` | viewers | `VersionList` |
 | POST | `/api/v1/parcels/{id}/versions` | owner | multipart (`metadata` = `NewVersionMetadata`) → 201 `PublishResult` |
 | GET | `/api/v1/parcels/{id}/versions/{version}` | viewers | `VersionDetail` (`version` = number or `latest`) |
@@ -259,7 +279,10 @@ Types are in `crates/parcel-types/src/api.rs`.
 | GET/PUT/PATCH/DELETE | `/api/v1/parcels/{id}/data/{collection}/{key}` | read: viewers; write: owner | any JSON → `DataItem` (PATCH = RFC 7386 merge) / 204 |
 | GET | `/api/v1/parcels/{id}/shares` | owner | `ShareList` |
 | PUT/DELETE | `/api/v1/parcels/{id}/shares/{email}` | owner | `PutShareRequest` → `Share` / 204 |
-| GET | `/api/v1/shared?limit=&offset=` | required | `SharedParcelList` (shared with me by email) |
+| GET | `/api/v1/shared?limit=&offset=` | required | `SharedParcelList` (shared with me by email; legacy, unchanged: archived included) |
+| GET | `/api/v1/tags?scope=&tag=&q=&archived=&prefix=&limit=&offset=` | required | `TagList` (facet counts over the parcels the same filters select; limit ≤ 1000) |
+| POST | `/api/v1/tags/rename` | required | `RenameTagRequest` → `TagsUpdated` (the caller's parcels; merges) |
+| POST | `/api/v1/tags/delete` | required | `DeleteTagRequest` → `TagsUpdated` (the caller's parcels) |
 | GET | anything else | — | SPA (`index.html` fallback) when `PARCEL_STATIC_DIR` is set |
 
 Content host (`PARCEL_CONTENT_ORIGIN`): `GET /v/{token}/{path}` serves a file
@@ -270,8 +293,216 @@ is the page helper. Nothing else.
 
 Web app routes: `/` (my parcels and "shared with me", or landing when signed
 out), `/p/:id` and `/p/:id/v/:version` (viewer; public parcels need no
-sign-in), `/new` (upload), `/tokens`, `/cli` (CLI + skill setup), `/device`
-(approve a CLI login), `/signin` (pick a provider; sign-in errors).
+sign-in), `/@:handle/<slug>` (the same viewer by clean URL), `/new` (upload),
+`/tags` (rename, merge and delete tags), `/tokens`, `/cli` (CLI + skill setup),
+`/device` (approve a CLI login), `/signin` (pick a provider; sign-in errors).
+`/` takes `?scope=mine|shared|all&tag=&tag=&q=&archived=` (`?tab=shared` still
+works); a viewer URL takes `?page=<path>`.
+
+## Tags, slugs, archive and search (v0.5)
+
+Finding and organizing parcels once there are many, and a stable name for
+the ones an agent republishes. Three additive migrations; the pieces that
+need more than a paragraph have their own sections ("Handles, slugs and
+sources", "Pages within a parcel").
+
+| Migration | Adds |
+|---|---|
+| 0006 | `parcels.tags TEXT[]` (GIN), `archived_at`, `search_text`, `search_vec` (GIN), `search_attempts`; the triggers that keep the search columns right |
+| 0007 | `user_handles` + `parcel_allocate_handle()`, `parcels.slug` (partial unique index per owner), `parcel_slug_redirects`, `parcel_versions.source` (JSONB) |
+| 0008 | `version_files.page_title` |
+
+**Rollout safety.** A Cloud Run rollover runs the old and the new revision
+side by side, so every migration is additive (new columns nullable or
+defaulted, new state in new tables) and rolling the code back is safe. What an
+older revision can't know is done in the database: a trigger clears
+`search_text` and `archived_at` when `current_version` changes, so a publish
+or restore from the old revision still invalidates the page text and
+un-archives. Handles are allocated by one SQL function, lazily for a user an
+older revision created. Clients feature-check: `ServerInfo.features` lists
+`tags`, `search`, `archive`, `slugs`, `pages`, and the CLI refuses a new
+parameter an old server would silently ignore.
+
+### Tags
+
+- Free-form, up to 20 per parcel, visible to everyone who can view it.
+  Normalized on every write by `parcel-types` (the SPA has a tested twin):
+  trimmed, lowercased, whitespace and `_` → `-`, then
+  `^[a-z0-9][a-z0-9.+-]*(:[a-z0-9][a-z0-9.+/-]*)?$`, ≤ 64 characters. A bad
+  tag is a 400 naming it. Stored sorted by bytes; SQL that rewrites arrays
+  sorts `COLLATE "C"` so both writers agree.
+- **Conventions, not rules.** `project:<name>` (the repository),
+  `kind:<kind>` with the canonical kinds `plan`, `discovery`, `research`,
+  `report`, `review`, `dashboard`, `prototype`, `notes`; any other `ns:value`
+  is a facet of its own and bare words are topics. The CLI adds `project:`
+  from the git repository it runs in (`--project` > `PARCEL_PROJECT` > the
+  origin's name, else the main checkout's folder) as an *auto tag*: sent as
+  `auto_tags`, applied only when the call creates the parcel, never on a new
+  version, so a tag someone removed doesn't come back. There is no "auto"
+  marker in the UI; the version's source already says it came from the CLI.
+- **Writes.** Create: `tags` (explicit) and `auto_tags`. `PATCH`: `tags`
+  replaces the set, or `add_tags`/`remove_tags` apply `(current ∪ add) −
+  remove` under the row lock (a tag in both, or `tags` with either, is a
+  400). A new version takes `add_tags` only. Tags, slug and archive changes
+  never bump `updated_at` (organizing isn't editing, and it would reorder
+  lists); title, description and visibility do.
+- **Vocabulary.** `GET /tags` counts tags over the parcels the same filters
+  select (so the counts are facet counts), most used first. `POST
+  /tags/rename` (into an existing tag the two merge) and `POST /tags/delete`
+  act on the caller's own parcels in one `UPDATE` under the owner lock; the
+  delete is a body, not a path, because tags can hold `/`.
+- **Filters.** Repeated `tag=` means all of them (AND). The SPA lets one
+  `project:` and one `kind:` be selected; the API doesn't care.
+
+### Archive
+
+`archived_at` set by `PATCH archived: true`. Lists, tag counts and search take
+`archived=exclude|include|only` (default `exclude`); an archived parcel stays
+viewable by URL, with a badge. A new version un-archives (the trigger above:
+publishing means it's live again, and a slug upsert would otherwise hide a
+fresh plan). The legacy `/shared` endpoint lists archived parcels as before.
+
+### Listing and search
+
+- `GET /parcels` is one builder for every scope: `mine`, `shared` (shared
+  with me by email, today's `/shared` semantics) and `all`; the same scoped
+  relation feeds results, totals, snippets and tag counts. Internal and
+  public parcels nobody shared with you are still not listed. Items are
+  `ParcelListItem`: the summary's fields flattened (so older clients keep
+  working) plus `match` and, for someone else's parcel, `shared`.
+  `ParcelSummary.url` stays `<app>/p/<id>` for good (an old CLI appends
+  `/v/<n>` to it); `canonical_url` is the clean URL when there is a slug.
+- **Query semantics.** `q` matches by substring (ILIKE) on id, title,
+  description and slug, **or** `search_vec @@ websearch_to_tsquery('english',
+  q)`: every word must appear, stemmed, in the title, description, tags or
+  the entry page's text, and quotes, `or` and `-word` work as in a web
+  search. Order with `q`: `ts_rank_cd` (title over description and tags over
+  page text), then `updated_at`, then id; without, `updated_at`. A query that
+  parses to nothing (stop words, punctuation) falls back to the substring
+  match alone. Natural-language sentences therefore return nothing when one
+  word is absent from the parcel; agents search with two or three
+  distinctive words.
+- **The index.** `search_vec` is maintained by triggers (never by the app):
+  title (weight A), description and tags (B) and page text (D), all with the
+  `english` configuration the query uses. `parcels_a_version_changed` runs
+  before `parcels_search_b_vec` (Postgres orders triggers by name) so a
+  version change clears the text before the vector is built. Comment and
+  data revision bumps set none of the watched columns and skip both.
+- **Page text** is the current version's entry page only, ≤ 128 KiB, from a
+  hand-written stripper (HTML: no script/style/template/noscript/svg, tags
+  and comments dropped, entities decoded, breaks at blocks; Markdown: the
+  text and code events). It is extracted in a spawned task after the publish
+  commits (publish latency is unchanged; no I/O inside the transaction),
+  written guarded by `current_version` so a slow extraction can't store an
+  old version's text. A loop (own cadence, not the GC's) sweeps up whatever is
+  missing every 60 s in batches of 50 within a 20 s budget: parcels from before
+  search, versions an older revision published, transient failures (five
+  tries per version, `search_attempts`). `parcel-server reindex` drains
+  everything with no cap; run it once after the deploy that adds search.
+  Failures log value-free (invariant 5).
+- **Snippets** are `match: {segments: [{text, hit}]}`, built from
+  `ts_headline` with `\u{2}`/`\u{3}` markers (extraction strips them) only
+  for the page that is returned, and only when a term was marked. Page text
+  is user content shown on the app origin: every consumer renders segments
+  as text (React text nodes; the CLI through `printable()`), never HTML, and
+  biome's `noDangerouslySetInnerHtml` is an error.
+
+### Access and privacy
+
+- **Owner handle (decision).** Anonymous callers never receive
+  `owner_handle` for a parcel without a slug (they get no owner name either).
+  A slugged public parcel's `canonical_url` holds the handle by construction:
+  setting a slug is the owner opting in to a readable link. A 409 from
+  `PATCH /me` says only that a handle is in use.
+- A private parcel's title, tags, slug, page text and source never reach
+  another user's lists, counts, snippets, tag vocabularies or by-slug (a
+  sentinel test pins this); by-slug obeys invariant 3.
+- A version's `source` is the owner's only and never holds credentials.
+
+### HTTP additions
+
+Every new route is in the HTTP surface table below; request and response
+types are in `crates/parcel-types/src/api.rs`: `GET /tags`, `POST
+/tags/rename`, `POST /tags/delete`, `GET /parcels/by-slug`, `PATCH /me`,
+the `scope`/`tag`/`archived`/`q` parameters of `GET /parcels`, `path` on
+`/parcels/{id}/view`, `slug`/`tags`/`auto_tags`/`source` in create and
+version metadata, `tags`/`add_tags`/`remove_tags`/`slug`/`archived` in
+`PATCH`, and `features` on `/info`. Only request metadata types deny unknown
+fields; responses grow additively (new fields are optional or default), so
+an old client parses a new server.
+
+## Handles, slugs and sources (v0.5)
+
+Clean URLs `/@<handle>/<slug>` next to `/p/<id>` (which works forever), a
+stable name a republish can target, and where each version came from.
+
+- **Handles** live in `user_handles (handle PK, user_id, is_current)`: one
+  key over current and retired handles, so a handle once used is that
+  user's for good. Allocation is one SQL function,
+  `parcel_allocate_handle(user, email)` (migration 0007), used by the
+  backfill, sign-in and lazily for a user an older revision created: the
+  email's local part (lowercased, `+suffix` dropped, `.`/`_` → `-`, other
+  characters dropped, ≤ 32), then `-2`, `-3`, … Renaming (`PATCH /me`) makes
+  the new one current; the old one keeps resolving.
+- **Slugs** (`parcels.slug`, unique per owner): 1–4 `/`-separated segments
+  of `[a-z0-9]+(-[a-z0-9]+)*`, ≤ 100 characters; no segment shaped like a
+  parcel id and no `p` or `v` segment, so no clean URL reads as `/p/<id>` or
+  a `/v/<n>` pin (clean URLs pin with `?v=<n>`; an id URL pins only with `/v/<n>`, its `?v=` is ignored). Renaming or clearing one
+  leaves a redirect row (`parcel_slug_redirects`) until another of the
+  owner's parcels takes the name.
+- `ParcelSummary.url` stays `<app>/p/<id>`; `canonical_url` is the clean URL
+  when there is a slug, else `url`. Clients show and copy `canonical_url`.
+- **Owner handle privacy** is decided above, in "Tags, slugs, archive and
+  search (v0.5)", "Access and privacy".
+- **by-slug** resolves handle (current or retired) → user, then slug or
+  redirect → parcel, then `readable()`. Every failure — unknown handle or
+  slug, no access, public links off, malformed input — is one constant 404
+  body with identical headers (invariant 3).
+- **Publish upsert.** `CreateParcelMetadata.slug`: when the caller has a
+  parcel with that slug, or a redirect row for it, the publish versions that
+  parcel (files replaced; only the fields sent change, the title is never
+  re-derived; `tags` added, `auto_tags` ignored; `base_version` checked;
+  un-archives), decided under the owner's advisory lock so two first
+  publishes of one slug make one parcel. Otherwise it creates the parcel
+  with that slug (`base_version` → 409, since nothing has the slug yet).
+- **Sources.** `parcel_versions.source` = `{repo, branch, commit, host,
+  client}`, each ≤ 200 printable characters; `repo` reduced to
+  `host[:port]/path` (userinfo, query, fragment and `.git` dropped; local
+  paths omitted; anything else refused with a 400 that names only the field,
+  never the value). Shown to the owner only, wherever versions are returned;
+  a restore copies the restored version's source; MCP publishes record
+  `{client: "mcp"}`.
+
+## Pages within a parcel (v0.5)
+
+A version may hold several pages, linked to each other with relative links
+(they resolve under the same capability prefix, so following one in the
+frame just works).
+
+- A **page** is any `.html`/`.htm`/`.md`/`.markdown` file of a version.
+  `version_files.page_title` (migration 0008) keeps its `<title>` or first
+  `# heading`, read at publish: plain text, control characters stripped,
+  ≤ 200 characters; carried with the file when a merge keeps it, copied by a
+  restore, `NULL` for a page without one and for rows from before 0008
+  (clients then show the path). Titles are shown as text, never markup.
+- `FileEntry.page_title?`; `ParcelDetail.pages` and `VersionDetail.pages` =
+  `[{path, title|null}]`, the entry first, then by path (byte order). Anyone
+  who sees the file list sees them.
+- `GET /parcels/{id}/view?version=&path=` mints the grant for that page;
+  a `path` that isn't a page of that version is a 404. The grant still
+  covers the whole version.
+- **Markdown pages.** The entry, when Markdown, is always rendered into the
+  styled shell. Any other Markdown file is rendered only when it is opened
+  as a page: `Sec-Fetch-Dest: document` or `iframe`, or, with no
+  `Sec-Fetch-Dest`, an `Accept` naming `text/html`; anything else (a page's
+  `fetch()`) gets the raw text. The header picks a representation, never
+  access: both need the same capability and carry the same sandbox headers.
+  Both variants (304s included) carry `Vary: Sec-Fetch-Dest, Accept` and distinct
+  ETags; the variant is decided before the `If-None-Match` check. A rendered
+  page gets the helper like any HTML page. Raw HTML inside Markdown passes
+  through, so a rendered `.md` page is equivalent to an uploaded HTML page
+  and sandboxed the same way.
+- Search indexes the entry page only.
 
 ## Comments, live updates and page data (v0.2)
 
@@ -294,7 +525,7 @@ the owner. `via` is `web` or `cli` (a `pcl_` token). A parcel holds at most
 2000 comments.
 
 **Page helper.** Every HTML response on the content origin (HTML files and
-rendered Markdown entries) gets `<script src="/_parcel/helper.<hash>.js">`
+rendered Markdown pages) gets `<script src="/_parcel/helper.<hash>.js">`
 right after `<head>` (else after `<html>`, else after the doctype). The ETag
 includes the hash. The script (`crates/parcel-server/assets/parcel-helper.js`):
 
@@ -314,15 +545,17 @@ includes the hash. The script (`crates/parcel-server/assets/parcel-helper.js`):
 | viewer → page | `pins` | `pins: [{number, anchor, resolved, active}]` (the full set for the page; the one flagged `active` is highlighted) |
 | viewer → page | `draft` | `anchor \| null` (the spot being commented on) |
 | viewer → page | `focus` | `number` (scroll to and pulse that pin) |
-| page → viewer | `ready` | `path, title, version, token` (on load and on `hello`; `token` is the page's own capability token, read from its URL) |
+| page → viewer | `ready` | `path, title, version, token, hash?` (on load and on `hello`; `token` is the page's own capability token, read from its URL; `hash` is the page's `#fragment` when it has one) |
 | page → viewer | `anchor` | `anchor` (a click in comment mode) |
 | page → viewer | `pin-click` | `number` |
 | page → viewer | `located` | `found: number[], missing: number[]` |
 | page → viewer | `escape` | — (Escape pressed in comment mode) |
+| page → viewer | `hash` | `hash` (on `hashchange`: the page's `#fragment`, `""` when it has none) |
 | page → viewer | `bye` | — (`pagehide`: the viewer stops sending until the next verified `ready`) |
 
 Viewer messages carry `source: 'parcel-viewer'`, page messages
-`source: 'parcel-helper'`. The viewer accepts page messages only from its
+`source: 'parcel-helper'`. A reported `hash` is at most 200 printable ASCII
+characters including the `#` (a longer or odd one reads as none). The viewer accepts page messages only from its
 iframe's `contentWindow` and treats them as untrusted input (the page can
 forge any of them); it sends anchors and numbers, never comment text. The
 frame can be navigated to another site that allows framing, which posts from
@@ -518,6 +751,23 @@ everywhere"; concurrent first sign-ins could split one email into two users
 provider; the migration dropped `users.sub` under a still-running old
 revision (now kept, nullable, then dropped by migration 0005 once no running revision read it); and signature forgery wasn't tested. Not
 verified live: Okta (no account here; its setup is in `deploy/README.md`).
+
+### v0.5 (tags, slugs, archive, search, pages)
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace` (incl. the second `DATABASE_URL` pass) | 379 passed |
+| `pytest tests/functional` (incl. the released 0.1.2 CLI against the new server) | 51 passed |
+| `bun test` / Playwright e2e on the production build | 231 / 69 passed |
+| clippy (both feature sets), `cargo deny`, crypto guard, fmt, Spectral, biome/eslint, tsc | clean |
+| Browser walkthrough (playwright-cli, 46 screenshots) | facets with filter-scoped counts, token search and autocomplete, full-text snippets, Mine/Shared/All, archive and unarchive, Edit details (tags, slug conflict), the Tags page (rename, merge, delete), handle change and the old-handle redirect, a two-page parcel (Pages menu, in-page links, deep link with fragment, a comment pinned on page 2), phone width and dark theme: works |
+
+Every milestone commit ran the full gate and a Codex review (gpt-6-astra for
+the subtle ones, gpt-6.1-sol for the rest); findings are in the commit
+messages. Two things the plan got wrong and the build corrected: the vector
+trigger must list `current_version` (an `UPDATE OF` trigger doesn't see
+columns another trigger sets), and tags are indexed with the `english`
+configuration the query uses.
 
 Deviations from the original brief, by design:
 - CLI auth is a device flow + app-local `pcl_` tokens rather than slauth PATs or

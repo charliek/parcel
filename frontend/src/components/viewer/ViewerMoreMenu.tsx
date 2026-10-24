@@ -1,4 +1,6 @@
 import {
+  Archive,
+  ArchiveRestore,
   Download,
   ExternalLink,
   Link2,
@@ -39,6 +41,8 @@ export interface ViewerActions {
   setVisibility: (visibility: Visibility) => void;
   restore: () => void;
   remove: () => void;
+  /** Archive, or unarchive when it is archived. */
+  toggleArchived: () => void;
 }
 
 /**
@@ -51,6 +55,7 @@ export function ViewerMoreMenu({
   actions,
   isOwner,
   isCurrent,
+  archived,
   visibility,
   allowPublic,
   autoReload,
@@ -59,6 +64,8 @@ export function ViewerMoreMenu({
   actions: ViewerActions;
   isOwner: boolean;
   isCurrent: boolean;
+  /** The parcel is archived (the menu offers Unarchive). */
+  archived: boolean;
   visibility: Visibility;
   allowPublic: boolean;
   /** Reload the frame when a new version is published. */
@@ -130,6 +137,10 @@ export function ViewerMoreMenu({
             <DropdownMenuItem onSelect={actions.uploadVersion}>
               <Upload />
               Upload new version…
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={actions.toggleArchived}>
+              {archived ? <ArchiveRestore /> : <Archive />}
+              {archived ? 'Unarchive' : 'Archive'}
             </DropdownMenuItem>
             {!isCurrent && (
               <DropdownMenuItem onSelect={actions.restore}>

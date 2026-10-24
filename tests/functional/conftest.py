@@ -50,6 +50,9 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGET = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")) / "debug"
 SERVER_BIN = TARGET / "parcel-server"
 CLI_BIN = TARGET / "parcel"
+# The released CLI the server must keep working for (built once, cached).
+LEGACY_CLI_TAG = "v0.1.2"
+LEGACY_CLI_DIR = ROOT / "target" / "legacy-cli"
 PG_ADMIN_URL = os.environ.get(
     "PARCEL_FUNCTIONAL_PG_ADMIN", "postgres://postgres:localdev@localhost:5439/postgres"
 )
@@ -707,10 +710,16 @@ class Cli:
 
     server: Server
     home: Path
+    binary: Path = CLI_BIN
+    # Put first on PATH (e.g. stand-in browser openers).
+    bin_dir: Path | None = None
 
     def env(self, token: str | None) -> dict[str, str]:
+        path = os.environ["PATH"]
+        if self.bin_dir is not None:
+            path = f"{self.bin_dir}{os.pathsep}{path}"
         env = {
-            "PATH": os.environ["PATH"],
+            "PATH": path,
             "HOME": str(self.home),
             "XDG_CONFIG_HOME": str(self.home / ".config"),
             "PARCEL_CONFIG_DIR": str(self.home / ".config" / "parcel"),
@@ -730,7 +739,7 @@ class Cli:
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
-            [str(CLI_BIN), *args],
+            [str(self.binary), *args],
             env=self.env(token),
             input=input,
             capture_output=True,
@@ -746,8 +755,8 @@ class Cli:
             )
         return result
 
-    def json(self, *args: str, token: str | None = None):
-        return json.loads(self.run(*args, "--json", token=token).stdout)
+    def json(self, *args: str, token: str | None = None, cwd: Path | None = None):
+        return json.loads(self.run(*args, "--json", token=token, cwd=cwd).stdout)
 
 
 @pytest.fixture
@@ -755,3 +764,78 @@ def cli(server: Server, tmp_path: Path) -> Cli:
     home = tmp_path / "home"
     home.mkdir()
     return Cli(server=server, home=home)
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, check=False)
+
+
+@pytest.fixture(scope="session")
+def legacy_cli_bin() -> Path:
+    """The `parcel` CLI as released at ``LEGACY_CLI_TAG``: a git worktree of
+    the tag under ``target/legacy-cli/src``, built into
+    ``target/legacy-cli/target`` and reused while it was built from the
+    tag's commit (recorded next to the binary: the version string can't
+    tell, since the workspace may report the same one)."""
+    resolved = _git("rev-parse", "--verify", "--quiet", f"{LEGACY_CLI_TAG}^{{commit}}")
+    if resolved.returncode != 0:
+        pytest.fail(
+            f"tag {LEGACY_CLI_TAG} is not in this clone (the legacy-CLI test builds it).\n"
+            "  run: git fetch --tags   (CI checks out with fetch-depth: 0)",
+            pytrace=False,
+        )
+    commit = resolved.stdout.strip()
+    binary = LEGACY_CLI_DIR / "target" / "debug" / "parcel"
+    stamp = binary.with_name("parcel.built-from")
+    if binary.exists() and stamp.exists() and stamp.read_text().strip() == commit:
+        return binary
+    # Cargo would keep a binary it didn't build (it fingerprints sources, not
+    # its outputs), so drop whatever is there before building.
+    stamp.unlink(missing_ok=True)
+    binary.unlink(missing_ok=True)
+    source = LEGACY_CLI_DIR / "src"
+    if not (source / "Cargo.toml").exists():
+        _git("worktree", "prune")
+        added = _git("worktree", "add", "--force", "--detach", str(source), commit)
+        if added.returncode != 0:
+            pytest.fail(f"git worktree add failed:\n{added.stderr}", pytrace=False)
+    else:
+        # An existing worktree may be at another commit (or edited): put it
+        # back at the tag's.
+        checkout = subprocess.run(
+            ["git", "-C", str(source), "checkout", "--force", "--detach", commit],
+            capture_output=True, text=True, check=False,
+        )
+        if checkout.returncode != 0:
+            pytest.fail(f"git checkout of {commit} failed:\n{checkout.stderr}", pytrace=False)
+    # Run from the repo root (mise's toolchain, already trusted there) with
+    # the tag's own manifest and lock file.
+    cargo = ["mise", "exec", "--", "cargo"] if shutil.which("mise") else ["cargo"]
+    env = {**os.environ, "CARGO_TARGET_DIR": str(LEGACY_CLI_DIR / "target")}
+    subprocess.run(
+        [
+            *cargo, "build", "--locked", "-p", "parcel-cli",
+            "--manifest-path", str(source / "Cargo.toml"),
+        ],
+        cwd=ROOT,
+        env=env,
+        check=True,
+    )
+    assert binary.exists(), binary
+    stamp.write_text(commit + "\n")
+    return binary
+
+
+@pytest.fixture
+def legacy_cli(server: Server, legacy_cli_bin: Path, tmp_path: Path) -> Cli:
+    """The released CLI, with stand-in browser openers first on PATH so
+    `parcel open` prints its URL without launching anything."""
+    home = tmp_path / "legacy-home"
+    home.mkdir()
+    bin_dir = tmp_path / "no-browser"
+    bin_dir.mkdir()
+    for opener in ("xdg-open", "gio", "gnome-open", "kde-open", "wslview", "open"):
+        stub = bin_dir / opener
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+    return Cli(server=server, home=home, binary=legacy_cli_bin, bin_dir=bin_dir)

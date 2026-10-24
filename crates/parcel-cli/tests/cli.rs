@@ -58,7 +58,13 @@ impl Sandbox {
             "PARCEL_SERVER",
             "PARCEL_PROFILE",
             "PARCEL_TOKEN",
+            "PARCEL_PROJECT",
             "XDG_CONFIG_HOME",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_CONFIG_GLOBAL",
             "SSH_CONNECTION",
             "HTTP_PROXY",
             "HTTPS_PROXY",
@@ -937,7 +943,8 @@ async fn api_errors_map_to_messages_and_exit_codes() {
         "error: token revoked (run `parcel login` to sign in)\n"
     );
 
-    let out = run(sandbox.parcel(&server.uri()).args(["info", "not/a/ref"]));
+    // (`not/a/ref` would be a slug now.)
+    let out = run(sandbox.parcel(&server.uri()).args(["info", "not a ref"]));
     assert_code(&out, 2);
 }
 
@@ -2221,4 +2228,1249 @@ fn skill_install_writes_under_home() {
     assert!(Path::new(&sandbox.root)
         .join(".claude/skills/parcel/SKILL.md")
         .is_file());
+}
+
+// ---------------------------------------------------------------- tags, slugs, search, pages
+
+/// A server with every optional feature (`ServerInfo.features`).
+async fn mount_new_info(server: &MockServer) {
+    let mut info = server_info(&server.uri(), limits());
+    info["features"] = json!(["tags", "search", "archive", "slugs", "pages"]);
+    Mock::given(method("GET"))
+        .and(path("/api/v1/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(info))
+        .mount(server)
+        .await;
+}
+
+/// A summary as a server with slugs sends it.
+fn slugged_summary(server: &str, version: i32) -> Value {
+    let mut s = summary(server, version);
+    s["tags"] = json!(["kind:plan", "project:roost"]);
+    s["slug"] = json!("roost/plan-14");
+    s["owner_handle"] = json!("ada");
+    s["canonical_url"] = json!(format!("{server}/@ada/roost/plan-14"));
+    s["archived_at"] = Value::Null;
+    s
+}
+
+fn detail_of(summary: Value, pages: Value) -> Value {
+    json!({
+        "parcel": summary,
+        "is_owner": true,
+        "access": "owner",
+        "versions": [
+            {"version": 2, "entry": "index.html", "label": null, "file_count": 2,
+             "total_bytes": 2048, "created_at": "2026-10-15T12:00:00Z",
+             "source": {"repo": "github.com/acme/roost", "branch": "main",
+                        "commit": "0123456789ab", "host": "laptop",
+                        "client": "parcel-cli/0.2.0"}},
+            {"version": 1, "entry": "index.html", "label": null, "file_count": 1,
+             "total_bytes": 1024, "created_at": "2026-10-01T12:00:00Z"},
+        ],
+        "files": [],
+        "pages": pages,
+    })
+}
+
+fn two_pages() -> Value {
+    json!([
+        {"path": "index.html", "title": "Plan"},
+        {"path": "notes/b.html", "title": "Build \u{1b}[2Jsettings"},
+    ])
+}
+
+/// The `metadata` part of every multipart POST to `url_path`.
+async fn sent_metadata(server: &MockServer, url_path: &str) -> Vec<Value> {
+    requests_to(server, "POST", url_path)
+        .await
+        .iter()
+        .map(|r| serde_json::from_slice(&parse_multipart(r)[0].body).unwrap())
+        .collect()
+}
+
+async fn mount_create(server: &MockServer, status: u16, created: bool) {
+    let mut body = publish_result(&server.uri(), 1);
+    body["created"] = json!(created);
+    Mock::given(method("POST"))
+        .and(path("/api/v1/parcels"))
+        .respond_with(ResponseTemplate::new(status).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// `git` with no user or system configuration.
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .output()
+        .expect("git runs");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A repository with one commit in `<sandbox>/<name>`.
+fn git_repo(sandbox: &Sandbox, name: &str, origin: Option<&str>) -> PathBuf {
+    let dir = sandbox.root.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    git(&dir, &["init", "-q"]);
+    git(&dir, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    if let Some(origin) = origin {
+        git(&dir, &["remote", "add", "origin", origin]);
+    }
+    dir
+}
+
+#[tokio::test]
+async fn publish_in_a_git_repo_adds_the_project_tag_and_a_sanitized_source() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let page = sandbox.write("scratch/plan.html", b"<title>Plan</title>");
+    let repo = git_repo(
+        &sandbox,
+        "roost-checkout",
+        Some("https://ada:ghp_CANARY7731@github.com/acme/Roost_App.git"),
+    );
+    fs::create_dir_all(repo.join("src/deep")).unwrap();
+    mount_new_info(&server).await;
+    mount_create(&server, 201, true).await;
+
+    let publish = |extra: &[&str], cwd: &Path| {
+        let mut cmd = sandbox.parcel(&server.uri());
+        cmd.env("PARCEL_TOKEN", TOKEN)
+            .current_dir(cwd)
+            .arg("publish")
+            .arg(&page)
+            .args(extra);
+        run(&mut cmd)
+    };
+    // From a subdirectory: the repository is the current directory's.
+    let out = publish(&[], &repo.join("src/deep"));
+    assert_code(&out, 0);
+    let out = publish(&["--project", "Other Name"], &repo);
+    assert_code(&out, 0);
+    let mut cmd = sandbox.parcel(&server.uri());
+    cmd.env("PARCEL_TOKEN", TOKEN)
+        .env("PARCEL_PROJECT", "from-env")
+        .current_dir(&repo)
+        .arg("publish")
+        .arg(&page);
+    assert_code(&run(&mut cmd), 0);
+    assert_code(&publish(&["--no-auto-tags"], &repo), 0);
+    assert_code(&publish(&["--no-source", "--json"], &repo), 0);
+
+    let sent = sent_metadata(&server, "/api/v1/parcels").await;
+    assert_eq!(sent.len(), 5);
+    assert_eq!(sent[0]["auto_tags"], json!(["project:roost-app"]));
+    assert!(sent[0].get("tags").is_none(), "{}", sent[0]);
+    let source = &sent[0]["source"];
+    assert_eq!(source["repo"], "https://github.com/acme/Roost_App");
+    assert_eq!(source["branch"], "main");
+    assert_eq!(source["commit"].as_str().unwrap().len(), 12);
+    assert!(source["client"]
+        .as_str()
+        .unwrap()
+        .starts_with("parcel-cli/"));
+    assert!(source.get("host").is_some(), "{source}");
+    assert_eq!(sent[1]["auto_tags"], json!(["project:other-name"]));
+    assert_eq!(sent[2]["auto_tags"], json!(["project:from-env"]));
+    assert!(sent[3].get("auto_tags").is_none(), "{}", sent[3]);
+    assert_eq!(
+        sent[3]["source"]["repo"],
+        "https://github.com/acme/Roost_App"
+    );
+    assert_eq!(sent[4]["auto_tags"], json!(["project:roost-app"]));
+    assert!(sent[4].get("source").is_none(), "{}", sent[4]);
+    // The credential never leaves the machine, in any request.
+    for request in server.received_requests().await.unwrap() {
+        let body = String::from_utf8_lossy(&request.body);
+        assert!(!body.contains("CANARY"), "{body}");
+        assert!(!request.url.as_str().contains("CANARY"));
+    }
+
+    // A bad --project is a usage error before anything is sent.
+    let out = publish(&["--project", "no way!"], &repo);
+    assert_code(&out, 2);
+    assert_eq!(sent_metadata(&server, "/api/v1/parcels").await.len(), 5);
+}
+
+#[tokio::test]
+async fn a_worktree_without_origin_is_named_after_the_main_checkout() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let page = sandbox.write("scratch/plan.html", b"<title>Plan</title>");
+    let main = git_repo(&sandbox, "mainproj", None);
+    git(
+        &main,
+        &["worktree", "add", "-q", "-b", "feature", "../feature-wt"],
+    );
+    mount_new_info(&server).await;
+    mount_create(&server, 201, true).await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .current_dir(sandbox.root.join("feature-wt"))
+        .arg("publish")
+        .arg(&page));
+    assert_code(&out, 0);
+    let sent = sent_metadata(&server, "/api/v1/parcels").await;
+    assert_eq!(sent[0]["auto_tags"], json!(["project:mainproj"]));
+    assert_eq!(sent[0]["source"]["branch"], "feature");
+    assert!(sent[0]["source"].get("repo").is_none(), "no remote");
+}
+
+#[tokio::test]
+async fn outside_a_repo_only_the_machine_and_client_are_sent() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let page = sandbox.write("scratch/plan.html", b"<title>Plan</title>");
+    mount_new_info(&server).await;
+    mount_create(&server, 201, true).await;
+
+    // Not a repository.
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .arg("publish")
+        .arg(&page));
+    assert_code(&out, 0);
+    // No git at all.
+    let empty = sandbox.root.join("empty-path");
+    fs::create_dir_all(&empty).unwrap();
+    let repo = git_repo(&sandbox, "repo", Some("git@github.com:acme/roost.git"));
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .env("PATH", &empty)
+        .current_dir(&repo)
+        .arg("publish")
+        .arg(&page));
+    assert_code(&out, 0);
+    // A git that hangs is given up on after the time budget.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let hung = sandbox.root.join("hung-git");
+        fs::create_dir_all(&hung).unwrap();
+        fs::write(hung.join("git"), "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(hung.join("git"), fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let out = run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .env("PATH", &hung)
+            .current_dir(&repo)
+            .arg("publish")
+            .arg(&page));
+        assert_code(&out, 0);
+        assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    }
+
+    for sent in sent_metadata(&server, "/api/v1/parcels").await {
+        assert!(sent.get("auto_tags").is_none(), "{sent}");
+        let source = sent["source"].as_object().unwrap();
+        let mut keys: Vec<&str> = source.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert!(keys == ["client", "host"] || keys == ["client"], "{sent}");
+    }
+}
+
+#[tokio::test]
+async fn new_versions_send_added_tags_and_source_but_never_auto_tags() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let page = sandbox.write("scratch/plan.html", b"<title>Plan</title>");
+    let repo = git_repo(&sandbox, "roost", Some("git@github.com:acme/roost.git"));
+    mount_new_info(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/parcels/{ID}/versions")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(publish_result(&server.uri(), 2)))
+        .mount(&server)
+        .await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .current_dir(&repo)
+        .arg("publish")
+        .arg(&page)
+        .args([
+            "--parcel",
+            ID,
+            "--tag",
+            "Auth",
+            "--kind",
+            "plan",
+            "--project",
+            "x",
+        ]));
+    assert_code(&out, 0);
+    assert!(stdout(&out).starts_with("Updated "), "{}", stdout(&out));
+    let sent = sent_metadata(&server, &format!("/api/v1/parcels/{ID}/versions")).await;
+    assert_eq!(sent[0]["add_tags"], json!(["auth", "kind:plan"]));
+    assert_eq!(sent[0]["source"]["repo"], "ssh://github.com/acme/roost");
+    assert!(sent[0].get("auto_tags").is_none(), "{}", sent[0]);
+    assert!(sent[0].get("tags").is_none(), "{}", sent[0]);
+}
+
+#[tokio::test]
+async fn auto_tags_are_dropped_first_at_the_cap() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let page = sandbox.write("scratch/plan.html", b"<title>Plan</title>");
+    let repo = git_repo(&sandbox, "roost", None);
+    mount_new_info(&server).await;
+    mount_create(&server, 201, true).await;
+
+    for n in [19, 20] {
+        let tags: Vec<String> = (0..n)
+            .flat_map(|i| ["--tag".into(), format!("t{i:02}")])
+            .collect();
+        let out = run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .current_dir(&repo)
+            .arg("publish")
+            .arg(&page)
+            .args(&tags));
+        assert_code(&out, 0);
+    }
+    let sent = sent_metadata(&server, "/api/v1/parcels").await;
+    assert_eq!(sent[0]["tags"].as_array().unwrap().len(), 19);
+    assert_eq!(sent[0]["auto_tags"], json!(["project:roost"]));
+    assert_eq!(sent[1]["tags"].as_array().unwrap().len(), 20);
+    assert!(sent[1].get("auto_tags").is_none(), "{}", sent[1]);
+}
+
+#[tokio::test]
+async fn slug_publishes_upsert_and_say_which_happened() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let page = sandbox.write("scratch/plan.html", b"<title>Plan</title>");
+    mount_new_info(&server).await;
+    let mut versioned = publish_result(&server.uri(), 3);
+    versioned["parcel"] = slugged_summary(&server.uri(), 3);
+    versioned["created"] = json!(false);
+    Mock::given(method("POST"))
+        .and(path("/api/v1/parcels"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(versioned.clone()))
+        .mount(&server)
+        .await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .arg("publish")
+        .arg(&page)
+        .args([
+            "--slug",
+            "Roost/Plan-14",
+            "--base-version",
+            "2",
+            "--kind",
+            "plan",
+        ]));
+    assert_code(&out, 0);
+    let text = stdout(&out);
+    assert!(text.starts_with("Updated \"Q3 report\""), "{text}");
+    assert!(
+        text.contains(&format!("url:     {}/@ada/roost/plan-14", server.uri())),
+        "{text}"
+    );
+    assert!(text.contains("tags:    kind:plan, project:roost"), "{text}");
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .arg("publish")
+        .arg(&page)
+        .args(["--slug", "roost/plan-14", "--json"]));
+    assert_code(&out, 0);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&out)).unwrap(),
+        versioned
+    );
+
+    let sent = sent_metadata(&server, "/api/v1/parcels").await;
+    assert_eq!(sent[0]["slug"], "roost/plan-14");
+    assert_eq!(sent[0]["base_version"], 2);
+    assert_eq!(sent[0]["tags"], json!(["kind:plan"]));
+
+    // --slug is a create-or-version on its own; it can't be combined with
+    // a target or the new-version flags.
+    for extra in [
+        &["--parcel", ID][..],
+        &["--mode", "merge"],
+        &["--remove", "a.css"],
+    ] {
+        let out = run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .arg("publish")
+            .arg(&page)
+            .args(["--slug", "s"])
+            .args(extra));
+        assert_code(&out, 2);
+    }
+}
+
+#[tokio::test]
+async fn an_older_server_is_never_sent_what_it_does_not_know() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let page = sandbox.write("scratch/plan.html", b"<title>Plan</title>");
+    let repo = git_repo(&sandbox, "roost", Some("git@github.com:acme/roost.git"));
+    // No `features`: a server from before tags.
+    mount_info(&server, limits()).await;
+    mount_create(&server, 201, false).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/parcels"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"parcels": [], "total": 0})))
+        .mount(&server)
+        .await;
+
+    for (args, refusal) in [
+        (
+            &["list", "--tag", "plan"][..],
+            "this server doesn't support tags yet",
+        ),
+        (
+            &["list", "--project", "roost"],
+            "this server doesn't support tags yet",
+        ),
+        (
+            &["list", "--archived"],
+            "this server doesn't support archived parcels yet",
+        ),
+        (&["list", "--all"], "this server doesn't support --all yet"),
+        (
+            &["list", "--shared", "-q", "x"],
+            "doesn't support searching shared parcels",
+        ),
+        (&["tags"], "this server doesn't support tags yet"),
+        (
+            &["update", ID, "--slug", "x"],
+            "this server doesn't support slugs yet",
+        ),
+        (
+            &["update", ID, "--set-tags", ""],
+            "this server doesn't support tags yet",
+        ),
+        (
+            &["archive", ID],
+            "this server doesn't support archiving yet",
+        ),
+        (
+            &["info", "@ada/plan"],
+            "this server doesn't support slugs yet",
+        ),
+        (
+            &["link", ID, "--page", "b.html"],
+            "this server doesn't support pages yet",
+        ),
+        (&["handle"], "this server doesn't support handles yet"),
+    ] {
+        let out = run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .args(args));
+        assert_code(&out, 1);
+        assert!(stderr(&out).contains(refusal), "{args:?}: {}", stderr(&out));
+    }
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .arg("publish")
+        .arg(&page)
+        .args(["--tag", "x"]));
+    assert_code(&out, 1);
+    assert!(
+        stderr(&out).contains("doesn't support tags yet"),
+        "{}",
+        stderr(&out)
+    );
+    // An explicit --project is a request for a tag, so it fails the same
+    // way; PARCEL_PROJECT is ambient and is dropped silently (below).
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .arg("publish")
+        .arg(&page)
+        .args(["--project", "roost"]));
+    assert_code(&out, 1);
+    assert!(
+        stderr(&out).contains("doesn't support tags yet"),
+        "{}",
+        stderr(&out)
+    );
+    // Nothing reached the old server but `GET /info`.
+    for request in server.received_requests().await.unwrap() {
+        assert_eq!(request.url.path(), "/api/v1/info", "{}", request.url);
+    }
+
+    // A plain publish from a repository works, without the new fields, and
+    // `created` (absent from an old server) is not trusted.
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .env("PARCEL_PROJECT", "roost")
+        .current_dir(&repo)
+        .arg("publish")
+        .arg(&page));
+    assert_code(&out, 0);
+    assert!(stdout(&out).starts_with("Published "), "{}", stdout(&out));
+    let sent = sent_metadata(&server, "/api/v1/parcels").await;
+    assert_eq!(sent, vec![json!({"entry": "plan.html"})]);
+}
+
+#[tokio::test]
+async fn list_filters_reach_the_server_and_snippets_stay_printable() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    mount_new_info(&server).await;
+    let mut item = slugged_summary(&server.uri(), 2);
+    item["match"] = json!({"segments": [
+        {"text": "rotate the\nrefresh ", "hit": false},
+        {"text": "token", "hit": true},
+        {"text": " \u{1b}]52;c;aGk=\u{7} daily", "hit": false},
+    ]});
+    let mut shared = summary(&server.uri(), 1);
+    shared["id"] = json!("bcdefghijkmn");
+    shared["title"] = json!("Theirs \u{1b}[31m");
+    shared["shared"] = json!({"owner_name": "Bob", "role": "commenter",
+                              "shared_at": "2026-10-14T12:00:00Z"});
+    shared["archived_at"] = json!("2026-10-16T12:00:00Z");
+    let raw = format!(
+        r#"{{"total":2,"parcels":[{},{}]}}"#,
+        serde_json::to_string(&item).unwrap(),
+        serde_json::to_string(&shared).unwrap()
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/v1/parcels"))
+        .and(query_param("scope", "all"))
+        .and(query_param("archived", "include"))
+        .and(query_param("q", "refresh token"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(raw.clone(), "application/json"))
+        .mount(&server)
+        .await;
+
+    let args = [
+        "list",
+        "--all",
+        "--tag",
+        "Auth",
+        "--project",
+        "roost",
+        "--kind",
+        "plan",
+        "-q",
+        "refresh token",
+        "--archived",
+    ];
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(args));
+    assert_code(&out, 0);
+    let text = stdout(&out);
+    let lines: Vec<&str> = text.lines().collect();
+    for column in ["ID", "TITLE", "OWNER", "ROLE", "TAGS", "SLUG"] {
+        assert!(lines[0].contains(column), "{column}: {text}");
+    }
+    assert!(
+        lines[1].contains("you") && lines[1].contains("roost/plan-14"),
+        "{text}"
+    );
+    assert!(lines[1].contains("kind:plan,project:roost"), "{text}");
+    assert_eq!(
+        lines[2],
+        r"    … rotate the refresh **token** \u{1b}]52;c;aGk=\u{7} daily …"
+    );
+    assert!(
+        lines[3].contains("Bob") && lines[3].contains("(archived)"),
+        "{text}"
+    );
+    assert!(lines[3].contains(r"Theirs \u{1b}[31m"), "{text}");
+    assert!(!text.contains('\u{1b}') && !text.contains('\u{7}'));
+
+    let gets = requests_to(&server, "GET", "/api/v1/parcels").await;
+    let tags: Vec<String> = gets[0]
+        .url
+        .query_pairs()
+        .filter(|(k, _)| k == "tag")
+        .map(|(_, v)| v.into_owned())
+        .collect();
+    assert_eq!(tags, ["auth", "kind:plan", "project:roost"]);
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(args)
+        .arg("--json"));
+    assert_code(&out, 0);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&out)).unwrap(),
+        serde_json::from_str::<Value>(&raw).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn list_shared_with_filters_uses_the_unified_list() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    mount_new_info(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/parcels"))
+        .and(query_param("scope", "shared"))
+        .and(query_param("archived", "only"))
+        .and(query_param("q", "plan"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"parcels": [], "total": 0})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["list", "--shared", "-q", "plan", "--archived-only"]));
+    assert_code(&out, 0);
+    assert_eq!(stdout(&out), "No parcels match \"plan\".\n");
+    assert!(requests_to(&server, "GET", "/api/v1/shared")
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn update_edits_tags_slug_and_archive_state() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    mount_new_info(&server).await;
+    let mut archived = slugged_summary(&server.uri(), 2);
+    archived["archived_at"] = json!("2026-10-20T12:00:00Z");
+    Mock::given(method("PATCH"))
+        .and(path(format!("/api/v1/parcels/{ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(archived.clone()))
+        .mount(&server)
+        .await;
+
+    let runs: [&[&str]; 5] = [
+        &["--add-tag", "Auth", "--remove-tag", "draft", "--archive"],
+        &["--set-tags", ""],
+        &["--set-tags", "b, A,,a"],
+        &["--slug", "", "--unarchive"],
+        &["--slug", " Roost/Plan-14 ", "--json"],
+    ];
+    for extra in runs {
+        let out = run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .args(["update", ID])
+            .args(extra));
+        assert_code(&out, 0);
+        if extra.contains(&"--json") {
+            assert_eq!(
+                serde_json::from_str::<Value>(&stdout(&out)).unwrap(),
+                archived
+            );
+        } else {
+            let text = stdout(&out);
+            assert!(
+                text.contains(&format!("url:  {}/@ada/roost/plan-14", server.uri())),
+                "{text}"
+            );
+            assert!(text.contains("tags: kind:plan, project:roost"), "{text}");
+            assert!(text.contains("archived"), "{text}");
+        }
+    }
+    let bodies: Vec<Value> = requests_to(&server, "PATCH", &format!("/api/v1/parcels/{ID}"))
+        .await
+        .iter()
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    assert_eq!(
+        bodies,
+        vec![
+            json!({"add_tags": ["auth"], "remove_tags": ["draft"], "archived": true}),
+            json!({"tags": []}),
+            json!({"tags": ["a", "b"]}),
+            json!({"archived": false, "slug": ""}),
+            json!({"slug": "roost/plan-14"}),
+        ]
+    );
+
+    for bad in [
+        &["--set-tags", "a", "--add-tag", "b"][..],
+        &["--archive", "--unarchive"],
+        &["--add-tag", "x", "--remove-tag", "X"],
+        &["--slug", "p/abcdefghijkm"],
+        &["--add-tag", "no way!"],
+        &[],
+    ] {
+        let out = run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .args(["update", ID])
+            .args(bad));
+        assert_code(&out, 2);
+    }
+}
+
+#[tokio::test]
+async fn tag_archive_and_unarchive_print_the_summary() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    mount_new_info(&server).await;
+    let body = slugged_summary(&server.uri(), 2);
+    Mock::given(method("PATCH"))
+        .and(path(format!("/api/v1/parcels/{ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body.clone()))
+        .mount(&server)
+        .await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args([
+            "tag",
+            ID,
+            "--add",
+            "kind:report",
+            "Topic",
+            "--remove",
+            "kind:plan",
+        ]));
+    assert_code(&out, 0);
+    assert_eq!(
+        stdout(&out),
+        format!("Tags on {ID}: kind:plan, project:roost\n")
+    );
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["archive", ID]));
+    assert_code(&out, 0);
+    assert!(
+        stdout(&out).contains(&format!("parcel unarchive {ID}")),
+        "{}",
+        stdout(&out)
+    );
+    for command in ["tag", "archive", "unarchive"] {
+        let mut cmd = sandbox.parcel(&server.uri());
+        cmd.env("PARCEL_TOKEN", TOKEN).args([command, ID, "--json"]);
+        if command == "tag" {
+            cmd.args(["--add", "x"]);
+        }
+        let out = run(&mut cmd);
+        assert_code(&out, 0);
+        assert_eq!(serde_json::from_str::<Value>(&stdout(&out)).unwrap(), body);
+    }
+    let bodies: Vec<Value> = requests_to(&server, "PATCH", &format!("/api/v1/parcels/{ID}"))
+        .await
+        .iter()
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    assert_eq!(
+        bodies,
+        vec![
+            json!({"add_tags": ["kind:report", "topic"], "remove_tags": ["kind:plan"]}),
+            json!({"archived": true}),
+            json!({"add_tags": ["x"]}),
+            json!({"archived": true}),
+            json!({"archived": false}),
+        ]
+    );
+    // `tag` needs something to do.
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["tag", ID]));
+    assert_code(&out, 2);
+}
+
+#[tokio::test]
+async fn tags_lists_every_page_then_renames_and_deletes() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    mount_new_info(&server).await;
+    let first: Vec<Value> = (0..1000)
+        .map(|i| json!({"tag": format!("t{i:04}"), "count": 2}))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tags"))
+        .and(query_param("limit", "1000"))
+        .and(query_param("prefix", "project:"))
+        .and(query_param("scope", "all"))
+        .and(query_param_is_missing("offset"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"tags": first, "total": 1001})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tags"))
+        .and(query_param("offset", "1000"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"tags": [{"tag": "zz", "count": 1}], "total": 1001})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/tags/rename"))
+        .and(body_json(
+            json!({"from": "project:roost-app", "to": "project:roost"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"updated": 3})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/tags/delete"))
+        .and(body_json(json!({"tag": "draft"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"updated": 1})))
+        .mount(&server)
+        .await;
+
+    let list = ["tags", "--prefix", "project:", "--all"];
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(list)
+        .arg("--json"));
+    assert_code(&out, 0);
+    let printed: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(printed["tags"].as_array().unwrap().len(), 1001);
+    assert_eq!(printed["tags"][1000], json!({"tag": "zz", "count": 1}));
+    assert_eq!(printed["total"], 1001);
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(list));
+    assert_code(&out, 0);
+    let text = stdout(&out);
+    assert!(text.starts_with("TAG"), "{text}");
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("zz") && l.ends_with('1')),
+        "{text}"
+    );
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["tags", "rename", "Project:Roost_App", "project:roost"]));
+    assert_code(&out, 0);
+    assert_eq!(
+        stdout(&out),
+        "Renamed project:roost-app to project:roost on 3 parcels\n"
+    );
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["tags", "delete", "draft", "--json"]));
+    assert_code(&out, 0);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&out)).unwrap(),
+        json!({"updated": 1})
+    );
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["tags", "delete", "draft"]));
+    assert_eq!(stdout(&out), "Removed draft from 1 parcel\n");
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["tags", "rename", "ok", "bad tag!"]));
+    assert_code(&out, 2);
+}
+
+/// Every REF command takes a slug: one `by-slug` lookup, then by id.
+#[tokio::test]
+async fn slug_refs_resolve_once_then_work_by_id() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    sandbox.write("scratch/x.html", b"<title>x</title>");
+    mount_new_info(&server).await;
+    let detail = detail_of(slugged_summary(&server.uri(), 2), two_pages());
+    Mock::given(method("GET"))
+        .and(path("/api/v1/parcels/by-slug"))
+        .and(query_param("slug", "roost/plan-14"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail.clone()))
+        .mount(&server)
+        .await;
+    // Whatever by-id request follows gets a body its command accepts.
+    let id_path = format!("/api/v1/parcels/{ID}");
+    Mock::given(method("GET"))
+        .and(path(format!("{id_path}/versions")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"versions": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{id_path}/shares")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"shares": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{id_path}/comments")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"comments": [], "open": 0})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{id_path}/data")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"revision": 0, "usage_bytes": 0, "limit_bytes": 1024, "writable": true,
+                   "collections": []}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{id_path}/versions/2/files/notes/b.html")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<p>b</p>"))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(&id_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(slugged_summary(&server.uri(), 2)))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(&id_path))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{id_path}/versions/1/restore")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(publish_result(&server.uri(), 3)))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{id_path}/versions")))
+        .respond_with(ResponseTemplate::new(201).set_body_json(publish_result(&server.uri(), 3)))
+        .mount(&server)
+        .await;
+
+    let commands: [&[&str]; 14] = [
+        &["info", "@ada/roost/plan-14"],
+        &["versions", "roost/plan-14"],
+        &["shares", "roost/plan-14"],
+        &["comments", "list", "roost/plan-14"],
+        &["data", "list", "roost/plan-14"],
+        &["cat", "@ada/roost/plan-14?v=2&page=notes/b.html"],
+        &["update", "roost/plan-14", "--title", "T"],
+        &["tag", "roost/plan-14", "--add", "x"],
+        &["archive", "roost/plan-14"],
+        &["restore", "roost/plan-14", "--version", "1"],
+        &["link", "roost/plan-14"],
+        &["publish", "scratch/x.html", "--parcel", "roost/plan-14"],
+        &["delete", "roost/plan-14", "--yes"],
+        &["info", &format!("{}/@ada/roost/plan-14#top", server.uri())],
+    ];
+    for (n, args) in commands.iter().enumerate() {
+        let out = run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .args(*args));
+        assert_code(&out, 0);
+        let lookups = requests_to(&server, "GET", "/api/v1/parcels/by-slug").await;
+        assert_eq!(lookups.len(), n + 1, "{args:?}: one lookup each");
+        if args[0] == "cat" {
+            assert_eq!(stdout(&out), "<p>b</p>");
+        }
+    }
+    let lookups = requests_to(&server, "GET", "/api/v1/parcels/by-slug").await;
+    let handles: Vec<Option<String>> = lookups
+        .iter()
+        .map(|r| {
+            r.url
+                .query_pairs()
+                .find(|(k, _)| k == "handle")
+                .map(|(_, v)| v.into_owned())
+        })
+        .collect();
+    assert_eq!(handles[0].as_deref(), Some("ada"));
+    assert_eq!(handles[1], None, "a bare slug is the caller's own");
+    // info and link use the detail the lookup returned.
+    assert!(requests_to(&server, "GET", &id_path).await.is_empty());
+}
+
+#[tokio::test]
+async fn info_shows_tags_slug_archive_source_and_pages() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let mut parcel = slugged_summary(&server.uri(), 2);
+    parcel["archived_at"] = json!("2026-10-20T12:00:00Z");
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/parcels/{ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail_of(parcel, two_pages())))
+        .mount(&server)
+        .await;
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["info", ID]));
+    assert_code(&out, 0);
+    let text = stdout(&out);
+    for needle in [
+        &format!("url:         {}/@ada/roost/plan-14", server.uri()),
+        "slug:        roost/plan-14",
+        "tags:        kind:plan, project:roost",
+        &format!("(left out of lists and search; `parcel unarchive {ID}`)"),
+        "source:      github.com/acme/roost, branch main, commit 0123456789ab, on laptop, \
+         via parcel-cli/0.2.0",
+        "Pages in v2",
+        "notes/b.html",
+        r"Build \u{1b}[2Jsettings",
+    ] {
+        assert!(text.contains(needle), "missing {needle:?}\n{text}");
+    }
+    assert!(!text.contains('\u{1b}'));
+
+    // One page is shown compactly, so its title isn't lost.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/parcels/{ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail_of(
+            slugged_summary(&server.uri(), 2),
+            json!([{"path": "index.html", "title": "Implementation details"}]),
+        )))
+        .mount(&server)
+        .await;
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["info", ID]));
+    assert_code(&out, 0);
+    let text = stdout(&out);
+    assert!(
+        text.contains("Pages: index.html — Implementation details\n"),
+        "{text}"
+    );
+    assert!(!text.contains("Pages in v"), "{text}");
+}
+
+#[tokio::test]
+async fn link_prints_canonical_markdown_and_json() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    mount_new_info(&server).await;
+    let mut parcel = slugged_summary(&server.uri(), 2);
+    parcel["title"] = json!("Evil [x](javascript:alert(1)) \\ \u{1b}[2J");
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/parcels/{ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail_of(parcel, two_pages())))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/parcels/{ID}/versions/1")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(version_detail(1, json!([]))))
+        .mount(&server)
+        .await;
+
+    let link = |args: &[&str]| {
+        run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .arg("link")
+            .args(args))
+    };
+    let base = server.uri();
+    let out = link(&[ID]);
+    assert_code(&out, 0);
+    assert_eq!(stdout(&out), format!("{base}/@ada/roost/plan-14\n"));
+
+    let out = link(&[ID, "--page", "notes/b.html", "--markdown"]);
+    assert_code(&out, 0);
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "[Evil \\[x\\]\\(javascript:alert\\(1\\)\\) \\\\ \\[2J]\
+             ({base}/@ada/roost/plan-14?page=notes/b.html)\n"
+        )
+    );
+
+    let out = link(&[&format!("{base}/p/{ID}/v/2"), "--json"]);
+    assert_code(&out, 0);
+    let printed: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(printed["url"], format!("{base}/p/{ID}/v/2"));
+    assert_eq!(
+        printed["canonical_url"],
+        format!("{base}/@ada/roost/plan-14?v=2")
+    );
+    assert!(printed["markdown"]
+        .as_str()
+        .unwrap()
+        .ends_with(&format!("({base}/@ada/roost/plan-14?v=2)")));
+    let keys: Vec<&str> = printed
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys.len(), 3);
+
+    // A page the version doesn't have is not found (v1 has no pages).
+    let out = link(&[ID, "--page", "missing.html"]);
+    assert_code(&out, 4);
+    assert!(
+        stderr(&out).contains("index.html, notes/b.html"),
+        "{}",
+        stderr(&out)
+    );
+    let out = link(&[&format!("{base}/p/{ID}/v/1"), "--page", "notes/b.html"]);
+    assert_code(&out, 4);
+    // `?v=` on an id URL pins nothing (the web app ignores it too): the link is
+    // the current version's, never `?v=1`.
+    let out = link(&[&format!("{base}/p/{ID}?v=1")]);
+    assert_code(&out, 0);
+    assert_eq!(stdout(&out), format!("{base}/@ada/roost/plan-14\n"));
+    let out = link(&[ID, "--page", "../x"]);
+    assert_code(&out, 2);
+}
+
+/// Stand-in browser openers, so `open` launches nothing.
+fn no_browser(sandbox: &Sandbox) -> std::ffi::OsString {
+    let dir = sandbox.root.join("no-browser");
+    fs::create_dir_all(&dir).unwrap();
+    #[cfg(unix)]
+    for opener in [
+        "xdg-open",
+        "gio",
+        "gnome-open",
+        "kde-open",
+        "wslview",
+        "open",
+    ] {
+        use std::os::unix::fs::PermissionsExt;
+        let stub = dir.join(opener);
+        fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut path = dir.into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    path
+}
+
+#[tokio::test]
+async fn open_prints_the_canonical_page_link() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    mount_new_info(&server).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/parcels/{ID}")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(detail_of(slugged_summary(&server.uri(), 2), two_pages())),
+        )
+        .mount(&server)
+        .await;
+    let path_var = no_browser(&sandbox);
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .env("PATH", &path_var)
+        .args(["open", &format!("{ID}#intro"), "--page", "notes/b.html"]));
+    assert_code(&out, 0);
+    assert_eq!(
+        stdout(&out),
+        format!("{}/@ada/roost/plan-14?page=notes/b.html\n", server.uri())
+    );
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .env("PATH", &path_var)
+        .args(["open", &format!("{ID}?page=notes/b.html#intro"), "--json"]));
+    assert_code(&out, 0);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&out)).unwrap(),
+        json!({"url": format!("{}/@ada/roost/plan-14?page=notes/b.html#intro", server.uri())})
+    );
+    // A raw fragment is user-supplied: human output escapes it, as `link`
+    // does (--json carries it as an escaped JSON string).
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .env("PATH", &path_var)
+        .args(["open", &format!("{ID}#a\u{1b}[2Jb")]));
+    assert_code(&out, 0);
+    assert!(!stdout(&out).contains('\u{1b}'), "{:?}", stdout(&out));
+    assert!(stdout(&out).contains(r"\u{1b}[2J"), "{:?}", stdout(&out));
+}
+
+#[tokio::test]
+async fn handle_shows_and_changes_the_handle() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    mount_new_info(&server).await;
+    let me = |handle: &str| {
+        json!({
+            "id": "u1", "email": "ada@example.com", "name": "Ada",
+            "usage": {"parcel_count": 0, "version_count": 0, "stored_bytes": 0},
+            "limits": limits(), "handle": handle,
+        })
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/v1/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(me("ada")))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/me"))
+        .and(body_json(json!({"handle": "lovelace"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(me("lovelace")))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let handle = |args: &[&str]| {
+        run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .arg("handle")
+            .args(args))
+    };
+    let out = handle(&[]);
+    assert_code(&out, 0);
+    assert!(stdout(&out).starts_with("@ada\n"), "{}", stdout(&out));
+    let out = handle(&["--json"]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&out)).unwrap(),
+        json!({"handle": "ada"})
+    );
+    let out = handle(&["Lovelace"]);
+    assert_code(&out, 0);
+    assert!(
+        stdout(&out).contains("now @lovelace (was @ada); links with @ada keep working"),
+        "{}",
+        stdout(&out)
+    );
+    let out = handle(&["lovelace", "--json"]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&out)).unwrap(),
+        json!({"handle": "lovelace", "previous": "ada"})
+    );
+    // Asking for the handle you have changes nothing.
+    let out = handle(&["ada", "--json"]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&out)).unwrap(),
+        json!({"handle": "ada"})
+    );
+    let out = handle(&["-bad-"]);
+    assert_code(&out, 2);
 }

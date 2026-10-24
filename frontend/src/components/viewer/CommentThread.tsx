@@ -29,7 +29,8 @@ import {
   wasEdited,
 } from '@/lib/comments';
 import { errorMessage } from '@/lib/http';
-import type { Comment, CommentAuthor, CommentVia } from '@/lib/types';
+import { pageLabel } from '@/lib/refs';
+import type { Comment, CommentAuthor, CommentVia, PageEntry } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { CommentComposer } from './CommentComposer';
 import type { DeleteTarget } from './DeleteCommentDialog';
@@ -53,6 +54,10 @@ interface CommentThreadProps {
   active: boolean;
   /** Highlight the thread and its pin, and scroll the page to it. */
   onActivate: () => void;
+  /** Pages of the version in view (null while loading). */
+  pages?: PageEntry[] | null;
+  /** Open the thread's page (it is another page of this version) and show it there. */
+  onOpenPage?: () => void;
   onDelete: (target: DeleteTarget) => void;
   /** Tell the viewer a reply or edit is in progress (it holds off reloading). */
   onComposingChange: (key: string, composing: boolean) => void;
@@ -69,6 +74,8 @@ export function CommentThread({
   missing,
   active,
   onActivate,
+  pages = null,
+  onOpenPage,
   onDelete,
   onComposingChange,
 }: CommentThreadProps) {
@@ -89,6 +96,13 @@ export function CommentThread({
   const perms = readOnly ? NO_PERMISSIONS : threadPermissions(thread.author, isOwner);
   const anchor = thread.anchor ? summarizeAnchor(thread.anchor, framePath) : null;
   const onThisPage = thread.anchor !== undefined && thread.anchor.path === framePath;
+  // A thread on another page: openable when that page is in this version
+  // (`ready.path` and anchors are only trusted against the version's pages).
+  const otherPage =
+    thread.anchor && !onThisPage && pages
+      ? (pages.find((p) => p.path === thread.anchor?.path) ?? null)
+      : null;
+  const missingPage = thread.anchor !== undefined && !onThisPage && pages !== null && !otherPage;
 
   const setResolved = (resolved: boolean, undoable = true) => {
     update.mutate(
@@ -251,10 +265,28 @@ export function CommentThread({
               />
               <AnchorText text={anchor.text} page={anchor.page} />
             </button>
+          ) : otherPage && onOpenPage ? (
+            <button
+              type="button"
+              onClick={onOpenPage}
+              className="group flex w-full items-start gap-1.5 rounded-md border-l-2 bg-muted/50 px-2 py-1 text-left text-muted-foreground text-xs hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              title={`Open ${pageLabel(otherPage)} and show it`}
+            >
+              <span className="sr-only">Open the page and show it: </span>
+              <Crosshair
+                className="mt-0.5 h-3 w-3 shrink-0 group-hover:text-primary"
+                aria-hidden="true"
+              />
+              <AnchorText text={anchor.text} page={anchor.page} />
+            </button>
           ) : (
             <div className="flex items-start gap-1.5 rounded-md border-l-2 bg-muted/50 px-2 py-1 text-muted-foreground text-xs">
               <Crosshair className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
-              <AnchorText text={anchor.text} page={anchor.page} />
+              <AnchorText
+                text={anchor.text}
+                page={anchor.page}
+                note={missingPage ? 'not in this version' : undefined}
+              />
             </div>
           )}
           {missing && onThisPage && (
@@ -337,7 +369,16 @@ export function CommentThread({
   );
 }
 
-function AnchorText({ text, page }: { text: string | null; page: string | null }) {
+function AnchorText({
+  text,
+  page,
+  note,
+}: {
+  text: string | null;
+  page: string | null;
+  /** Said after the page (`not in this version`). */
+  note?: string;
+}) {
   return (
     <span className="min-w-0 break-words">
       {text ? <span className="italic">“{text}”</span> : 'A spot on the page'}
@@ -345,6 +386,7 @@ function AnchorText({ text, page }: { text: string | null; page: string | null }
         <>
           {' '}
           on <span className="font-mono">{page}</span>
+          {note && <> — {note}</>}
         </>
       )}
     </span>

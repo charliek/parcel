@@ -36,10 +36,66 @@ export interface ParcelSummary {
   total_bytes: number;
   created_at: string;
   updated_at: string;
-  /** The viewer URL in the web app (`https://…/p/<id>`). */
+  /**
+   * The legacy viewer URL (`https://…/p/<id>`). Stays this shape for good;
+   * show and copy `canonical_url` instead.
+   */
   url: string;
   /** Unresolved comment threads. */
   open_comments: number;
+  /** Sorted by bytes. Everyone who can view the parcel sees them. */
+  tags?: string[];
+  /** When the owner archived it; archived parcels stay viewable by URL. */
+  archived_at?: string | null;
+  /** The parcel's name under its owner's handle (`parcel/plan-001`), if it has one. */
+  slug?: string | null;
+  /** The owner's handle (left out for anonymous callers of an unslugged parcel). */
+  owner_handle?: string;
+  /** The URL to show and share: `https://…/@<handle>/<slug>` when slugged, else `url`. */
+  canonical_url?: string;
+}
+
+/** Which parcels a list covers. */
+export type ListScope = 'mine' | 'shared' | 'all';
+
+/** How a list treats archived parcels. */
+export type ArchivedFilter = 'exclude' | 'include' | 'only';
+
+/** One run of a search snippet. Render it as text, never as HTML. */
+export interface MatchSegment {
+  text: string;
+  hit: boolean;
+}
+
+/** Where a full-text query matched the parcel's page text. */
+export interface ListMatch {
+  segments: MatchSegment[];
+}
+
+/** How a parcel in a list came to be shared with the caller. */
+export interface SharedInfo {
+  owner_name: string;
+  role: ShareRole;
+  shared_at: string;
+}
+
+/** A parcel in `GET /api/v1/parcels`: the summary's fields, plus what the list knows. */
+export interface ParcelListItem extends ParcelSummary {
+  /** Set when `q` matched the parcel's page text. */
+  match?: ListMatch;
+  /** Set when the caller isn't the owner. */
+  shared?: SharedInfo;
+}
+
+/** Where a version was published from. The owner's only. */
+export interface SourceInfo {
+  /** `host[:port]/path`, without credentials. */
+  repo?: string;
+  branch?: string;
+  commit?: string;
+  host?: string;
+  /** `parcel-cli/<version>`, `mcp`, `web`. */
+  client?: string;
 }
 
 /** One immutable version of a parcel. */
@@ -51,6 +107,8 @@ export interface VersionSummary {
   file_count: number;
   total_bytes: number;
   created_at: string;
+  /** Where it was published from; present for the owner only. */
+  source?: SourceInfo;
 }
 
 /** One file inside a version. */
@@ -60,11 +118,22 @@ export interface FileEntry {
   content_type: string;
   /** Lowercase hex SHA-256 of the file's bytes. */
   sha256: string;
+  /** A page's `<title>` or first heading (plain text), when it had one. */
+  page_title?: string;
+}
+
+/** One page of a version: an HTML or Markdown file the viewer can open. */
+export interface PageEntry {
+  path: string;
+  /** Plain text; null when it has none on record (show the path). */
+  title: string | null;
 }
 
 /** A version with its file list (`VersionSummary` fields are flattened in). */
 export interface VersionDetail extends VersionSummary {
   files: FileEntry[];
+  /** The entry first, then the others by path. */
+  pages?: PageEntry[];
 }
 
 /** A parcel with its history and current files. */
@@ -80,6 +149,8 @@ export interface ParcelDetail {
   versions: VersionSummary[];
   /** Files of the current version. */
   files: FileEntry[];
+  /** Pages of the current version: the entry first, then the others by path. */
+  pages?: PageEntry[];
 }
 
 /** `GET /api/v1/parcels/{id}/versions`. */
@@ -90,7 +161,7 @@ export interface VersionList {
 
 /** `GET /api/v1/parcels`. */
 export interface ParcelList {
-  parcels: ParcelSummary[];
+  parcels: ParcelListItem[];
   /** Total number of matching parcels (for pagination). */
   total: number;
 }
@@ -104,6 +175,15 @@ export interface CreateParcelMetadata {
   /** Entry page path. Defaults to the only HTML/Markdown file, else `index.html`. */
   entry?: string;
   label?: string;
+  /** Tags to start with. */
+  tags?: string[];
+  /**
+   * Publish under this slug. When the caller already has a parcel with it,
+   * this adds a version to that parcel instead (`created: false`).
+   */
+  slug?: string;
+  /** Where this is published from (shown to the owner only). */
+  source?: SourceInfo;
 }
 
 /** The `metadata` part of a new-version (`POST /api/v1/parcels/{id}/versions`) upload. */
@@ -118,19 +198,55 @@ export interface NewVersionMetadata {
   visibility?: Visibility;
   /** Optimistic concurrency: fail with 409 unless this is still the current version. */
   base_version?: number;
+  /** Tags to add (existing ones are kept). */
+  add_tags?: string[];
+  /** Where this is published from (shown to the owner only). */
+  source?: SourceInfo;
 }
 
 /** Returned by both create and new-version publishes. */
 export interface PublishResult {
   parcel: ParcelSummary;
   version: VersionDetail;
+  /** Whether this publish created the parcel (a create with a used slug adds a version). */
+  created?: boolean;
 }
 
-/** `PATCH /api/v1/parcels/{id}` — metadata only; files change through versions. */
+/**
+ * `PATCH /api/v1/parcels/{id}` — metadata only; files change through versions.
+ * `tags: []` clears the tags and `slug: ""` the slug, so build it by hand:
+ * never through `compactMetadata`, which drops both.
+ */
 export interface UpdateParcelRequest {
   title?: string;
   description?: string;
   visibility?: Visibility;
+  /** Replace the tag set (`[]` clears it). */
+  tags?: string[];
+  add_tags?: string[];
+  remove_tags?: string[];
+  archived?: boolean;
+  /** `""` clears it. */
+  slug?: string;
+}
+
+/** One tag and how many of the listed parcels carry it. */
+export interface TagCount {
+  tag: string;
+  count: number;
+}
+
+/** `GET /api/v1/tags`. */
+export interface TagList {
+  /** Most used first, then by name. */
+  tags: TagCount[];
+  /** How many distinct tags match (for paging). */
+  total: number;
+}
+
+/** `POST /api/v1/tags/rename` and `/tags/delete`. */
+export interface TagsUpdated {
+  updated: number;
 }
 
 /** `GET /api/v1/parcels/{id}/view` — what the viewer iframe loads. */
@@ -180,6 +296,8 @@ export interface Me {
   limits: Limits;
   /** Label of the provider this web session signed in with (absent for API tokens and dev mode). */
   signed_in_with?: string | null;
+  /** The `@<handle>` in the user's clean parcel URLs. */
+  handle?: string;
 }
 
 /** The two auth modes the backend can run in. */
@@ -212,6 +330,8 @@ export interface ServerInfo {
   allow_public: boolean;
   limits: Limits;
   allowed_extensions: string[];
+  /** Optional API features (`tags`, `search`, `archive`, `slugs`, `pages`). */
+  features?: string[];
 }
 
 /** How a token was minted. */
@@ -448,21 +568,6 @@ export interface ShareList {
 /** `PUT /api/v1/parcels/{id}/shares/{email}`. */
 export interface PutShareRequest {
   role: ShareRole;
-}
-
-/** A parcel someone shared with the caller by name. */
-export interface SharedParcel {
-  parcel: ParcelSummary;
-  owner_name: string;
-  role: ShareRole;
-  shared_at: string;
-}
-
-/** `GET /api/v1/shared`. */
-export interface SharedParcelList {
-  /** Most recently updated first. */
-  parcels: SharedParcel[];
-  total: number;
 }
 
 /** The error envelope every non-2xx JSON response uses. */

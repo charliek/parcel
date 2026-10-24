@@ -1,7 +1,9 @@
 //! Row → wire-type conversions and the shared access checks.
 
+use parcel_types::media;
 use parcel_types::{
-    FileEntry, ParcelAccess, ParcelSummary, ShareRole, VersionDetail, VersionSummary, Visibility,
+    FileEntry, PageEntry, ParcelAccess, ParcelSummary, ShareRole, VersionDetail, VersionSummary,
+    Visibility,
 };
 use uuid::Uuid;
 
@@ -12,7 +14,30 @@ use crate::db::{shares, users};
 use crate::error::{not_found, AppError};
 use crate::state::AppState;
 
-pub fn summary(config: &Config, row: &ParcelRow) -> ParcelSummary {
+/// Who a summary is for. Anonymous callers aren't told who owns a parcel
+/// without a slug, as they aren't told the owner's name (PLAN.md, "Handles
+/// and slugs"); a slug is the owner opting in to a readable link, and its
+/// URL holds the handle anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Audience {
+    Anonymous,
+    SignedIn,
+}
+
+impl Audience {
+    pub fn of(caller: Option<&AuthUser>) -> Self {
+        match caller {
+            Some(_) => Audience::SignedIn,
+            None => Audience::Anonymous,
+        }
+    }
+}
+
+pub fn summary(config: &Config, row: &ParcelRow, audience: Audience) -> ParcelSummary {
+    let owner_handle = match audience {
+        Audience::SignedIn => row.owner_handle.clone(),
+        Audience::Anonymous => row.slug.as_ref().and(row.owner_handle.clone()),
+    };
     ParcelSummary {
         id: row.id.clone(),
         title: row.title.clone(),
@@ -26,10 +51,20 @@ pub fn summary(config: &Config, row: &ParcelRow) -> ParcelSummary {
         updated_at: row.updated_at,
         url: config.viewer_url(&row.id),
         open_comments: row.open_comments,
+        tags: row.tags.clone(),
+        archived_at: row.archived_at,
+        slug: row.slug.clone(),
+        canonical_url: config.canonical_url(
+            &row.id,
+            row.owner_handle.as_deref(),
+            row.slug.as_deref(),
+        ),
+        owner_handle,
     }
 }
 
-pub fn version_summary(v: &VersionRow) -> VersionSummary {
+/// A version as `access` may see it: its source is the owner's alone.
+pub fn version_summary(v: &VersionRow, access: ParcelAccess) -> VersionSummary {
     VersionSummary {
         version: v.version,
         entry: v.entry.clone(),
@@ -37,14 +72,38 @@ pub fn version_summary(v: &VersionRow) -> VersionSummary {
         file_count: v.file_count,
         total_bytes: v.total_bytes,
         created_at: v.created_at,
+        source: v.source.clone().filter(|_| access == ParcelAccess::Owner),
     }
 }
 
-pub fn version_detail(v: &VersionRow, files: Vec<FileRow>) -> VersionDetail {
+pub fn version_detail(v: &VersionRow, files: Vec<FileRow>, access: ParcelAccess) -> VersionDetail {
     VersionDetail {
-        summary: version_summary(v),
+        summary: version_summary(v, access),
+        pages: pages(&v.entry, &files),
         files: files.into_iter().map(FileEntry::from).collect(),
     }
+}
+
+/// A version's pages (its HTML and Markdown files): the entry first, then
+/// the rest by path (byte order, so it doesn't depend on the database's
+/// collation). Whoever may see the file list may see this.
+pub fn pages(entry: &str, files: &[FileRow]) -> Vec<PageEntry> {
+    let mut pages: Vec<&FileRow> = files
+        .iter()
+        .filter(|f| media::is_entry_candidate(&f.path))
+        .collect();
+    pages.sort_by(|a, b| {
+        (a.path != entry)
+            .cmp(&(b.path != entry))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    pages
+        .into_iter()
+        .map(|f| PageEntry {
+            path: f.path.clone(),
+            title: f.page_title.clone(),
+        })
+        .collect()
 }
 
 /// What a stored visibility means on this server: with public links

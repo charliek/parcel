@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use parcel_types::{normalize_email, PutShareRequest, Share, ShareList, ShareRole};
 
-use super::{authed_api, parse_ref};
+use super::{authed_api, parse_ref, resolve_id};
 use crate::cli::{RefArg, ShareArgs, UnshareArgs};
 use crate::client::{Api, Fetched};
 use crate::config::Settings;
@@ -40,10 +40,11 @@ fn get_shares(api: &Api, id: &str) -> Result<Fetched<ShareList>> {
 }
 
 pub fn share(settings: &Settings, args: ShareArgs) -> Result<()> {
-    let (id, _) = parse_ref(&args.parcel.parcel)?;
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let emails = emails(&args.emails)?;
     let role = ShareRole::from(args.role);
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     // One at a time; a share is idempotent, so after a failure the command
     // can simply be run again.
     for email in &emails {
@@ -57,9 +58,10 @@ pub fn share(settings: &Settings, args: ShareArgs) -> Result<()> {
 }
 
 pub fn unshare(settings: &Settings, args: UnshareArgs) -> Result<()> {
-    let (id, _) = parse_ref(&args.parcel.parcel)?;
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let emails = emails(&args.emails)?;
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     // Reading the list first tells "not shared with them" (nothing to do)
     // apart from "no such parcel" (an error), which share a 404 otherwise.
     let current = get_shares(&api, &id)?.value;
@@ -91,8 +93,9 @@ pub fn unshare(settings: &Settings, args: UnshareArgs) -> Result<()> {
 }
 
 pub fn shares(settings: &Settings, parcel: &RefArg, json: bool) -> Result<()> {
-    let (id, _) = parse_ref(&parcel.parcel)?;
+    let parcel_ref = parse_ref(&parcel.parcel)?;
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     finish(&api, &id, json, false)
 }
 

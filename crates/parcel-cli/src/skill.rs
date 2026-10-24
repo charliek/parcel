@@ -245,6 +245,95 @@ mod tests {
     }
 
     #[test]
+    fn skill_teaches_tags_and_slugs() {
+        let md = skill_md();
+        for needle in [
+            "Organize and find parcels",
+            "parcel tags",
+            "project:",
+            "kind:",
+            "--kind",
+            "--tag",
+            "--slug",
+            "parcel link",
+            "--markdown",
+            "--page",
+            "parcel archive",
+            "@<handle>/",
+            "every word",
+            "two or three distinctive words",
+            "as its git remote spells it",
+        ] {
+            assert!(
+                md.contains(needle),
+                "SKILL.md no longer mentions {needle:?}"
+            );
+        }
+        // The canonical kinds are the server's and the MCP server's instructions' too.
+        for kind in [
+            "plan",
+            "discovery",
+            "research",
+            "report",
+            "review",
+            "dashboard",
+            "prototype",
+            "notes",
+        ] {
+            assert!(md.contains(kind), "SKILL.md lost the kind {kind:?}");
+        }
+        // The reference documents what the skill points at.
+        let cli = SKILL_FILES
+            .iter()
+            .find(|f| f.path == "references/cli.md")
+            .expect("cli.md is bundled")
+            .contents;
+        for needle in [
+            "parcel tags rename",
+            "parcel tag <ref>",
+            "parcel archive <ref>",
+            "parcel link <ref>",
+            "parcel handle",
+            "--set-tags",
+            "canonical_url",
+            "ParcelListItem",
+            "the legacy `/shared` endpoint",
+            "this server doesn't support",
+        ] {
+            assert!(
+                cli.contains(needle),
+                "references/cli.md no longer mentions {needle:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_mcp_skill_teaches_tags_and_slugs() {
+        let md = repo_file("plugins/parcel-mcp/skills/parcel-mcp/SKILL.md");
+        for needle in [
+            "list_tags",
+            "rename_tag",
+            "delete_tag",
+            "list_parcels",
+            "which",
+            "add_tags",
+            "slug:",
+            "canonical_url",
+            "pages",
+            "@handle/slug",
+            "project:",
+            "kind:",
+            "every word",
+            "two or three distinctive words",
+        ] {
+            assert!(
+                md.contains(needle),
+                "the parcel-mcp SKILL.md no longer mentions {needle:?}"
+            );
+        }
+    }
+
+    #[test]
     fn skill_descriptions_fit_loaders() {
         // Agent skill loaders cap the description at 1024 characters; the MCP
         // plugin's skill is held to it too.

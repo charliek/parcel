@@ -1,69 +1,45 @@
 # CLAUDE.md — parcel conventions
 
-Read this and [PLAN.md](PLAN.md) (architecture, assumptions, HTTP surface)
-before changing anything.
+Read this and [PLAN.md](PLAN.md) (architecture, HTTP surface) before changing
+anything; releases and deploys: RELEASING.md, deploy/README.md.
 
 ## What this is
 
-Parcel publishes HTML pages (plus supporting files) to private, sandboxed
-URLs — a self-hosted take on Claude's artifacts. One Rust server answers two
-origins: the **app** (SPA + `/api/v1`) and the **content origin** (user files
-behind HMAC capability URLs, always CSP-sandboxed). People sign in through
-one or more **OIDC providers** (slauth, Okta, Keycloak…; the server is the
-OIDC client and issues a signed session cookie); the `parcel` CLI signs in
-with a device flow and `pcl_` API tokens. Parcels are private, shared with
-people by email, internal (everyone signed in) or public. A bundled skill
-(`skills/parcel`) teaches agents to use it, and an **MCP server** at
-`<app>/mcp` (`src/mcp`, on stridelabs-mcp) gives connected assistants
-(Claude, Claude Code) the same operations as tools.
+Parcel publishes HTML pages (plus files) to private, sandboxed URLs. One Rust
+server answers the **app** origin (SPA, `/api/v1`, `/mcp`) and the **content
+origin** (user files behind HMAC capability URLs, always CSP-sandboxed).
+Sign-in is server-side OIDC (slauth, Okta, Keycloak…); the CLI uses a device
+flow and `pcl_` tokens. Parcels have tags, an optional slug, searchable text.
 
-## Layout
-
-| Path | What |
-|---|---|
-| `crates/parcel-types` | Wire types + validation rules shared by server, CLI and tests (paths, media types, ids). Feature `openapi` adds utoipa derives. |
-| `crates/parcel-server` | axum + sqlx service (lib + thin `main.rs`). `migrations/`, committed `openapi.json`, `tests/` (real Postgres). |
-| `crates/parcel-cli` | The `parcel` binary (blocking reqwest). Embeds `skills/parcel`. |
-| `frontend/` | React 19 + Vite + Tailwind v4 + zustand SPA (bun). |
-| `skills/parcel/` | The CLI agent skill (`SKILL.md` + `references/`), embedded in the CLI and the `parcel` Claude Code plugin (`.claude-plugin/`, the repo's marketplace). |
-| `plugins/parcel-mcp/` | The `parcel-mcp` Claude Code plugin: the MCP server (`.mcp.json`, OAuth client `parcel-claude-code`, callback port 3118) and its skill; `references/authoring.md` is a tested copy of the CLI skill's. |
-| `tests/functional/` | pytest suite driving the real binaries over HTTP (GCS emulator + test JWKS). |
-| `deploy/`, `Dockerfile`, `.github/workflows/` | Cloud Run + Neon + GCS (production live at parcel.stridelabs.ai). CI, release and deploy run on GitHub ([charliek/parcel](https://github.com/charliek/parcel), public); see RELEASING.md and deploy/README.md. |
+Layout: `crates/parcel-{types,server,cli}` (server: `migrations/`, committed
+`openapi.json`, `tests/` on real Postgres; the CLI embeds `skills/parcel`),
+`frontend/` (React 19, Vite, bun), `plugins/parcel-mcp/` (OAuth client
+`parcel-claude-code`, callback port 3118; its `authoring.md` must equal the CLI
+skill's), `tests/functional/` (pytest), `deploy/` (Cloud Run + Neon + GCS,
+live at parcel.stridelabs.ai; CI/release/deploy on GitHub, charliek/parcel).
 
 ## Toolchain and local stack
 
-- Rust 1.97.1 via `.mise.toml` / `rust-toolchain.toml`: run `mise exec -- cargo …`.
-- Move `Cargo.lock` with targeted `cargo update -p <crate>` (a manifest bump
-  re-resolves only what it touches); don't delete and regenerate it, which
-  moves every dependency at once. (It was seeded from slauth's lock while
-  utoipa-swagger-ui 9 needed the yanked `zip 3.0.0`; utoipa-swagger-ui 10
-  takes zip 8, so nothing in it depends on a yanked release any more.)
-- One crypto provider, aws-lc-rs: reqwest `rustls`, sqlx
-  `tls-rustls-aws-lc-rs`, jsonwebtoken `aws_lc_rs`. Never enable a `ring`
-  flavour or jsonwebtoken `rust_crypto` (two providers or backends panic at
-  the first TLS connect or JWT sign/verify).
-  `cargo tree -i ring --workspace --all-features -e all --target all` prints
-  nothing, and the lock has no `rsa`.
-- `docker compose up -d` — Postgres on **5439**, fake-gcs-server on **4447**.
-- `prox up -d` — backend :8106 and Vite :5178 behind
-  `https://parcel.local.stridelabs.ai`, content on
-  `https://parcelcontent.local.stridelabs.ai`, backend direct on
-  `https://parcelapi.local.stridelabs.ai`. slauth must be up too
-  (`cd ../slauth && prox up -d`; its registry has the `parcel` web client and
-  the `parcel-claude` / `parcel-claude-code` MCP connectors — after changing
-  `hydra/clients.json` locally, run its `scripts/seed-hydra-clients.sh`).
-  Local test login: `../slauth/test-users.md`.
-- Optional second provider: `docker compose --profile keycloak up -d keycloak`
-  (see `dev/keycloak/README.md` for its users and the `.env` lines).
-- `AUTH_MODE=dev` (in `.env`) bypasses slauth with a fixed user — for e2e and
-  offline work only; refused when `APP_ENV=production`.
+- Rust 1.97.1: `mise exec -- cargo …`; `Cargo.lock` moves only by `cargo update -p`.
+- One crypto provider, aws-lc-rs: never enable a `ring` flavour or jsonwebtoken
+  `rust_crypto` (two providers panic at the first TLS connect or JWT operation);
+  `scripts/crypto-guard.sh` fails on `ring` or `rsa`.
+- `docker compose up -d` (Postgres :5439, fake-gcs :4447); `prox up -d`
+  (`https://parcel.local.stridelabs.ai`, content `parcelcontent.local…`,
+  backend direct `parcelapi.local…`) with slauth up (`../slauth`, logins in its
+  `test-users.md`; after changing its `hydra/clients.json`, run its
+  `scripts/seed-hydra-clients.sh`). Second provider: `docker compose --profile
+  keycloak up -d keycloak` (`dev/keycloak/README.md`). `AUTH_MODE=dev` (fixed
+  user): e2e and offline only, refused in production.
+  `playwright-cli` needs a git-ignored `.playwright/cli.config.json`
+  (`ignoreHTTPSErrors`).
 
 ## Quality gate (before every commit)
 
 ```bash
 mise exec -- cargo fmt --all
-mise exec -- make lint          # clippy -D warnings, default + production features
-mise exec -- make test          # REQUIRES docker compose up -d; fails loudly, never skips
+mise exec -- make lint          # clippy -D warnings (both feature sets), cargo deny, crypto guard
+mise exec -- make test          # REQUIRES docker compose up -d; fails loudly, never skips; 2nd pass with DATABASE_URL set
 make spectral                   # OpenAPI lint
 make functional                 # pytest against the real binaries
 make frontend-check             # biome/eslint, tsc, bun test, vite build
@@ -71,17 +47,13 @@ scripts/e2e-stack.sh &          # prod-shaped server (built SPA, dev auth) on :1
 PARCEL_E2E_BASE_URL=http://localhost:18110 make e2e   # Playwright
 ```
 
-Driving the real UI with `playwright-cli`: `.playwright/cli.config.json`
-(git-ignored) sets `ignoreHTTPSErrors` because Playwright's Chromium doesn't
-trust prox's local CA.
-
 ## Load-bearing invariants
 
 1. **User content never runs on the app origin.** Content is served only on
    the content host, always with the sandbox CSP (no `allow-same-origin`),
-   `Referrer-Policy: no-referrer`, and `frame-ancestors <app>`. The raw-file
-   API on the app origin is `Content-Disposition: attachment` + sandbox CSP.
-   The viewer iframe repeats the sandbox. Don't weaken any of these.
+   `Referrer-Policy: no-referrer`, and `frame-ancestors <app>`. The app-origin
+   raw-file API is `Content-Disposition: attachment` + sandbox CSP; the viewer
+   iframe repeats the sandbox. Don't weaken any of these.
 2. **Host dispatch happens before routing** (`http::server::HostDispatch`): no
    API route on the content host, no file on the app host.
 3. **Parcels are 404 to anyone without access** (never 403), so ids can't be
@@ -101,30 +73,65 @@ trust prox's local CA.
    `config.rs`, `deploy/cloud-run-service.yaml`).
 8. **Page data is written only with owner authority**: the owner's API
    credentials, or an owner-scope content capability (minted only when the
-   owner views their own parcel). Public- and member-scope capabilities
-   read, never write, and stop working when access is withdrawn.
+   owner views their own parcel). Public- and member-scope capabilities read,
+   never write, and stop working when access is withdrawn.
 9. **The page helper talks only to the app origin** (baked in at startup)
    and the viewer accepts its messages only from its own iframe, as
-   untrusted input. Nothing sensitive crosses: anchors and comment numbers,
-   never comment text, authors or tokens. Anonymous viewers never see
-   comments. Protocol: PLAN.md, "Comments, live updates and page data".
+   untrusted input. Only anchors and comment numbers cross, never comment
+   text, authors or tokens; anonymous viewers never see comments. Protocol:
+   PLAN.md, "Comments, live updates and page data".
 10. **Sign-in state lives in signed cookies, not tables.** The session is
    `HMAC(user, epoch, expiry, provider)`; the server stores no provider
-   tokens. Cookie-authenticated writes need `Origin` = the app origin, and a
-   cookie only counts for `Sec-Fetch-Site` same-origin/none. On `/api/v1` the
-   only bearer credential is a `pcl_` token. `/mcp` also takes the MCP
-   provider's access tokens minted for its resource (`aud` = `<app>/mcp`),
-   which work nowhere else, and strips them before any tool runs. Every
-   sign-in needs a provider-verified email (or `TRUST_EMAIL`) in that
-   provider's allowed domains, because shares and account linking go by
-   email; an MCP token's first use is a sign-in under the same rules.
+   tokens. Cookie writes need `Origin` = the app origin, and a cookie only
+   counts for `Sec-Fetch-Site` same-origin/none. On `/api/v1` the only bearer
+   credential is a `pcl_` token; `/mcp` also takes the MCP provider's access
+   tokens minted for its resource (`aud` = `<app>/mcp`), which work nowhere
+   else and are stripped before any tool runs. Every sign-in (an MCP token's
+   first use too) needs a provider-verified email (or `TRUST_EMAIL`) in that
+   provider's allowed domains, because shares and account linking go by email.
+
+Also (PLAN.md, "Tags, slugs, archive and search"):
+
+- Snippets and page text are user content: render as text (React text nodes,
+  the CLI's `printable()`), never HTML. A version's `source` is owner-only and
+  never holds credentials.
+- Refs stay unambiguous: no slug segment is id-shaped, `p` or `v`.
+- Triggers own `search_vec` and the clearing of `search_text` and
+  `archived_at` (migration 0006); migrations stay additive (two revisions run
+  together in a Cloud Run rollover).
 
 ## Conventions
 
 - Typed errors (`thiserror`) in libraries; `stridelabs_http::AppError` at the
-  HTTP boundary, with `anyhow` only through `AppError::Internal`.
-- Config reads go through `Config::from_lookup` (injectable); tests never
-  mutate process env. Rust integration tests get an isolated Postgres schema
-  per `TestApp` (`tests/common/mod.rs`).
-- Match the surrounding comment density; comments explain *why*.
-- Commit straight to `main` while the project is being set up.
+  HTTP boundary, `anyhow` only via `AppError::Internal`.
+- Config reads go through `Config::from_lookup`; tests never mutate process
+  env and get an isolated Postgres schema per `TestApp` (`tests/common/mod.rs`).
+- Comments explain *why*, at the surrounding density.
+- Commit straight to `main` while the project is being set up (larger plans
+  use a feature branch and one PR).
+
+## Shared libraries (stridelabs-*)
+
+The owner's guidance, shared by every app on the libraries. parcel pins
+`stridelabs-rust` at one git tag (`crates/parcel-server/Cargo.toml`): config,
+observability, http, auth, mcp, postgres, plus testing and `test-support`
+in dev. Keep them strong but pragmatic: a library never holds parcel back.
+
+- **Where code goes.** Only parcel needs it: plain code, or a module built to
+  lift out (narrow API, no parcel config, database or types, own tests). Other
+  apps already do it: extend the library, opt-in and additive. Else: parcel code.
+- **What earns a place.** A convention (config, logging, CI guards, error
+  shapes, auth) or a capability two or more apps reuse. Shipping apps'
+  evidence (slauth, imgmcp, tapper, parcel) outweighs experiments' (lumen,
+  spendwise-rs, limen). Auth stays deployment-flexible. Curate: prefer
+  deleting to adding machinery.
+- **Fix upstream** under the library's CLAUDE.md, CI and review (CHANGELOG
+  line, additive); pin the merged `rev` until a tag has it. If that blocks a
+  milestone, implement here first and upstream in parallel.
+- **Layout, pins, releases.** `crates/<name>` as `stridelabs-<name>`, lockstep
+  versions, consumers pin by `tag`, all together. Release: ping every consumer
+  and check nobody claimed the next minor; docs-only release commit (dated
+  CHANGELOG, README `tag` snippets); local merge commit, annotated tag on it;
+  send peers the SHA.
+- **Gap.** parcel isn't in the library's `scripts/downstream-check.sh` yet:
+  add it at the next tag (Postgres 5439, fake-gcs 4447, env unset).

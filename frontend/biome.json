@@ -36,6 +36,9 @@
         "noExplicitAny": "warn",
         "noConsole": "warn"
       },
+      "security": {
+        "noDangerouslySetInnerHtml": "error"
+      },
       "nursery": {
         "useSortedClasses": {
           "level": "warn",

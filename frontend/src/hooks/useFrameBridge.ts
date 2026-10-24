@@ -18,6 +18,8 @@ export interface BridgeSession {
   epoch: number;
   /** The version of the grant the frame was loaded from. */
   version: number;
+  /** The page's `#fragment` when it said `ready` (later ones come as `hash` messages). */
+  hash: string;
 }
 
 /** Messages the viewer handles once the bridge is live (`ready`/`bye` are the hook's). */
@@ -97,6 +99,7 @@ export function useFrameBridge({ frameKey, token, version, onMessage }: FrameBri
           path: message.path,
           epoch: epochs.current,
           version: latest.current.version,
+          hash: message.hash,
         };
         latest.current.session = next;
         setSession(next);

@@ -1,5 +1,4 @@
 import { ChevronDown, History } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -12,25 +11,23 @@ import {
 import { formatDateTime, formatRelativeTime } from '@/lib/format';
 import type { VersionSummary } from '@/lib/types';
 
-/** Path for a version: the bare parcel URL for the current one, `/v/N` otherwise. */
-export function versionPath(id: string, version: number, current: number): string {
-  return version === current ? `/p/${id}` : `/p/${id}/v/${version}`;
-}
-
 /** Version selector, newest first. */
 export function VersionMenu({
-  parcelId,
   versions,
   viewing,
   current,
+  hrefFor,
+  onOpen,
 }: {
-  parcelId: string;
+  /** The in-app path of a version (the bare address for the current one). */
+  hrefFor: (version: number) => string;
+  /** Go to a version's path (the viewer may ask about an unsent comment first). */
+  onOpen: (href: string) => void;
   /** Newest first. */
   versions: VersionSummary[];
   viewing: number;
   current: number;
 }) {
-  const navigate = useNavigate();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -48,7 +45,7 @@ export function VersionMenu({
         <DropdownMenuLabel>Versions</DropdownMenuLabel>
         <DropdownMenuRadioGroup
           value={String(viewing)}
-          onValueChange={(value) => navigate(versionPath(parcelId, Number(value), current))}
+          onValueChange={(value) => onOpen(hrefFor(Number(value)))}
         >
           {versions.map((v) => (
             <DropdownMenuRadioItem

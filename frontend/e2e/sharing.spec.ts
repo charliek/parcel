@@ -164,11 +164,13 @@ test('shared with me lists other people’s parcels with owner and role', async 
   page,
   request,
 }) => {
-  // The dev user is alone on the e2e stack, so the real list is empty.
+  // The dev user is alone on the e2e stack, so the real list is empty. Old
+  // links (`?tab=shared`) land on the Shared scope.
   await page.goto('/?tab=shared');
+  await expect(page).toHaveURL(/\?scope=shared$/);
   await expect(page.getByRole('heading', { name: 'Shared with me', level: 1 })).toBeVisible();
-  await expect(page.getByRole('tab', { name: /Shared with me/ })).toHaveAttribute(
-    'aria-selected',
+  await expect(page.getByRole('button', { name: 'Shared', exact: true })).toHaveAttribute(
+    'aria-pressed',
     'true',
   );
   await expect(page.getByRole('heading', { name: 'Nothing shared with you yet' })).toBeVisible();
@@ -178,13 +180,11 @@ test('shared with me lists other people’s parcels with owner and role', async 
   const title = uniq('e2e-shared');
   parcelId = await createParcelViaApi(request, { title, marker });
   const summary = (await (await request.get(`/api/v1/parcels/${parcelId}`)).json()).parcel;
-  await patchJson(page, /\/api\/v1\/shared(\?.*)?$/, () => ({
+  await patchJson(page, /\/api\/v1\/parcels\?(.*&)?scope=shared/, () => ({
     parcels: [
       {
-        parcel: summary,
-        owner_name: 'Ada Owner',
-        role: 'commenter',
-        shared_at: summary.created_at,
+        ...summary,
+        shared: { owner_name: 'Ada Owner', role: 'commenter', shared_at: summary.created_at },
       },
     ],
     total: 1,
@@ -192,9 +192,8 @@ test('shared with me lists other people’s parcels with owner and role', async 
 
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'My parcels', level: 1 })).toBeVisible();
-  await expect(page.getByTestId('shared-count')).toHaveText('1');
-  await page.getByRole('tab', { name: /Shared with me/ }).click();
-  await expect(page).toHaveURL(/\?tab=shared$/);
+  await page.getByRole('button', { name: 'Shared', exact: true }).click();
+  await expect(page).toHaveURL(/\?scope=shared$/);
   const card = page.getByTestId('parcel-card').filter({ hasText: title });
   await expect(card).toContainText('Ada Owner · Can comment');
   await card.click();

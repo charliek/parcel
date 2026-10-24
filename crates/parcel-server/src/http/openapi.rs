@@ -43,6 +43,8 @@ use crate::state::AppState;
         (name = "versions", description = "A parcel's immutable versions and their files."),
         (name = "sharing", description = "Who a parcel is shared with, and what is shared with \
             you."),
+        (name = "tags", description = "The tag vocabulary with counts, and renaming or deleting \
+            a tag across your parcels."),
         (name = "comments", description = "Feedback threads pinned to spots on a parcel's page."),
         (name = "data", description = "JSON data a parcel keeps between visits: readable by its \
             viewers, writable by its owner."),
@@ -97,8 +99,10 @@ pub fn router() -> OpenApiRouter<AppState> {
     let v1 = OpenApiRouter::new()
         .merge(super::account::router())
         .merge(super::parcels::router())
+        .merge(super::slugs::router())
         .merge(super::versions::router())
         .merge(super::sharing::router())
+        .merge(super::tags::router())
         .merge(super::comments::router())
         .merge(super::data::router())
         .merge(super::tokens::router())

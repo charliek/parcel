@@ -9,23 +9,34 @@
 //!    and write any object the store might not have yet.
 //! 3. In one transaction: lock, check limits and quota against the locked
 //!    state, insert the version and its file rows, advance `current_version`.
+//!    A create with a slug decides here, under the owner's lock, whether it
+//!    creates the parcel or versions the one that has the slug.
+//! 4. After the commit, index the new version's entry page for search in a
+//!    background task (`search::spawn_index`); publishing doesn't wait on it.
 //!
 //! A failure after step 2 leaves only unreferenced blobs, which GC collects
 //! after the grace period.
+//!
+//! Lock order, here and in every other write that takes both: the owner's
+//! advisory lock (`lock_owner_quota`), then the parcel's row lock.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use axum::extract::multipart::{Multipart, MultipartError};
 use bytes::{Bytes, BytesMut};
 use parcel_types::media;
 use parcel_types::paths::{self, validate_path};
-use parcel_types::{CreateParcelMetadata, Limits, NewVersionMetadata, PublishMode};
+use parcel_types::{slugs, tags};
+use parcel_types::{
+    CreateParcelMetadata, Limits, NewVersionMetadata, PublishMode, SourceInfo, Visibility,
+};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::db::{blobs, parcels, parcels::FileRow};
-use crate::error::{too_large, AppError};
+use crate::db::{blobs, handles, parcels, parcels::FileRow, slugs as slugs_db};
+use crate::error::{slug_error, slug_taken, tag_error, too_large, AppError};
 use crate::state::AppState;
 use crate::storage::blob_key;
 
@@ -207,6 +218,7 @@ fn upload_row(u: &Upload) -> FileRow {
         blob_sha256: u.sha256.clone(),
         size_bytes: i64::try_from(u.bytes.len()).unwrap_or(i64::MAX),
         content_type: u.content_type.to_string(),
+        page_title: page_title(&u.path, &u.bytes),
     }
 }
 
@@ -292,18 +304,29 @@ fn check_version_limits(
     Ok(total)
 }
 
-/// Default title: the entry's `<title>` or first `# heading`, else its file name.
-pub fn derive_title(entry: &str, bytes: &[u8]) -> String {
+/// The title a page (an HTML or Markdown file) gives itself, kept with its
+/// file row so the viewer can list the version's pages by name; `None` for
+/// other files and for a page without one.
+pub fn page_title(path: &str, bytes: &[u8]) -> Option<String> {
+    media::is_entry_candidate(path)
+        .then(|| found_title(path, bytes))
+        .flatten()
+}
+
+/// A page's `<title>` or first `# heading`, as plain text: control
+/// characters stripped (the comment rule; a title is shown in lists and
+/// terminals) and cut to the title limit.
+fn found_title(path: &str, bytes: &[u8]) -> Option<String> {
     let head = &bytes[..bytes.len().min(256 * 1024)];
     let text = String::from_utf8_lossy(head);
-    let found = if media::is_markdown(entry) {
+    let found = if media::is_markdown(path) {
         crate::content::markdown::first_heading(&text)
     } else {
         html_title(&text)
-    };
-    found
-        .map(|t| truncate_chars(&t, MAX_TITLE_CHARS))
-        .unwrap_or_else(|| paths::file_name(entry).to_string())
+    }?;
+    let clean: String = found.chars().filter(|c| !c.is_control()).collect();
+    let clean = clean.trim();
+    (!clean.is_empty()).then(|| truncate_chars(clean, MAX_TITLE_CHARS))
 }
 
 fn html_title(html: &str) -> Option<String> {
@@ -311,13 +334,7 @@ fn html_title(html: &str) -> Option<String> {
     let open = lower.find("<title")?;
     let start = open + lower[open..].find('>')? + 1;
     let end = start + lower[start..].find("</title")?;
-    let raw = &html[start..end];
-    let decoded = raw
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
+    let decoded = crate::search::decode_entities(&html[start..end]);
     let collapsed = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
     (!collapsed.is_empty()).then_some(collapsed)
 }
@@ -420,51 +437,158 @@ async fn precheck_quota(state: &AppState, owner_id: Uuid, adding: i64) -> Result
     check_quota(limits, usage.stored_bytes, adding)
 }
 
+/// Commit a publish's transaction, then index the new version's entry page
+/// in the background (step 4), from these uploads when they carry it.
+async fn commit_and_index(
+    state: &AppState,
+    tx: Transaction<'_, Postgres>,
+    parcel_id: &str,
+    version: i32,
+    uploads: &[Upload],
+    entry: &str,
+) -> Result<(), AppError> {
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let entry_upload = uploads
+        .iter()
+        .find(|u| u.path == entry)
+        .map(|u| (u.path.clone(), u.bytes.clone()));
+    crate::search::spawn_index(state.clone(), parcel_id.to_string(), version, entry_upload);
+    Ok(())
+}
+
 fn new_parcel_id() -> String {
     let bytes: [u8; parcel_types::ids::ID_LEN] = rand::random();
     parcel_types::ids::parcel_id_from_bytes(bytes)
 }
 
-/// Create a parcel with version 1. Returns its id.
+/// What a publish did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Published {
+    pub id: String,
+    pub version: i32,
+    /// False when a create with a slug versioned an existing parcel.
+    pub created: bool,
+}
+
+/// What a new parcel's first version needs beyond the upload itself.
+struct NewParcelVersion {
+    entry: String,
+    title: String,
+    total: i64,
+}
+
+/// Entry, limits and title for a publish that creates a parcel. `title` is
+/// the one sent (cleaned), if any; else the entry page's own title (already
+/// on its file row), else its file name.
+fn new_parcel_version(
+    manifest: &Manifest,
+    entry: Option<&str>,
+    title: Option<&str>,
+    limits: &Limits,
+) -> Result<NewParcelVersion, AppError> {
+    let entry = resolve_entry(entry, manifest, None)?;
+    let total = check_version_limits(manifest, &entry, limits)?;
+    let title = title
+        .map(str::to_string)
+        .or_else(|| manifest[&entry].page_title.clone())
+        .unwrap_or_else(|| paths::file_name(&entry).to_string());
+    Ok(NewParcelVersion {
+        entry,
+        title,
+        total,
+    })
+}
+
+/// A version's `source`, checked: a value-free 400 naming the field when
+/// one isn't acceptable (the value is never stored, echoed or logged).
+fn checked_source(source: Option<&SourceInfo>) -> Result<Option<SourceInfo>, AppError> {
+    match source {
+        None => Ok(None),
+        Some(s) => s
+            .validated()
+            .map_err(|e| AppError::BadRequest(e.to_string())),
+    }
+}
+
+/// Create a parcel with version 1, or, when `meta.slug` is one the owner
+/// already uses (as a slug or a redirect), add a version to that parcel.
 pub async fn create(
     state: &AppState,
     owner_id: Uuid,
     meta: CreateParcelMetadata,
     uploads: Vec<Upload>,
-) -> Result<String, AppError> {
+) -> Result<Published, AppError> {
     if uploads.is_empty() {
         return Err(AppError::BadRequest("upload at least one file".into()));
     }
     let limits = &state.config.limits;
+    let slug = meta
+        .slug
+        .as_deref()
+        .map(slugs::normalize_slug)
+        .transpose()
+        .map_err(slug_error)?;
+    if meta.base_version.is_some() && slug.is_none() {
+        return Err(AppError::BadRequest(
+            "base_version needs a slug here; to version a parcel by id, publish to \
+             /parcels/{id}/versions"
+                .into(),
+        ));
+    }
+    let source = checked_source(meta.source.as_ref())?;
     let manifest: Manifest = uploads
         .iter()
         .map(|u| (u.path.clone(), upload_row(u)))
         .collect();
-    let entry = resolve_entry(meta.entry.as_deref(), &manifest, None)?;
-    let total = check_version_limits(&manifest, &entry, limits)?;
-
-    let title = match clean_text(meta.title, MAX_TITLE_CHARS, "title")?.filter(|t| !t.is_empty()) {
-        Some(t) => t,
-        None => {
-            let entry_bytes = &uploads
-                .iter()
-                .find(|u| u.path == entry)
-                .expect("entry uploaded")
-                .bytes;
-            derive_title(&entry, entry_bytes)
-        }
-    };
-    let description =
-        clean_text(meta.description, MAX_DESCRIPTION_CHARS, "description")?.unwrap_or_default();
+    let title = clean_text(meta.title, MAX_TITLE_CHARS, "title")?.filter(|t| !t.is_empty());
+    let description = clean_text(meta.description, MAX_DESCRIPTION_CHARS, "description")?;
     let label = clean_text(meta.label, MAX_LABEL_CHARS, "label")?.filter(|l| !l.is_empty());
-    let visibility = meta.visibility.unwrap_or_default();
+    // The tags a created parcel starts with. Auto tags count only when this
+    // call creates the parcel (an upsert ignores them, invalid or not, and
+    // only adds `tags`), so this is checked only for a create.
+    let all_tags: Vec<&String> = meta.tags.iter().chain(&meta.auto_tags).collect();
+    let create_tags = || tags::normalize_tags(&all_tags).map_err(tag_error);
+    let compute_new = |entry: Option<&str>, title: Option<&str>| {
+        Ok::<_, AppError>((
+            new_parcel_version(&manifest, entry, title, limits)?,
+            create_tags()?,
+        ))
+    };
+    // Without a slug this publish can only create, so check all of it before
+    // any bytes are written. With one, which it is is decided under the
+    // owner's lock, and the creating branch is checked there.
+    let checked_new = slug
+        .is_none()
+        .then(|| compute_new(meta.entry.as_deref(), title.as_deref()))
+        .transpose()?;
+    // The publish as a version: what an upsert does to the parcel that has
+    // the slug (replace its files, change only what was sent, add the tags).
+    // A create reads its fields from here too.
+    let prepared = PreparedVersion {
+        mode: PublishMode::Replace,
+        remove: Vec::new(),
+        entry: meta.entry,
+        label,
+        title,
+        description,
+        visibility: meta.visibility,
+        base_version: meta.base_version,
+        add_tags: tags::normalize_set(&meta.tags).map_err(tag_error)?,
+        source,
+        uploads,
+        restore_files: None,
+        created_via: "api",
+    };
 
     // Cheap pre-check so a request that will be refused never writes bytes;
     // the authoritative check runs again under the quota lock below.
-    precheck_quota(state, owner_id, total).await?;
-    store_blobs(state, &uploads).await?;
+    let upload_bytes: i64 = manifest.values().map(|f| f.size_bytes).sum();
+    precheck_quota(state, owner_id, upload_bytes).await?;
+    store_blobs(state, &prepared.uploads).await?;
 
-    let files: Vec<FileRow> = manifest.into_values().collect();
+    let files: Vec<FileRow> = manifest.values().cloned().collect();
     // A 60-bit id collides essentially never; retry anyway rather than 500.
     for attempt in 0..3 {
         let id = new_parcel_id();
@@ -474,30 +598,79 @@ pub async fn create(
             .await
             .map_err(|e| AppError::Internal(e.into()))?;
         parcels::lock_owner_quota(&mut tx, owner_id).await?;
+        if let Some(slug) = slug.as_deref() {
+            // Under the owner's lock, so two first publishes of one slug
+            // can't both create.
+            if let Some(existing) = slugs_db::find(&mut *tx, owner_id, slug).await? {
+                let (version, entry) =
+                    version_in_tx(state, &mut tx, &existing, owner_id, &prepared).await?;
+                commit_and_index(state, tx, &existing, version, &prepared.uploads, &entry).await?;
+                return Ok(Published {
+                    id: existing,
+                    version,
+                    created: false,
+                });
+            }
+            if meta.base_version.is_some() {
+                return Err(AppError::Conflict(format!(
+                    "no parcel has the slug {slug:?} yet, so there is no base_version to check"
+                )));
+            }
+        }
+        let computed;
+        let (new, new_tags) = match &checked_new {
+            Some(new) => new,
+            None => {
+                computed = compute_new(prepared.entry.as_deref(), prepared.title.as_deref())?;
+                &computed
+            }
+        };
         let stored = parcels::stored_bytes_tx(&mut tx, owner_id).await?;
-        check_quota(limits, stored, total)?;
-        match parcels::insert_parcel(&mut tx, &id, owner_id, &title, &description, visibility).await
-        {
-            Ok(()) => {}
-            Err(e) if attempt < 2 && is_unique_violation(&e) => continue,
-            Err(e) => return Err(AppError::Internal(e)),
+        check_quota(limits, stored, new.total)?;
+        let inserted = parcels::insert_parcel(
+            &mut tx,
+            &parcels::NewParcel {
+                id: &id,
+                owner_id,
+                title: &new.title,
+                description: prepared.description.as_deref().unwrap_or_default(),
+                visibility: meta.visibility.unwrap_or_default(),
+                tags: new_tags,
+                slug: slug.as_deref(),
+            },
+        )
+        .await;
+        if let Err(e) = inserted {
+            match parcels::violated_constraint(&e) {
+                Some(parcels::PARCEL_PKEY) if attempt < 2 => continue,
+                // Only a write that skipped the owner's lock could get here.
+                Some(parcels::PARCEL_SLUG_INDEX) => return Err(slug_taken()),
+                _ => return Err(AppError::Internal(e)),
+            }
+        }
+        if slug.is_some() {
+            // The clean URL needs the owner's handle.
+            handles::ensure(&mut *tx, owner_id).await?;
         }
         parcels::insert_version(
             &mut tx,
             &parcels::NewVersion {
                 parcel_id: &id,
                 version: 1,
-                entry: &entry,
-                label: label.as_deref(),
+                entry: &new.entry,
+                label: prepared.label.as_deref(),
                 created_via: "api",
                 files: &files,
+                source: prepared.source.as_ref(),
             },
         )
         .await?;
-        tx.commit()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-        return Ok(id);
+        commit_and_index(state, tx, &id, 1, &prepared.uploads, &new.entry).await?;
+        return Ok(Published {
+            id,
+            version: 1,
+            created: true,
+        });
     }
     Err(AppError::Internal(anyhow::anyhow!(
         "could not allocate a parcel id"
@@ -505,15 +678,12 @@ pub async fn create(
 }
 
 pub(crate) fn is_unique_violation(e: &anyhow::Error) -> bool {
-    e.chain().any(|cause| {
-        cause
-            .downcast_ref::<sqlx::Error>()
-            .and_then(|s| s.as_database_error())
-            .is_some_and(|d| d.is_unique_violation())
-    })
+    parcels::violated_constraint(e).is_some()
 }
 
-/// What a new version is built from.
+/// What a new version is built from. Built once per publish and consumed
+/// at once, so the size difference between the variants costs nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum VersionSource {
     /// An upload, merged into or replacing the current version.
     Upload {
@@ -524,17 +694,32 @@ pub enum VersionSource {
     Restore { from_version: i32 },
 }
 
-/// Append a version to a parcel the caller owns. Returns the new version number.
-pub async fn add_version(
+/// A new version, checked and with its blobs written, ready to be applied
+/// under the locks ([`version_in_tx`]).
+struct PreparedVersion {
+    mode: PublishMode,
+    remove: Vec<String>,
+    entry: Option<String>,
+    label: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
+    visibility: Option<Visibility>,
+    base_version: Option<i32>,
+    add_tags: BTreeSet<String>,
+    source: Option<SourceInfo>,
+    uploads: Vec<Upload>,
+    /// A restore's files (instead of uploads).
+    restore_files: Option<Vec<FileRow>>,
+    created_via: &'static str,
+}
+
+/// Check a new version and write its blobs, before taking any lock.
+async fn prepare_version(
     state: &AppState,
     parcel_id: &str,
-    owner_id: Uuid,
     source: VersionSource,
-) -> Result<i32, AppError> {
-    let limits = &state.config.limits;
-
-    // Validate and write blobs before taking any lock.
-    let (meta, uploads, restore_files) = match source {
+) -> Result<PreparedVersion, AppError> {
+    let (meta, uploads, restore_files, version_source) = match source {
         VersionSource::Upload { meta, uploads } => {
             if uploads.is_empty() && meta.remove.is_empty() && meta.entry.is_none() {
                 return Err(AppError::BadRequest(
@@ -551,8 +736,9 @@ pub async fn add_version(
                     "`remove` only applies in merge mode".into(),
                 ));
             }
+            let source = checked_source(meta.source.as_ref())?;
             store_blobs(state, &uploads).await?;
-            (meta, uploads, None)
+            (meta, uploads, None, source)
         }
         VersionSource::Restore { from_version } => {
             let files = parcels::version_files(&state.db, parcel_id, from_version)
@@ -563,72 +749,110 @@ pub async fn add_version(
                     "version {from_version} not found"
                 )));
             }
-            let entry = parcels::get_version(&state.db, parcel_id, from_version)
+            let restored = parcels::get_version(&state.db, parcel_id, from_version)
                 .await
-                .map_err(AppError::Internal)?
-                .map(|v| v.entry);
+                .map_err(AppError::Internal)?;
             let meta = NewVersionMetadata {
                 mode: Some(PublishMode::Replace),
-                entry,
+                entry: restored.as_ref().map(|v| v.entry.clone()),
                 label: Some(format!("Restored from v{from_version}")),
                 ..NewVersionMetadata::default()
             };
-            (meta, Vec::new(), Some(files))
+            // A restore is the restored version again, provenance included.
+            let source = restored.and_then(|v| v.source);
+            (meta, Vec::new(), Some(files), source)
         }
     };
-    let created_via = if restore_files.is_some() {
-        "restore"
-    } else {
-        "api"
-    };
-    let label = clean_text(meta.label.clone(), MAX_LABEL_CHARS, "label")?.filter(|l| !l.is_empty());
-    let title = clean_text(meta.title.clone(), MAX_TITLE_CHARS, "title")?.filter(|t| !t.is_empty());
-    let description = clean_text(
-        meta.description.clone(),
-        MAX_DESCRIPTION_CHARS,
-        "description",
-    )?;
+    Ok(PreparedVersion {
+        mode: meta.mode.unwrap_or_default(),
+        label: clean_text(meta.label, MAX_LABEL_CHARS, "label")?.filter(|l| !l.is_empty()),
+        title: clean_text(meta.title, MAX_TITLE_CHARS, "title")?.filter(|t| !t.is_empty()),
+        description: clean_text(meta.description, MAX_DESCRIPTION_CHARS, "description")?,
+        add_tags: tags::normalize_set(&meta.add_tags).map_err(tag_error)?,
+        remove: meta.remove,
+        entry: meta.entry,
+        visibility: meta.visibility,
+        base_version: meta.base_version,
+        source: version_source,
+        uploads,
+        created_via: if restore_files.is_some() {
+            "restore"
+        } else {
+            "api"
+        },
+        restore_files,
+    })
+}
 
+/// Append a version to a parcel the caller owns. Returns the new version number.
+pub async fn add_version(
+    state: &AppState,
+    parcel_id: &str,
+    owner_id: Uuid,
+    source: VersionSource,
+) -> Result<i32, AppError> {
+    let prepared = prepare_version(state, parcel_id, source).await?;
     let mut tx = state
         .db
         .begin()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-    let (owner, current) = parcels::lock_for_update(&mut tx, parcel_id)
+    // The owner's lock before the row lock (the one order; see the module
+    // docs). Taken for the caller: a non-owner only serializes with itself
+    // and is refused below.
+    parcels::lock_owner_quota(&mut tx, owner_id).await?;
+    let (version, entry) = version_in_tx(state, &mut tx, parcel_id, owner_id, &prepared).await?;
+    commit_and_index(state, tx, parcel_id, version, &prepared.uploads, &entry).await?;
+    Ok(version)
+}
+
+/// Apply a prepared version inside a transaction that already holds the
+/// owner's lock: lock the parcel's row, check ownership and `base_version`,
+/// build the file set against the locked current version (so concurrent
+/// merges never drop each other's files), insert it. Returns the new
+/// version and its entry. The caller commits.
+async fn version_in_tx(
+    state: &AppState,
+    tx: &mut Transaction<'_, Postgres>,
+    parcel_id: &str,
+    owner_id: Uuid,
+    v: &PreparedVersion,
+) -> Result<(i32, String), AppError> {
+    let limits = &state.config.limits;
+    let locked = parcels::lock_for_update(tx, parcel_id)
         .await?
         .ok_or_else(crate::error::not_found)?;
-    if owner != owner_id {
+    if locked.owner_id != owner_id {
         return Err(crate::error::not_found());
     }
-    if let Some(base) = meta.base_version {
+    let current = locked.current_version;
+    if let Some(base) = v.base_version {
         if base != current {
             return Err(stale_base(current, base));
         }
     }
 
-    // Build the manifest against the locked current version, so concurrent
-    // merges never drop each other's files.
-    let previous = parcels::get_version(&mut *tx, parcel_id, current)
+    let previous = parcels::get_version(&mut **tx, parcel_id, current)
         .await
         .map_err(AppError::Internal)?;
-    let mut manifest: Manifest = match (&restore_files, meta.mode.unwrap_or_default()) {
+    let mut manifest: Manifest = match (&v.restore_files, v.mode) {
         (Some(files), _) => files.iter().map(|f| (f.path.clone(), f.clone())).collect(),
         (None, PublishMode::Replace) => Manifest::new(),
-        (None, PublishMode::Merge) => parcels::version_files(&mut *tx, parcel_id, current)
+        (None, PublishMode::Merge) => parcels::version_files(&mut **tx, parcel_id, current)
             .await
             .map_err(AppError::Internal)?
             .into_iter()
             .map(|f| (f.path.clone(), f))
             .collect(),
     };
-    for path in &meta.remove {
+    for path in &v.remove {
         if manifest.remove(path).is_none() {
             return Err(AppError::BadRequest(format!(
                 "cannot remove {path:?}: it is not in version {current}"
             )));
         }
     }
-    for upload in &uploads {
+    for upload in &v.uploads {
         manifest.insert(upload.path.clone(), upload_row(upload));
     }
     if manifest.is_empty() {
@@ -636,40 +860,48 @@ pub async fn add_version(
             "a version must contain at least one file".into(),
         ));
     }
-    let previous_entry = previous.as_ref().map(|v| v.entry.as_str());
-    let entry = resolve_entry(meta.entry.as_deref(), &manifest, previous_entry)?;
+    let previous_entry = previous.as_ref().map(|p| p.entry.as_str());
+    let entry = resolve_entry(v.entry.as_deref(), &manifest, previous_entry)?;
     let total = check_version_limits(&manifest, &entry, limits)?;
+    let new_tags = if v.add_tags.is_empty() {
+        None
+    } else {
+        Some(tags::edit_tags(&locked.tags, &v.add_tags, &Default::default()).map_err(tag_error)?)
+    };
 
-    parcels::lock_owner_quota(&mut tx, owner_id).await?;
-    let stored = parcels::stored_bytes_tx(&mut tx, owner_id).await?;
+    let stored = parcels::stored_bytes_tx(tx, owner_id).await?;
     check_quota(limits, stored, total)?;
 
     let version = current + 1;
     let files: Vec<FileRow> = manifest.into_values().collect();
     parcels::insert_version(
-        &mut tx,
+        tx,
         &parcels::NewVersion {
             parcel_id,
             version,
             entry: &entry,
-            label: label.as_deref(),
-            created_via,
+            label: v.label.as_deref(),
+            created_via: v.created_via,
             files: &files,
+            source: v.source.as_ref(),
         },
     )
     .await?;
     parcels::update_metadata_tx(
-        &mut tx,
+        tx,
         parcel_id,
-        title.as_deref(),
-        description.as_deref(),
-        meta.visibility,
+        v.title.as_deref(),
+        v.description.as_deref(),
+        v.visibility,
+        false,
     )
     .await?;
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    Ok(version)
+    // A new version also un-archives: the version-change trigger (migration
+    // 0006) clears `archived_at`, for older revisions' publishes too.
+    if new_tags.is_some() {
+        parcels::update_organization(tx, parcel_id, new_tags.as_deref(), None).await?;
+    }
+    Ok((version, entry))
 }
 
 #[cfg(test)]
@@ -687,6 +919,7 @@ mod tests {
                         blob_sha256: "x".into(),
                         size_bytes: 10,
                         content_type: "text/html".into(),
+                        page_title: None,
                     },
                 )
             })
@@ -714,16 +947,45 @@ mod tests {
     }
 
     #[test]
-    fn titles() {
+    fn page_titles() {
         assert_eq!(
-            derive_title("index.html", b"<html><head><TITLE>\n  Q3 &amp; Q4 </title>"),
-            "Q3 & Q4"
+            page_title(
+                "index.html",
+                b"<html><head><TITLE>\n  Q3 &amp; Q4 &#8212; &lt;draft&gt; </title>"
+            ),
+            Some("Q3 & Q4 \u{2014} <draft>".into())
         );
-        assert_eq!(derive_title("notes.md", b"intro\n\n# Notes\n"), "Notes");
         assert_eq!(
-            derive_title("dir/page.html", b"<p>no title</p>"),
-            "page.html"
+            page_title("notes.md", b"intro\n\n# Notes\n"),
+            Some("Notes".into())
         );
+        assert_eq!(page_title("dir/page.html", b"<p>no title</p>"), None);
+        assert_eq!(page_title("a.htm", b"<title>A</title>"), Some("A".into()));
+        assert_eq!(
+            page_title("docs/Notes.MARKDOWN", b"# Notes `v2`\n"),
+            Some("Notes v2".into())
+        );
+        // Only pages have titles, whatever their bytes say.
+        assert_eq!(page_title("x.txt", b"<title>T</title>"), None);
+        assert_eq!(page_title("x.svg", b"<title>T</title>"), None);
+        // Control characters go (escape sequences, bells, C1 controls); a
+        // title of nothing else is no title.
+        assert_eq!(
+            page_title(
+                "a.html",
+                "<title>\u{1b}[31mRed\u{7}\u{9b}</title>".as_bytes()
+            ),
+            Some("[31mRed".into())
+        );
+        assert_eq!(page_title("a.md", "# \u{1}\u{2}\n".as_bytes()), None);
+        let long = format!("<title>{}</title>", "é".repeat(300));
+        assert_eq!(
+            page_title("a.html", long.as_bytes()).map(|t| t.chars().count()),
+            Some(200)
+        );
+        // No fallback here: a parcel's title falls back to the entry's file
+        // name in `new_parcel_version`; a page title doesn't.
+        assert_eq!(page_title("a.md", b"no heading"), None);
     }
 
     #[test]

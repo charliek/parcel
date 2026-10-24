@@ -4,9 +4,11 @@
 //! can print exactly what the server sent while the human output uses the
 //! shared `parcel_types` structs.
 
+use std::cell::OnceCell;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use parcel_types::ServerInfo;
 use reqwest::blocking::{multipart::Form, Client, RequestBuilder, Response};
 use reqwest::{Certificate, Method, Url};
 use serde::de::DeserializeOwned;
@@ -30,6 +32,8 @@ pub struct Api {
     http: Client,
     base: Url,
     token: Option<String>,
+    /// `GET /info`, read at most once per run.
+    info: OnceCell<ServerInfo>,
 }
 
 impl Api {
@@ -52,7 +56,37 @@ impl Api {
             http,
             base: base.clone(),
             token: token.map(str::to_string),
+            info: OnceCell::new(),
         })
+    }
+
+    /// The server's description (limits, features), fetched on first use
+    /// and kept for the rest of the run.
+    pub fn server_info(&self) -> Result<&ServerInfo> {
+        if let Some(info) = self.info.get() {
+            return Ok(info);
+        }
+        let info = self
+            .get::<ServerInfo>(self.endpoint(["info"]))
+            .context("reading the server's description")?
+            .value;
+        Ok(self.info.get_or_init(|| info))
+    }
+
+    /// Whether the server lists `feature` (one of `parcel_types::FEATURES`).
+    pub fn has_feature(&self, feature: &str) -> Result<bool> {
+        Ok(self.server_info()?.features.iter().any(|f| f == feature))
+    }
+
+    /// Refuse to send a parameter the server doesn't know: an older server
+    /// ignores unknown query parameters (`list --tag` would quietly list
+    /// everything) and refuses unknown metadata fields with a vaguer error.
+    /// `what` completes "this server doesn't support … yet".
+    pub fn require_feature(&self, feature: &str, what: &str) -> Result<()> {
+        if !self.has_feature(feature)? {
+            bail!("this server doesn't support {what} yet (it is older than this CLI)");
+        }
+        Ok(())
     }
 
     pub fn has_token(&self) -> bool {

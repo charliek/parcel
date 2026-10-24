@@ -43,6 +43,14 @@ pub fn usage(message: impl Into<String>) -> anyhow::Error {
     .into()
 }
 
+pub fn not_found(message: impl Into<String>) -> anyhow::Error {
+    CliError {
+        code: EXIT_NOT_FOUND,
+        message: message.into(),
+    }
+    .into()
+}
+
 pub fn auth(message: impl Into<String>) -> anyhow::Error {
     CliError {
         code: EXIT_AUTH,

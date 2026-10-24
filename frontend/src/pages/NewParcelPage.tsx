@@ -3,6 +3,8 @@ import { type FormEvent, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { AppShell } from '@/components/layout/AppShell';
+import { SlugField } from '@/components/tags/SlugField';
+import { TagInput } from '@/components/tags/TagInput';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,9 +16,12 @@ import { VisibilityPicker } from '@/components/upload/VisibilityPicker';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { useFileSelection } from '@/hooks/useFileSelection';
 import { invalidateParcel } from '@/hooks/useParcels';
+import { useMe } from '@/hooks/useSession';
 import { api } from '@/lib/api';
-import { errorMessage } from '@/lib/http';
+import { errorMessage, errorStatus } from '@/lib/http';
 import { queryClient } from '@/lib/query-client';
+import { canonicalPath } from '@/lib/refs';
+import { checkSlugText } from '@/lib/slugs';
 import type { Visibility } from '@/lib/types';
 import { buildPublishForm } from '@/lib/upload';
 import { useAllowPublic } from '@/stores/server-info.store';
@@ -60,12 +65,17 @@ export function NewParcelPage() {
   const [visibility, setVisibility] = useState<Visibility>('private');
   const allowPublic = useAllowPublic();
   const [label, setLabel] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
+  const [slug, setSlug] = useState('');
+  const [slugError, setSlugError] = useState<string | null>(null);
+  const me = useMe();
+  const slugCheck = checkSlugText(slug);
   const [progress, setProgress] = useState<number | null>(null);
   const submitting = progress !== null;
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!selection.check.ok || submitting) return;
+    if (!selection.check.ok || submitting || !slugCheck.ok) return;
     setProgress(0);
     try {
       const form = buildPublishForm(
@@ -75,15 +85,26 @@ export function NewParcelPage() {
           visibility,
           entry: selection.entry ?? undefined,
           label,
+          tags,
+          slug: slugCheck.slug || undefined,
+          source: { client: 'web' },
         },
         selection.files,
       );
       const result = await api.createParcel(form, setProgress);
       await invalidateParcel(queryClient, result.parcel.id);
-      toast.success('Parcel published', { description: result.parcel.title });
-      navigate(`/p/${result.parcel.id}`);
+      if (result.created === false) {
+        // A slug you already use: this was a new version of that parcel.
+        toast.success(`Published v${result.version.version}`, {
+          description: `A new version of “${result.parcel.title}”, which already had this slug.`,
+        });
+      } else {
+        toast.success('Parcel published', { description: result.parcel.title });
+      }
+      navigate(canonicalPath(result.parcel));
     } catch (err) {
       setProgress(null);
+      if (slugCheck.slug && errorStatus(err) === 409) setSlugError(errorMessage(err));
       toast.error('Publish failed', { description: errorMessage(err) });
     }
   };
@@ -180,6 +201,22 @@ export function NewParcelPage() {
               </p>
             </div>
             <div className="space-y-2">
+              <Label htmlFor="tags">Tags</Label>
+              <TagInput id="tags" value={tags} onChange={setTags} disabled={submitting} />
+            </div>
+            <SlugField
+              id="slug"
+              value={slug}
+              onChange={(value) => {
+                setSlug(value);
+                setSlugError(null);
+              }}
+              handle={me?.handle}
+              serverError={slugError}
+              disabled={submitting}
+              note="If one of your parcels already has this slug, this publishes a new version of it."
+            />
+            <div className="space-y-2">
               <Label htmlFor="label">Version note</Label>
               <Input
                 id="label"
@@ -204,7 +241,7 @@ export function NewParcelPage() {
           <Button type="button" variant="ghost" onClick={() => navigate('/')} disabled={submitting}>
             Cancel
           </Button>
-          <Button type="submit" disabled={!selection.check.ok || submitting}>
+          <Button type="submit" disabled={!selection.check.ok || submitting || !slugCheck.ok}>
             {submitting ? <Loader2 className="animate-spin" /> : <Upload />}
             Publish parcel
           </Button>

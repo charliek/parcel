@@ -43,10 +43,16 @@ Shown for production; substitute `staging` / `parcel-staging` names.
 3. **Neon** — keep both the pooled URL (service) and the direct URL (migrate
    job: the same host without `-pooler`). Production uses database `neondb` in
    `aws-us-east-2`. Store them with `sslmode=verify-full` and **without**
-   Neon's `channel_binding=require`: sqlx ignores `channel_binding` (with a
-   warning), and with `sslmode=require` it encrypts without checking the
-   certificate. Neon's certificates are publicly trusted, so `verify-full`
-   works with the bundled roots.
+   Neon's `channel_binding=require`: sqlx can't do channel binding, so the
+   server refuses to start on a URL carrying it (the error names the
+   parameter, never the URL), and with `sslmode=require` sqlx encrypts
+   without checking the certificate. Neon's certificates are publicly
+   trusted, so `verify-full` works with the bundled roots. `migrate` (and
+   `serve` with `RUN_MIGRATIONS`) refuses the pooled URL (any host label
+   ending in `-pooler`). The URL takes libpq's canonical parameter names only
+   (`sslmode`, `sslrootcert`, `application_name`, `options`, …; not sqlx's
+   aliases such as `ssl-mode`), and the password must be in the URL: there is
+   no `.pgpass` fallback.
 4. **Secrets** — each with its own accessor binding (never project-wide):
    ```bash
    for s in database-url database-url-direct content-signing-key; do
@@ -167,3 +173,9 @@ Each release:
 `cloud-run-service.yaml` (`RUN_MIGRATIONS=false` there), grants `allUsers`
 invoker, and probes both domains. By hand, with your own gcloud login:
 `make image-push TAG=…` then `deploy/deploy.sh production <tag>`.
+
+Full-text search (migration 0006) needs no deploy step of its own:
+each parcel's page text is extracted after its next publish, and the server's
+backfill loop fills in the rest a batch a minute. To index everything at once,
+run `parcel-server reindex` with the service's environment (a one-off Cloud Run
+job, like the migrate one); it is safe to repeat.

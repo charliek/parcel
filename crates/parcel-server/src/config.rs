@@ -532,6 +532,21 @@ impl Config {
         format!("{}/p/{parcel_id}", self.app_origin_str())
     }
 
+    /// The URL to show for a parcel: `<app>/@<handle>/<slug>` when it has a
+    /// slug (and its owner a handle), else the viewer URL. Handles and
+    /// slugs are URL-safe by construction (`parcel_types::slugs`).
+    pub fn canonical_url(
+        &self,
+        parcel_id: &str,
+        handle: Option<&str>,
+        slug: Option<&str>,
+    ) -> String {
+        match (handle, slug) {
+            (Some(handle), Some(slug)) => format!("{}/@{handle}/{slug}", self.app_origin_str()),
+            _ => self.viewer_url(parcel_id),
+        }
+    }
+
     /// Where providers send people back after sign-in.
     pub fn auth_callback_url(&self) -> String {
         format!("{}/auth/callback", self.app_origin_str())

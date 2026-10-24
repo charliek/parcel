@@ -12,7 +12,7 @@ use parcel_types::{
 };
 use time::OffsetDateTime;
 
-use super::{authed_api, parse_ref, read_stdin};
+use super::{authed_api, parse_ref, read_stdin, resolve as resolve_ref, resolve_id};
 use crate::cli::{
     CommentNumberArgs, CommentNumbersArgs, CommentsAddArgs, CommentsCommand, CommentsListArgs,
     CommentsReplyArgs, CommentsResolveArgs,
@@ -77,9 +77,10 @@ fn unique(numbers: &[i32]) -> Vec<i32> {
 }
 
 pub fn list(settings: &Settings, args: CommentsListArgs) -> Result<()> {
-    let (id, _) = parse_ref(&args.parcel.parcel)?;
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let status = CommentStatus::from(args.status);
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     let mut url = comments_url(&api, &id);
     url.query_pairs_mut().append_pair(
         "status",
@@ -223,12 +224,14 @@ fn indent(text: &str, by: usize) -> String {
 }
 
 pub fn add(settings: &Settings, args: CommentsAddArgs) -> Result<()> {
-    let (id, pinned) = parse_ref(&args.parcel.parcel)?;
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let body = comment_text(&args.text.text, None)?;
     let api = authed_api(settings)?;
+    let target = resolve_ref(&api, parcel_ref)?;
+    let id = target.id;
     let request = NewComment {
         body,
-        version: args.version.or(pinned),
+        version: args.version.or(target.version),
         ..Default::default()
     };
     let thread = api.post::<_, Comment>(comments_url(&api, &id), &request)?;
@@ -263,9 +266,10 @@ fn post_reply(api: &Api, id: &str, thread: i32, body: &str) -> Result<(Vec<u8>, 
 }
 
 pub fn reply(settings: &Settings, args: CommentsReplyArgs) -> Result<()> {
-    let (id, _) = parse_ref(&args.parcel.parcel)?;
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let body = comment_text(&args.text.text, None)?;
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     let (raw, number) = post_reply(&api, &id, args.number, &body)?;
     if args.json.json {
         return output::print_json(&raw);
@@ -286,12 +290,13 @@ fn set_resolved(api: &Api, id: &str, number: i32, resolved: bool) -> Result<Comm
 /// Each thread in turn: reply (with `--reply`), then resolve. Stops at the
 /// first failure; threads already done stay done and are reported.
 pub fn resolve(settings: &Settings, args: CommentsResolveArgs) -> Result<()> {
-    let (id, _) = parse_ref(&args.parcel.parcel)?;
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let reply = match &args.reply {
         Some(text) => Some(comment_text(text, Some("--reply"))?),
         None => None,
     };
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     for number in unique(&args.numbers) {
         let replied = match &reply {
             Some(body) => {
@@ -311,8 +316,9 @@ pub fn resolve(settings: &Settings, args: CommentsResolveArgs) -> Result<()> {
 }
 
 pub fn reopen(settings: &Settings, args: CommentNumbersArgs) -> Result<()> {
-    let (id, _) = parse_ref(&args.parcel.parcel)?;
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     for number in unique(&args.numbers) {
         set_resolved(&api, &id, number, false).with_context(|| format!("reopening #{number}"))?;
         output::print(&format!("Reopened #{number}\n"))?;
@@ -321,8 +327,9 @@ pub fn reopen(settings: &Settings, args: CommentNumbersArgs) -> Result<()> {
 }
 
 pub fn delete(settings: &Settings, args: CommentNumberArgs) -> Result<()> {
-    let (id, _) = parse_ref(&args.parcel.parcel)?;
+    let parcel_ref = parse_ref(&args.parcel.parcel)?;
     let api = authed_api(settings)?;
+    let id = resolve_id(&api, parcel_ref)?;
     api.delete(comment_url(&api, &id, args.number))?;
     output::print(&format!("Deleted comment #{} from {id}\n", args.number))
 }

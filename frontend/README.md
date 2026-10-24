@@ -72,10 +72,14 @@ and is unit-tested.
 ## End-to-end tests
 
 The specs in `e2e/` expect a parcel-server running in dev auth mode
-(`AUTH_MODE=dev`). They cover the dashboard and search, creating a parcel by
-file and folder upload, rendering in the sandboxed iframe, visibility,
-sharing, versions and restore, editing, deletion, comments, live updates,
-page data, tokens, and device-login approve/deny. Sign-in, the viewer as a
+(`AUTH_MODE=dev`). They cover the dashboard (tag facets, the token search
+with its keyboard flow, full-text snippets, scopes, archived, phone width),
+creating a parcel by file and folder upload, rendering in the sandboxed
+iframe, pages within a parcel (the Pages menu, `?page=` and the fragment
+following links inside the page, comments on other pages), tags and slugs
+(the details dialog, the Tags page, clean `/@handle/slug` URLs and the
+handle), visibility, sharing, versions and restore, editing, deletion,
+comments, live updates, page data, tokens, and device-login approve/deny. Sign-in, the viewer as a
 viewer or commenter, and public links turned off are covered by rewriting
 `/api/v1/info`, `/api/v1/me` and view grants with Playwright routing.
 
@@ -94,10 +98,14 @@ example `http://localhost:5178`). Otherwise the content host's
 ```
 src/
   lib/          api client, types (mirror of parcel-types), sign-in and access
-                decisions, formatting, upload-path rules (+ *.test.ts)
+                decisions, formatting, upload-path rules, tag/slug twins of
+                parcel-types, dashboard URL state, viewer links and page
+                navigation (+ *.test.ts)
   stores/       zustand: server info, session, theme
   hooks/        React Query hooks, session hooks
-  components/   ui/ (shadcn-style primitives), layout/, viewer/, upload/, tokens/, auth/
+  components/   ui/ (shadcn-style primitives), layout/, viewer/, upload/, tokens/, auth/,
+                parcels/ (cards and rows), common/ (badges), dashboard/ (facets,
+                search box), tags/ (chips, chip input, slug field), account/ (handle)
   pages/        one component per route
 e2e/            Playwright specs
 ```

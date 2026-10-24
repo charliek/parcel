@@ -24,8 +24,8 @@ pub mod token;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::header::{
-    ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
-    CONTENT_TYPE, ETAG, IF_NONE_MATCH, LOCATION, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS,
+    ACCEPT, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
+    CONTENT_TYPE, ETAG, IF_NONE_MATCH, LOCATION, REFERRER_POLICY, VARY, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -63,12 +63,14 @@ pub fn encode_path(path: &str) -> String {
         .join("/")
 }
 
-/// Mint a capability token for one version and build the URL of its entry.
+/// Mint a capability token for one version and build the URL of one of its
+/// files (the page the viewer opens). The token covers the whole version, so
+/// the page's relative links resolve under the same prefix.
 pub fn grant_url(
     state: &AppState,
     parcel_id: &str,
     version: i32,
-    entry: &str,
+    path: &str,
     scope: Scope,
 ) -> (String, OffsetDateTime) {
     let expires = OffsetDateTime::now_utc() + state.config.content_token_ttl;
@@ -84,7 +86,7 @@ pub fn grant_url(
     let url = format!(
         "{}/v/{token}/{}",
         state.config.content_origin_str(),
-        encode_path(entry)
+        encode_path(path)
     );
     (url, expires)
 }
@@ -122,6 +124,16 @@ pub async fn load_blob(state: &AppState, sha256: &str) -> anyhow::Result<Option<
         .insert(sha256.to_string(), bytes.clone())
         .await;
     Ok(Some(bytes))
+}
+
+/// Read a blob for a bulk reader (search indexing): from the cache when it
+/// is there, but without filling it, so a sweep over many pages doesn't
+/// evict the blobs viewers are using.
+pub async fn peek_blob(state: &AppState, sha256: &str) -> anyhow::Result<Option<Bytes>> {
+    if let Some(bytes) = state.blob_cache.get(sha256).await {
+        return Ok(Some(bytes));
+    }
+    Ok(state.blobs.get(&blob_key(sha256)).await?)
 }
 
 enum Denied {
@@ -232,7 +244,16 @@ async fn serve(
         );
     }
 
-    let render_markdown = row.path == row.entry && parcel_types::media::is_markdown(&row.path);
+    // The entry, when Markdown, is always rendered. Any other Markdown file
+    // has two representations: the styled page when it is opened as one
+    // (the viewer frame, a link followed inside it), the raw text for
+    // everything else (a page's `fetch()`). The request's headers choose
+    // which, never whether: both need this same capability and get the same
+    // sandbox headers, so a forged header gains nothing. Decided before the
+    // conditional check below, so an ETag only ever matches its own variant.
+    let markdown = parcel_types::media::is_markdown(&row.path);
+    let has_variants = markdown && row.path != row.entry;
+    let render_markdown = markdown && (!has_variants || wants_document(&request_headers));
     let is_html = render_markdown || is_html(&row.content_type);
     // The ETag covers what is sent: the rendered Markdown and the helper
     // version, not just the stored bytes.
@@ -252,7 +273,7 @@ async fn serve(
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"))
     {
         let mut response = StatusCode::NOT_MODIFIED.into_response();
-        apply_file_headers(&state, response.headers_mut(), &etag);
+        apply_file_headers(&state, response.headers_mut(), &etag, has_variants);
         return response;
     }
 
@@ -287,9 +308,38 @@ async fn serve(
         headers.insert(CONTENT_TYPE, v);
     }
     headers.insert(CONTENT_LENGTH, HeaderValue::from(body.len()));
-    apply_file_headers(&state, headers, &etag);
+    apply_file_headers(&state, headers, &etag, has_variants);
     response
 }
+
+/// Whether a request is for a page to show (a document or frame
+/// navigation) rather than a resource for a script. `Sec-Fetch-Dest` says
+/// so when the browser sends it; without it (older browsers, plain HTTP
+/// clients), an `Accept` that names `text/html` does, as a navigation's does.
+fn wants_document(headers: &HeaderMap) -> bool {
+    if let Some(dest) = headers.get(SEC_FETCH_DEST) {
+        return dest
+            .to_str()
+            .is_ok_and(|d| d.eq_ignore_ascii_case("document") || d.eq_ignore_ascii_case("iframe"));
+    }
+    headers.get_all(ACCEPT).iter().any(|v| {
+        v.to_str().is_ok_and(|v| {
+            v.split(',').any(|range| {
+                range
+                    .split(';')
+                    .next()
+                    .is_some_and(|t| t.trim().eq_ignore_ascii_case("text/html"))
+            })
+        })
+    })
+}
+
+const SEC_FETCH_DEST: HeaderName = HeaderName::from_static("sec-fetch-dest");
+
+/// What chooses a non-entry Markdown file's representation: `Sec-Fetch-Dest`,
+/// and `Accept` when that header is absent (P36). Both go in `Vary`, so a
+/// cache never answers a script's fetch with the rendered page or the reverse.
+const MARKDOWN_VARY: &str = "Sec-Fetch-Dest, Accept";
 
 fn is_html(content_type: &str) -> bool {
     content_type
@@ -328,8 +378,12 @@ async fn serve_helper(State(state): State<AppState>, Path(file): Path<String>) -
     response
 }
 
-fn apply_file_headers(state: &AppState, headers: &mut HeaderMap, etag: &str) {
+/// `has_variants`: the file has two representations ([`MARKDOWN_VARY`]).
+fn apply_file_headers(state: &AppState, headers: &mut HeaderMap, etag: &str, has_variants: bool) {
     apply_sandbox_headers(state, headers);
+    if has_variants {
+        headers.insert(VARY, HeaderValue::from_static(MARKDOWN_VARY));
+    }
     if let Ok(v) = HeaderValue::from_str(etag) {
         headers.insert(ETAG, v);
     }
@@ -416,11 +470,48 @@ fn error_page(state: &AppState, status: StatusCode, title: &str, detail: &str) -
 
 #[cfg(test)]
 mod tests {
-    use super::encode_path;
+    use super::*;
 
     #[test]
     fn encodes_segments_but_keeps_slashes() {
         assert_eq!(encode_path("a b/c#d.html"), "a%20b/c%23d.html");
         assert_eq!(encode_path("index.html"), "index.html");
+    }
+
+    fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.append(*k, HeaderValue::from_static(v));
+        }
+        h
+    }
+
+    #[test]
+    fn document_requests() {
+        for (pairs, document) in [
+            (&[("sec-fetch-dest", "document")][..], true),
+            (&[("sec-fetch-dest", "iframe")], true),
+            (&[("sec-fetch-dest", "IFrame")], true),
+            (&[("sec-fetch-dest", "empty")], false),
+            (&[("sec-fetch-dest", "script")], false),
+            // The header wins over Accept when present.
+            (
+                &[("sec-fetch-dest", "empty"), ("accept", "text/html")],
+                false,
+            ),
+            (
+                &[("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")],
+                true,
+            ),
+            (
+                &[("accept", "text/plain"), ("accept", "Text/HTML; q=0.5")],
+                true,
+            ),
+            (&[("accept", "*/*")], false),
+            (&[("accept", "text/html-ish")], false),
+            (&[], false),
+        ] {
+            assert_eq!(wants_document(&headers(pairs)), document, "{pairs:?}");
+        }
     }
 }

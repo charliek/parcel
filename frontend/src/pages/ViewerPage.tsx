@@ -25,9 +25,10 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { SignInButton } from '@/components/auth/SignInButton';
+import { ArchivedBadge } from '@/components/common/ArchivedBadge';
 import { copyText } from '@/components/common/CopyButton';
 import { FullPageMessage } from '@/components/common/FullPage';
 import { IconButton } from '@/components/common/IconButton';
@@ -36,13 +37,16 @@ import { VisibilityBadge } from '@/components/common/VisibilityBadge';
 import { Brand } from '@/components/layout/Brand';
 import { ThemeMenu } from '@/components/layout/ThemeMenu';
 import { UserMenu } from '@/components/layout/UserMenu';
+import { TagChip } from '@/components/tags/TagChip';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { type CommentFilter, CommentsPanel } from '@/components/viewer/CommentsPanel';
 import { ContentFrame } from '@/components/viewer/ContentFrame';
 import { DeleteParcelDialog } from '@/components/viewer/DeleteParcelDialog';
+import { DiscardDraftDialog } from '@/components/viewer/DiscardDraftDialog';
 import { EditDetailsDialog } from '@/components/viewer/EditDetailsDialog';
 import { InfoPanel } from '@/components/viewer/InfoPanel';
+import { PagesMenu } from '@/components/viewer/PagesMenu';
 import { ShareDialog } from '@/components/viewer/ShareDialog';
 import { SignInToCommentDialog } from '@/components/viewer/SignInToCommentDialog';
 import { UploadVersionDialog } from '@/components/viewer/UploadVersionDialog';
@@ -53,19 +57,34 @@ import { useActivity } from '@/hooks/useActivity';
 import { useComments, useCreateComment } from '@/hooks/useComments';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { useFrameBridge } from '@/hooks/useFrameBridge';
-import { useParcelDetail, useRestoreVersion, useVersionDetail } from '@/hooks/useParcels';
+import {
+  useParcelDetail,
+  useRestoreVersion,
+  useUpdateParcel,
+  useVersionDetail,
+} from '@/hooks/useParcels';
 import { useSession, useSignInTarget } from '@/hooks/useSession';
 import { useChangeVisibility } from '@/hooks/useVisibility';
 import { viewerAbilities, viewerPageState } from '@/lib/access';
 import { api, downloadFile } from '@/lib/api';
 import { type CommentDraft, newThread, pinsForPage } from '@/lib/comments';
 import { isExpiringSoon } from '@/lib/format';
-import { contentToken, toPage } from '@/lib/frame-protocol';
+import { contentPath, contentToken, contentUrlFor, toPage } from '@/lib/frame-protocol';
 import { errorMessage, errorStatus } from '@/lib/http';
 import { isValidParcelId, parseVersionParam } from '@/lib/ids';
 import { decideLiveUpdate, parseAutoReload, shouldApplyFreshGrant } from '@/lib/live-update';
+import {
+  addressForFrame,
+  initialPageNav,
+  nextPageNav,
+  type PageNav,
+  readPageParam,
+  versionListing,
+} from '@/lib/page-nav';
+import { shareLink, type ViewerRoute, viewerPath } from '@/lib/refs';
+import { dashboardHref } from '@/lib/search-query';
 import { readStorage, STORAGE_KEYS, writeStorage } from '@/lib/storage';
-import type { Comment, Me, ViewGrant } from '@/lib/types';
+import type { Comment, Me, PageEntry, ViewGrant } from '@/lib/types';
 import { useAllowPublic } from '@/stores/server-info.store';
 
 /** Refetch a content URL that expires within this window before reusing it. */
@@ -80,16 +99,60 @@ export function ViewerPage() {
   const parsedVersion = parseVersionParam(params.version);
   const valid = isValidParcelId(id) && parsedVersion !== 'invalid';
   const version = parsedVersion === 'invalid' ? null : parsedVersion;
+  return <ParcelView id={id} version={version} valid={valid} route={{ kind: 'id', id }} />;
+}
+
+/** Where the frame is, as the viewer last heard (read when the address changes). */
+interface FrameReport {
+  framePath: string | null;
+  entry: string | null;
+}
+
+/**
+ * The viewer for one parcel, whichever address it was reached by (`/p/<id>`
+ * or a clean `/@handle/slug`): the view grant for the version and page in
+ * the address, and the page states (loading, sign in, not found).
+ *
+ * The grant is keyed by the page the viewer asked for, not by `?page=`
+ * itself: when a link inside the page moves the frame, the address follows
+ * (`replace`) but nothing is fetched and the frame isn't remounted
+ * (lib/page-nav.ts).
+ */
+export function ParcelView({
+  id,
+  version,
+  valid,
+  route,
+}: {
+  id: string;
+  /** A pinned version, or null for the current one. */
+  version: number | null;
+  /** The id and version are well-formed (otherwise: not found, no request). */
+  valid: boolean;
+  route: ViewerRoute;
+}) {
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const client = useQueryClient();
+  const urlPage = readPageParam(searchParams);
 
   const session = useSession();
   const canSignIn = useSignInTarget().kind !== 'none';
+
+  const frame = useRef<FrameReport>({ framePath: null, entry: null });
+  const [storedNav, setNav] = useState<PageNav>(() => initialPageNav(id, version, urlPage));
+  // Adjusted while rendering (not in an effect) so the grant query below
+  // never sees an address and a page request from different moments.
+  const nav = nextPageNav(storedNav, { id, version, urlPage }, frame.current);
+  if (nav !== storedNav) setNav(nav);
 
   // Signed in or not: the session cookie rides along when there is one, and
   // a public parcel renders without. What the caller may do comes back in
   // the grant (`access`).
   const view = useQuery({
-    queryKey: queryKeys.view(id, version),
-    queryFn: () => api.view(id, version ?? undefined),
+    queryKey: queryKeys.view(id, version, nav.requested),
+    queryFn: () => api.view(id, version, nav.requested),
     enabled: valid,
     staleTime: Number.POSITIVE_INFINITY,
     // A 401 here means the session cookie stopped working, and the server
@@ -100,10 +163,54 @@ export function ViewerPage() {
       return failureCount < 1 && (status === 401 || status === undefined || status >= 500);
     },
     retryDelay: (_attempt, error) => (errorStatus(error) === 401 ? 0 : 1000),
-    // Keep showing the previous version of the same parcel while switching.
+    // Keep showing the previous version or page of the same parcel while switching.
     placeholderData: (previous, previousQuery) =>
       previousQuery?.queryKey[1] === id ? keepPreviousData(previous) : undefined,
   });
+
+  // The frame reloads for a new request only once its grant is here, so a
+  // switch doesn't load the old page again in the meantime.
+  const [frameNonce, setFrameNonce] = useState(nav.nonce);
+  if (view.data && !view.isPlaceholderData && frameNonce !== nav.nonce) setFrameNonce(nav.nonce);
+
+  // What the callbacks below read, so the ones effects depend on stay stable.
+  const where = useRef({ route, version });
+  where.current = { route, version };
+  const onFrame = useCallback((path: string | null, entry: string) => {
+    frame.current = { framePath: path, entry };
+  }, []);
+  const followFrame = useCallback(
+    (page: string | null, hash: string) => {
+      const { route: r, version: v } = where.current;
+      navigate(viewerPath(r, { version: v, page, hash }), { replace: true });
+    },
+    [navigate],
+  );
+
+  const pageControl: PageControl = {
+    route,
+    urlPage,
+    urlHash: location.hash,
+    frameNonce,
+    onFrame,
+    followFrame,
+    openPage: (page) => {
+      navigate(viewerPath(route, { version, page, hash: '' }));
+    },
+    reloadPage: () => {
+      setNav((n) => ({ ...n, requested: urlPage, nonce: n.nonce + 1 }));
+    },
+    applyGrant: (grant, page) => {
+      client.setQueryData(queryKeys.view(id, null, page), grant);
+      if (page !== urlPage) {
+        // The page in view is gone from the new version: the entry, and an
+        // address to match (the nav state follows the address).
+        navigate(viewerPath(route, { version: null, page, hash: '' }), { replace: true });
+      } else {
+        setNav((n) => ({ ...n, requested: page, nonce: n.nonce + 1 }));
+      }
+    },
+  };
 
   const state = valid
     ? viewerPageState({
@@ -113,6 +220,9 @@ export function ViewerPage() {
         canSignIn,
       })
     : 'not-found';
+  // A page that isn't in this version is a 404 too; say so whoever asks.
+  const pageMissing =
+    valid && nav.requested !== null && view.status === 'error' && errorStatus(view.error) === 404;
 
   useDocumentTitle(view.data?.parcel.title ?? (state === 'ready' ? null : 'Parcel'));
 
@@ -130,6 +240,32 @@ export function ViewerPage() {
         signInAvailable={
           canSignIn && view.data.access === 'public' && session.status !== 'authenticated'
         }
+        pages={pageControl}
+      />
+    );
+  }
+
+  if (pageMissing) {
+    return (
+      <FullPageMessage
+        icon={FileQuestion}
+        title="Page not found"
+        description={
+          <>
+            This version of the parcel has no page{' '}
+            <span className="font-mono">{nav.requested}</span>, or the parcel isn’t shared with you.
+          </>
+        }
+        actions={
+          <>
+            <Button asChild>
+              <Link to={viewerPath(route, { version, page: null, hash: '' })}>
+                Open the first page
+              </Link>
+            </Button>
+            <HomeButton signedIn={session.signedIn} />
+          </>
+        }
       />
     );
   }
@@ -137,58 +273,82 @@ export function ViewerPage() {
   if (state === 'loading') return <ViewerSkeleton />;
 
   if (state === 'sign-in') {
-    return (
-      <FullPageMessage
-        icon={Lock}
-        title="Sign in to view this parcel"
-        description="It’s private, open only to people signed in, or it doesn’t exist. Sign in to open it if it’s yours or was shared with you."
-        actions={
-          <>
-            <SignInButton />
-            <Button asChild variant="outline">
-              <Link to="/">About Parcel</Link>
-            </Button>
-          </>
-        }
-      />
-    );
+    return <SignInToView />;
   }
 
   if (state === 'not-found') {
-    const versionMissing = valid && version !== null;
+    if (!valid || version === null) return <ParcelNotFound signedIn={session.signedIn} />;
     return (
       <FullPageMessage
         icon={FileQuestion}
-        title={versionMissing ? `Version ${version} isn't available` : 'Parcel not found'}
-        description={
-          versionMissing
-            ? 'This version does not exist, or the parcel is not shared with you.'
-            : 'It may have been deleted, or it isn’t shared with you. Check the link, or ask its owner to share it.'
-        }
+        title={`Version ${version} isn't available`}
+        description="This version does not exist, or the parcel is not shared with you."
         actions={
           <>
-            {versionMissing && (
-              <Button asChild>
-                <Link to={`/p/${id}`}>Open the current version</Link>
-              </Button>
-            )}
-            <Button asChild variant="outline">
-              <Link to="/">{session.signedIn ? 'My parcels' : 'Go to Parcel'}</Link>
+            <Button asChild>
+              <Link to={viewerPath(route, { version: null, page: null, hash: '' })}>
+                Open the current version
+              </Link>
             </Button>
+            <HomeButton signedIn={session.signedIn} />
           </>
         }
       />
     );
   }
 
+  return <CouldNotOpen error={view.error} onRetry={() => void view.refetch()} />;
+}
+
+/** Signed out, and the parcel needs an account (or doesn't exist). */
+export function SignInToView() {
+  return (
+    <FullPageMessage
+      icon={Lock}
+      title="Sign in to view this parcel"
+      description="It’s private, open only to people signed in, or it doesn’t exist. Sign in to open it if it’s yours or was shared with you."
+      actions={
+        <>
+          <SignInButton />
+          <Button asChild variant="outline">
+            <Link to="/">About Parcel</Link>
+          </Button>
+        </>
+      }
+    />
+  );
+}
+
+/** Back to the dashboard (or the landing page, signed out). */
+function HomeButton({ signedIn }: { signedIn: boolean }) {
+  return (
+    <Button asChild variant="outline">
+      <Link to="/">{signedIn ? 'My parcels' : 'Go to Parcel'}</Link>
+    </Button>
+  );
+}
+
+/** Not found for a signed-in visitor (or where nobody can sign in). */
+export function ParcelNotFound({ signedIn }: { signedIn: boolean }) {
+  return (
+    <FullPageMessage
+      icon={FileQuestion}
+      title="Parcel not found"
+      description="It may have been deleted, or it isn’t shared with you. Check the link, or ask its owner to share it."
+      actions={<HomeButton signedIn={signedIn} />}
+    />
+  );
+}
+
+export function CouldNotOpen({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   return (
     <FullPageMessage
       icon={AlertCircle}
       tone="destructive"
       title="Couldn't open this parcel"
-      description={errorMessage(view.error, 'The server returned an unexpected error.')}
+      description={errorMessage(error, 'The server returned an unexpected error.')}
       actions={
-        <Button variant="outline" onClick={() => void view.refetch()}>
+        <Button variant="outline" onClick={onRetry}>
           Try again
         </Button>
       }
@@ -196,7 +356,7 @@ export function ViewerPage() {
   );
 }
 
-function ViewerSkeleton() {
+export function ViewerSkeleton() {
   return (
     <div className="flex h-dvh flex-col bg-background" role="status" aria-label="Loading parcel">
       <div className="flex h-12 shrink-0 items-center gap-3 border-b px-3">
@@ -240,6 +400,32 @@ function overlayOpen(): boolean {
 
 const NO_NUMBERS: ReadonlySet<number> = new Set();
 
+/** Where the viewer goes once an unsent comment may be discarded. */
+type PendingSwitch =
+  | { kind: 'page'; page: string; focus?: number }
+  | { kind: 'href'; href: string };
+
+/** How the viewer moves between pages and keeps its address in step (from `ParcelView`). */
+interface PageControl {
+  route: ViewerRoute;
+  /** `?page=` (null: the entry). */
+  urlPage: string | null;
+  /** The address's `#fragment`, or empty. */
+  urlHash: string;
+  /** Bumped whenever the frame must load its grant's page afresh. */
+  frameNonce: number;
+  /** Where the frame is now (null while a page loads), and the shown version's entry. */
+  onFrame: (path: string | null, entry: string) => void;
+  /** The page moved by itself: rewrite the address to match (`replace`). */
+  followFrame: (page: string | null, hash: string) => void;
+  /** Open a page (null: the entry) with a new history entry. */
+  openPage: (page: string | null) => void;
+  /** Load the page in the address afresh. */
+  reloadPage: () => void;
+  /** Show a grant fetched for a live reload, for `page` (null: the entry). */
+  applyGrant: (grant: ViewGrant, page: string | null) => void;
+}
+
 interface ParcelViewerProps {
   grant: ViewGrant;
   /** The version in the URL (`/v/N`), or null for "current". */
@@ -249,6 +435,7 @@ interface ParcelViewerProps {
   refetchGrant: () => Promise<ViewGrant | undefined>;
   me: Me | null;
   signInAvailable: boolean;
+  pages: PageControl;
 }
 
 function ParcelViewer({
@@ -258,6 +445,7 @@ function ParcelViewer({
   refetchGrant,
   me,
   signInAvailable,
+  pages: nav,
 }: ParcelViewerProps) {
   const navigate = useNavigate();
   const client = useQueryClient();
@@ -265,8 +453,8 @@ function ParcelViewer({
   const { isOwner, canReadComments, canComment } = viewerAbilities(grant.access);
   const allowPublic = useAllowPublic();
   const [panel, setPanel] = useState<Panel>(readPanel);
-  const [frameNonce, setFrameNonce] = useState(0);
   const [dialog, setDialog] = useState<Dialog>(null);
+  const update = useUpdateParcel(parcel.id);
 
   // ---- live updates: the poll, and what the frame should do about it
 
@@ -294,8 +482,19 @@ function ParcelViewer({
   const [autoReloadFailed, setAutoReloadFailed] = useState(false);
 
   const detail = useParcelDetail(parcel.id, true);
-  const versionDetail = useVersionDetail(parcel.id, version.version, !isCurrent);
+  // The detail lists the current version's files; any other version shown
+  // (pinned, or a live update the detail hasn't caught up with, or one it
+  // has moved past) needs its own listing.
+  const detailIsOther =
+    detail.data !== undefined &&
+    !detail.isFetching &&
+    detail.data.parcel.current_version !== version.version;
+  const versionDetail = useVersionDetail(parcel.id, version.version, !isCurrent || detailIsOther);
   const restore = useRestoreVersion(parcel.id);
+  const listing = versionListing(version.version, detail.data, versionDetail.data);
+  // The pages of the version in the frame (null while loading): the only
+  // paths a page report is believed for.
+  const pages: PageEntry[] | null = listing?.pages ?? null;
 
   // ---- comments
 
@@ -344,7 +543,18 @@ function ParcelViewer({
 
   // ---- the page in the frame (see lib/frame-protocol.ts)
 
-  const frameKey = `${grant.content_url}#${frameNonce}`;
+  const frameKey = `${grant.content_url}#${nav.frameNonce}`;
+  // The address's fragment goes to the frame when it loads (not after:
+  // later changes come from the page itself).
+  const [frameSrc, setFrameSrc] = useState({ key: frameKey, src: grant.content_url + nav.urlHash });
+  if (frameSrc.key !== frameKey)
+    setFrameSrc({ key: frameKey, src: grant.content_url + nav.urlHash });
+  // The page's fragment, as it last reported it.
+  const [frameHash, setFrameHash] = useState<{ epoch: number; hash: string } | null>(null);
+  // A thread on another page to show once that page has loaded.
+  const [pendingFocus, setPendingFocus] = useState<{ number: number; path: string } | null>(null);
+  // A page or version switch waiting on "discard your comment?".
+  const [pendingSwitch, setPendingSwitch] = useState<PendingSwitch | null>(null);
   const [located, setLocated] = useState<{ epoch: number; missing: ReadonlySet<number> } | null>(
     null,
   );
@@ -382,11 +592,19 @@ function ParcelViewer({
         case 'escape':
           setCommentMode(false);
           break;
+        case 'hash':
+          setFrameHash({ epoch: session.epoch, hash: message.hash });
+          break;
       }
     },
   });
   const liveEpoch = live?.epoch ?? null;
   const framePath = live?.path ?? null;
+  // The page's own word for where it is, believed only for a page of the shown version.
+  const knownFramePath =
+    framePath !== null && pages?.some((p) => p.path === framePath) ? framePath : null;
+  const shownHash = live ? (frameHash?.epoch === live.epoch ? frameHash.hash : live.hash) : '';
+  const shownPage = knownFramePath ?? nav.urlPage ?? version.entry;
   const missing = live && located?.epoch === live.epoch ? located.missing : NO_NUMBERS;
 
   const pins = useMemo(
@@ -407,6 +625,67 @@ function ParcelViewer({
   useEffect(() => {
     if (liveEpoch !== null) post(toPage.draft(draftAnchor));
   }, [liveEpoch, draftAnchor, post]);
+
+  // A thread opened from another page: focus it once that page proves itself.
+  useEffect(() => {
+    if (!pendingFocus || !live || live.path !== pendingFocus.path) return;
+    if (!pages?.some((p) => p.path === live.path)) return;
+    setPendingFocus(null);
+    setActive(pendingFocus.number);
+    setReveal({ number: pendingFocus.number, nonce: Date.now() });
+    post(toPage.focus(pendingFocus.number));
+  }, [live, pendingFocus, pages, post]);
+
+  // ---- the address follows the page (lib/page-nav.ts)
+
+  const { onFrame, followFrame, urlHash } = nav;
+  useEffect(() => {
+    onFrame(framePath, version.entry);
+  }, [onFrame, framePath, version.entry]);
+
+  // Only when the frame reports (a new page, a new fragment) or the shown
+  // version's pages arrive or change: an address change of the viewer's own
+  // (a Pages menu switch) must not be undone by the page that is about to
+  // be replaced.
+  const addressInputs = useRef({ urlPage: nav.urlPage, urlHash: nav.urlHash, switching });
+  addressInputs.current = { urlPage: nav.urlPage, urlHash: nav.urlHash, switching };
+  useEffect(() => {
+    const now = addressInputs.current;
+    if (!live || now.switching || pages === null) return;
+    const change = addressForFrame({
+      framePath: live.path,
+      frameHash: shownHash,
+      pages,
+      entry: version.entry,
+      urlPage: now.urlPage,
+      urlHash: now.urlHash,
+    });
+    if (change) followFrame(change.page, change.hash);
+  }, [live, shownHash, pages, version.entry, followFrame]);
+
+  // The address's fragment changed by itself (Back/Forward to a
+  // fragment-only entry, an edited address): move the page to it. Not when
+  // the frame reports (the address follows the page then, so they agree).
+  // A fragment-only `location.replace` scrolls the page without reloading
+  // it (no `load`: the bridge stays live) or adding a history entry; the
+  // helper reports the new fragment back as `hash`.
+  const fragmentInputs = useRef({ knownFramePath, shownHash, urlPage: nav.urlPage, live });
+  fragmentInputs.current = { knownFramePath, shownHash, urlPage: nav.urlPage, live };
+  const contentUrl = grant.content_url;
+  useEffect(() => {
+    const now = fragmentInputs.current;
+    if (!now.live || now.knownFramePath === null || urlHash === now.shownHash) return;
+    // A page change in the address loads that page with its fragment.
+    if ((now.urlPage ?? version.entry) !== now.knownFramePath) return;
+    const url = contentUrlFor(contentUrl, now.knownFramePath);
+    if (!url) return;
+    try {
+      // `#` alone (not no fragment) keeps it a fragment navigation: back to the top.
+      frameRef.current?.contentWindow?.location.replace(url + (urlHash || '#'));
+    } catch {
+      // The frame is gone or somewhere else; it keeps its fragment.
+    }
+  }, [urlHash, contentUrl, version.entry, frameRef]);
 
   // A new spot to comment on: put the cursor in the composer.
   useEffect(() => {
@@ -437,14 +716,32 @@ function ParcelViewer({
   // when it arrives is it decided, against the state at that moment,
   // whether to apply it (put it in the view query, which remounts the
   // frame). The user may have started a comment while it was in flight.
-  const [arrived, setArrived] = useState<{ grant: ViewGrant; manual: boolean } | null>(null);
+  const [arrived, setArrived] = useState<{
+    grant: ViewGrant;
+    manual: boolean;
+    /** The page in the address when it was asked for. */
+    askedFor: string | null;
+    /** The page the grant is for (the entry when that page is gone). */
+    page: string | null;
+  } | null>(null);
   const fetching = useRef(false);
   const fetchLatestGrant = useCallback(
     async (manual: boolean) => {
       if (fetching.current) return;
       fetching.current = true;
+      const askedFor = addressInputs.current.urlPage;
       try {
-        setArrived({ grant: await api.view(parcel.id), manual });
+        let page = askedFor;
+        let fresh: ViewGrant;
+        try {
+          fresh = await api.view(parcel.id, null, page);
+        } catch (err) {
+          // The page isn't in the new version: its entry instead.
+          if (page === null || errorStatus(err) !== 404) throw err;
+          page = null;
+          fresh = await api.view(parcel.id);
+        }
+        setArrived({ grant: fresh, manual, askedFor, page });
       } catch (err) {
         if (manual) toast.error('Could not reload', { description: errorMessage(err) });
         else setAutoReloadFailed(true);
@@ -464,6 +761,8 @@ function ParcelViewer({
   useLayoutEffect(() => {
     if (!arrived) return;
     setArrived(null);
+    // The user moved to another page meanwhile; that page's grant is current.
+    if (arrived.askedFor !== nav.urlPage) return;
     const fresh = arrived.grant;
     const apply = shouldApplyFreshGrant({
       shown: version.version,
@@ -474,7 +773,7 @@ function ParcelViewer({
       manual: arrived.manual,
     });
     if (apply) {
-      client.setQueryData(queryKeys.view(parcel.id, null), fresh);
+      nav.applyGrant(fresh, arrived.page);
       if (arrived.manual) setAutoReloadFailed(false);
       else toast.success(`Updated to v${fresh.version.version}`);
     } else if (
@@ -490,17 +789,7 @@ function ParcelViewer({
     }
     // Otherwise the frame stays and the banner offers vN (the decision above
     // is now 'offer-reload', or the view is pinned).
-  }, [
-    arrived,
-    version.version,
-    latest,
-    pinned,
-    composing,
-    autoReload,
-    autoReloadFailed,
-    client,
-    parcel.id,
-  ]);
+  }, [arrived, version.version, latest, pinned, composing, autoReload, autoReloadFailed, nav]);
 
   const changeAutoReload = (on: boolean) => {
     setAutoReload(on);
@@ -545,6 +834,32 @@ function ParcelViewer({
     post(toPage.focus(thread.number));
   };
 
+  const hasDraft = draft !== null || composerText.trim() !== '';
+
+  /** Open a page; an unsent comment is only thrown away once the user says so. */
+  const switchPage = (path: string, focus?: number) => {
+    if (path === shownPage && focus === undefined) return;
+    if (hasDraft) {
+      setPendingSwitch({ kind: 'page', page: path, focus });
+      return;
+    }
+    goToPage(path, focus);
+  };
+  const goToPage = (path: string, focus?: number) => {
+    if (focus !== undefined) {
+      setActive(focus);
+      setPendingFocus({ number: focus, path });
+    }
+    nav.openPage(path === version.entry ? null : path);
+  };
+
+  /** A thread on another page of this version: open it there. */
+  const openThreadPage = (thread: Comment) => {
+    const path = thread.anchor?.path;
+    if (!path || !pages?.some((p) => p.path === path)) return;
+    switchPage(path, thread.number);
+  };
+
   const submitComment = () => {
     createComment.mutate(newThread(composerText, draft, version.version), {
       onSuccess: (thread) => {
@@ -582,11 +897,41 @@ function ParcelViewer({
 
   // ---- everything else
 
-  const files = isCurrent ? (detail.data?.files ?? null) : (versionDetail.data?.files ?? null);
+  const files = listing?.files ?? null;
   const versions = detail.data?.versions ?? null;
-  const baseUrl = parcel.url || `${window.location.origin}/p/${parcel.id}`;
-  const link = pinnedVersion !== null ? `${baseUrl}/v/${pinnedVersion}` : baseUrl;
+  const pageParam = shownPage === version.entry ? null : shownPage;
+  // What "Copy link" copies: the canonical URL with the version, page and
+  // fragment in the address, which the page and the address keep in step
+  // (the server names the parcel; lib/refs.ts adds the rest).
+  const pageLink = shareLink(parcel, {
+    version: pinnedVersion,
+    page: nav.urlPage === version.entry ? null : nav.urlPage,
+    hash: nav.urlHash,
+  });
+  const link = shareLink(parcel, { version: pinnedVersion, page: null, hash: '' });
   const visibility = useChangeVisibility(parcel, link);
+  const versionHref = (v: number) =>
+    viewerPath(nav.route, { version: v === latest ? null : v, page: pageParam, hash: '' });
+  const currentHref = viewerPath(nav.route, { version: null, page: pageParam, hash: '' });
+  // Another version keeps the page in view, which that version may not
+  // have: its "page not found" replaces the viewer, unsent comment and all.
+  // (The entry is in every version, and the viewer stays for it.)
+  const versionSwitchLosesDraft = hasDraft && pageParam !== null;
+  const openVersion = (href: string) => {
+    if (versionSwitchLosesDraft) setPendingSwitch({ kind: 'href', href });
+    else navigate(href);
+  };
+  /** The same for a link to another version (a plain click; others open a new tab). */
+  const onVersionLinkClick = (event: MouseEvent<HTMLAnchorElement>, href: string) => {
+    if (!versionSwitchLosesDraft || event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    setPendingSwitch({ kind: 'href', href });
+  };
+  const tagHref = me
+    ? (tag: string) => dashboardHref({ scope: isOwner ? 'mine' : 'all', tags: [tag] })
+    : null;
+  const tags = parcel.tags ?? [];
   // The grant's summary predates the poll; show the newest current version.
   const shownParcel =
     parcel.current_version === latest ? parcel : { ...parcel, current_version: latest };
@@ -608,20 +953,23 @@ function ParcelViewer({
           // Fall through to a plain reload; the frame will show its own error.
         }
       }
-      setFrameNonce((n) => n + 1);
+      nav.reloadPage();
     },
     copyLink: async () => {
-      if (await copyText(link)) toast.success('Link copied');
+      if (await copyText(pageLink)) toast.success('Link copied');
       else toast.error('Could not copy the link');
     },
     openInNewTab: (event: MouseEvent<HTMLAnchorElement>) => {
-      if (!isExpiringSoon(grant.expires_at, GRANT_REFRESH_WINDOW_MS)) return;
+      // The grant's URL is for the page the viewer asked for; the page in
+      // view may have moved on, and an old URL may be about to expire.
+      const samePage = (framePath ?? version.entry) === contentPath(grant.content_url);
+      if (samePage && !isExpiringSoon(grant.expires_at, GRANT_REFRESH_WINDOW_MS)) return;
       // Open synchronously (popup blockers), then point it at a fresh URL
       // without reloading the frame in this tab.
       event.preventDefault();
       const win = window.open('about:blank', '_blank');
       api
-        .view(parcel.id, version.version)
+        .view(parcel.id, version.version, framePath)
         .then((fresh) => {
           if (!win) return;
           win.opener = null;
@@ -633,7 +981,7 @@ function ParcelViewer({
         });
     },
     downloadEntry: () => {
-      downloadFile(parcel.id, version.version, version.entry).catch((err) =>
+      downloadFile(parcel.id, version.version, shownPage).catch((err) =>
         toast.error('Download failed', { description: errorMessage(err) }),
       );
     },
@@ -641,12 +989,33 @@ function ParcelViewer({
     edit: () => setDialog('edit'),
     uploadVersion: () => setDialog('upload'),
     remove: () => setDialog('delete'),
+    toggleArchived: () => {
+      const archived = !parcel.archived_at;
+      update.mutate(
+        { archived },
+        {
+          onSuccess: () =>
+            toast.success(archived ? 'Archived' : 'Unarchived', {
+              description: archived
+                ? 'It’s left out of lists and search; its links keep working.'
+                : undefined,
+              action: archived
+                ? { label: 'Undo', onClick: () => update.mutate({ archived: false }) }
+                : undefined,
+            }),
+          onError: (err) =>
+            toast.error(archived ? 'Could not archive' : 'Could not unarchive', {
+              description: errorMessage(err),
+            }),
+        },
+      );
+    },
     setVisibility: visibility.change,
     restore: () => {
       restore.mutate(version.version, {
         onSuccess: (result) => {
           toast.success(`Restored v${version.version} as v${result.version.version}`);
-          navigate(`/p/${parcel.id}`);
+          navigate(currentHref);
         },
         onError: (err) => toast.error('Could not restore', { description: errorMessage(err) }),
       });
@@ -681,7 +1050,22 @@ function ParcelViewer({
           <h1 className="truncate font-medium text-sm" title={parcel.title}>
             {parcel.title}
           </h1>
+          {parcel.archived_at && (
+            <ArchivedBadge className="shrink-0" data-testid="archived-badge" />
+          )}
           <VisibilityBadge visibility={parcel.visibility} className="hidden sm:inline-flex" />
+          {tags.length > 0 && (
+            <ul className="hidden shrink-0 items-center gap-1 2xl:flex" aria-label="Tags">
+              {tags.slice(0, 3).map((tag) => (
+                <li key={tag} className="max-w-40">
+                  <TagChip tag={tag} to={tagHref?.(tag)} />
+                </li>
+              ))}
+              {tags.length > 3 && (
+                <li className="shrink-0 text-muted-foreground text-xs">+{tags.length - 3}</li>
+              )}
+            </ul>
+          )}
           {!isOwner && grant.owner_name && (
             <span
               className="hidden min-w-0 max-w-48 shrink truncate text-muted-foreground text-xs lg:inline"
@@ -693,15 +1077,19 @@ function ParcelViewer({
           )}
           {versions && versions.length > 0 ? (
             <VersionMenu
-              parcelId={parcel.id}
               versions={versions}
               viewing={version.version}
               current={latest}
+              hrefFor={versionHref}
+              onOpen={openVersion}
             />
           ) : (
             <span className="shrink-0 px-2 font-mono text-muted-foreground text-xs">
               v{version.version}
             </span>
+          )}
+          {pages && pages.length > 1 && (
+            <PagesMenu pages={pages} current={shownPage} onOpen={(path) => switchPage(path)} />
           )}
           {(switching || restore.isPending) && (
             <Loader2
@@ -776,6 +1164,7 @@ function ParcelViewer({
             actions={actions}
             isOwner={isOwner}
             isCurrent={isCurrent || !pinned}
+            archived={Boolean(parcel.archived_at)}
             visibility={visibility.shown}
             allowPublic={allowPublic}
             autoReload={autoReload}
@@ -860,7 +1249,9 @@ function ParcelViewer({
               </Button>
             )}
             <Button size="sm" variant="ghost" asChild>
-              <Link to={`/p/${parcel.id}`}>View current</Link>
+              <Link to={currentHref} onClick={(event) => onVersionLinkClick(event, currentHref)}>
+                View current
+              </Link>
             </Button>
           </div>
         </div>
@@ -869,7 +1260,7 @@ function ParcelViewer({
       <div className="relative flex min-h-0 flex-1">
         <ContentFrame
           key={frameKey}
-          src={grant.content_url}
+          src={frameSrc.src}
           title={parcel.title}
           frameRef={frameRef}
           onLoad={onLoad}
@@ -885,6 +1276,13 @@ function ParcelViewer({
             ownerName={grant.owner_name}
             onEdit={actions.edit}
             onClose={toggleDetails}
+            versionHref={versionHref}
+            onVersionLinkClick={onVersionLinkClick}
+            pages={pages}
+            currentPage={shownPage}
+            onOpenPage={(path) => switchPage(path)}
+            link={pageLink}
+            tagHref={tagHref}
           />
         )}
         {commentsPanelOpen && (
@@ -902,6 +1300,8 @@ function ParcelViewer({
             missing={missing}
             active={active}
             onActivate={activate}
+            pages={pages}
+            onOpenThreadPage={openThreadPage}
             reveal={reveal}
             commentMode={commentModeOn}
             onStartCommenting={() => setCommentMode(true)}
@@ -918,6 +1318,20 @@ function ParcelViewer({
           />
         )}
       </div>
+
+      <DiscardDraftDialog
+        open={pendingSwitch !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingSwitch(null);
+        }}
+        onDiscard={() => {
+          const next = pendingSwitch;
+          setPendingSwitch(null);
+          clearDraft();
+          if (next?.kind === 'page') goToPage(next.page, next.focus);
+          else if (next) navigate(next.href);
+        }}
+      />
 
       {!canReadComments && signInAvailable && (
         <SignInToCommentDialog open={signInPrompt} onOpenChange={setSignInPrompt} />
