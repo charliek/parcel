@@ -1,7 +1,9 @@
 //! Row → wire-type conversions and the shared access checks.
 
+use parcel_types::media;
 use parcel_types::{
-    FileEntry, ParcelAccess, ParcelSummary, ShareRole, VersionDetail, VersionSummary, Visibility,
+    FileEntry, PageEntry, ParcelAccess, ParcelSummary, ShareRole, VersionDetail, VersionSummary,
+    Visibility,
 };
 use uuid::Uuid;
 
@@ -77,8 +79,31 @@ pub fn version_summary(v: &VersionRow, access: ParcelAccess) -> VersionSummary {
 pub fn version_detail(v: &VersionRow, files: Vec<FileRow>, access: ParcelAccess) -> VersionDetail {
     VersionDetail {
         summary: version_summary(v, access),
+        pages: pages(&v.entry, &files),
         files: files.into_iter().map(FileEntry::from).collect(),
     }
+}
+
+/// A version's pages (its HTML and Markdown files): the entry first, then
+/// the rest by path (byte order, so it doesn't depend on the database's
+/// collation). Whoever may see the file list may see this.
+pub fn pages(entry: &str, files: &[FileRow]) -> Vec<PageEntry> {
+    let mut pages: Vec<&FileRow> = files
+        .iter()
+        .filter(|f| media::is_entry_candidate(&f.path))
+        .collect();
+    pages.sort_by(|a, b| {
+        (a.path != entry)
+            .cmp(&(b.path != entry))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    pages
+        .into_iter()
+        .map(|f| PageEntry {
+            path: f.path.clone(),
+            title: f.page_title.clone(),
+        })
+        .collect()
 }
 
 /// What a stored visibility means on this server: with public links

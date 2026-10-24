@@ -60,6 +60,9 @@ pub struct FileRow {
     pub blob_sha256: String,
     pub size_bytes: i64,
     pub content_type: String,
+    /// A page's title, read at publish (`publish::page_title`); carried
+    /// along with the file when a merge keeps it or a restore copies it.
+    pub page_title: Option<String>,
 }
 
 impl From<FileRow> for FileEntry {
@@ -69,6 +72,7 @@ impl From<FileRow> for FileEntry {
             size_bytes: f.size_bytes,
             content_type: f.content_type,
             sha256: f.blob_sha256,
+            page_title: f.page_title,
         }
     }
 }
@@ -343,7 +347,7 @@ pub async fn version_files<'e>(
     version: i32,
 ) -> Result<Vec<FileRow>> {
     sqlx::query_as::<_, FileRow>(
-        "SELECT path, blob_sha256, size_bytes, content_type
+        "SELECT path, blob_sha256, size_bytes, content_type, page_title
          FROM version_files WHERE parcel_id = $1 AND version = $2 ORDER BY path",
     )
     .bind(parcel_id)
@@ -360,7 +364,7 @@ pub async fn find_file(
     path: &str,
 ) -> Result<Option<FileRow>> {
     sqlx::query_as::<_, FileRow>(
-        "SELECT path, blob_sha256, size_bytes, content_type
+        "SELECT path, blob_sha256, size_bytes, content_type, page_title
          FROM version_files WHERE parcel_id = $1 AND version = $2 AND path = $3",
     )
     .bind(parcel_id)
@@ -686,10 +690,13 @@ pub async fn insert_version(tx: &mut Transaction<'_, Postgres>, v: &NewVersion<'
     let shas: Vec<&str> = v.files.iter().map(|f| f.blob_sha256.as_str()).collect();
     let sizes: Vec<i64> = v.files.iter().map(|f| f.size_bytes).collect();
     let types: Vec<&str> = v.files.iter().map(|f| f.content_type.as_str()).collect();
+    let titles: Vec<Option<&str>> = v.files.iter().map(|f| f.page_title.as_deref()).collect();
     sqlx::query(
-        "INSERT INTO version_files (parcel_id, version, path, blob_sha256, size_bytes, content_type)
-         SELECT $1, $2, t.path, t.sha, t.size, t.ctype
-         FROM UNNEST($3::text[], $4::text[], $5::bigint[], $6::text[]) AS t(path, sha, size, ctype)",
+        "INSERT INTO version_files
+             (parcel_id, version, path, blob_sha256, size_bytes, content_type, page_title)
+         SELECT $1, $2, t.path, t.sha, t.size, t.ctype, t.title
+         FROM UNNEST($3::text[], $4::text[], $5::bigint[], $6::text[], $7::text[])
+              AS t(path, sha, size, ctype, title)",
     )
     .bind(v.parcel_id)
     .bind(v.version)
@@ -697,6 +704,7 @@ pub async fn insert_version(tx: &mut Transaction<'_, Postgres>, v: &NewVersion<'
     .bind(&shas)
     .bind(&sizes)
     .bind(&types)
+    .bind(&titles)
     .execute(&mut **tx)
     .await
     .context("inserting version files")?;

@@ -242,10 +242,10 @@ Types are in `crates/parcel-types/src/api.rs`.
 | GET | `/api/v1/parcels?scope=&tag=&tag=&archived=&q=&limit=&offset=` | required | `ParcelList` of `ParcelListItem` (summary fields flattened, plus `match` snippet segments and `shared`); `scope` = `mine` (default) / `shared` / `all`, tags AND, `archived` = `exclude` (default) / `include` / `only`, `q` = substring or full text, ranked |
 | POST | `/api/v1/parcels` | required | multipart (`metadata` JSON part = `CreateParcelMetadata`, `file` parts whose *filename* is the published path) → 201 `PublishResult`; with a `slug` you already use (or a redirect of yours), 200 and a new version of that parcel (`created: false`; see "Handles, slugs and sources") |
 | GET | `/api/v1/parcels/by-slug?handle=&slug=` | viewers | `ParcelDetail` of the parcel `/@<handle>/<slug>` names (old handles and slugs too; `parcel.canonical_url` is the current one); every miss is the same 404; `handle` defaults to yours, 400 without one when signed out |
-| GET | `/api/v1/parcels/{id}` | viewers | `ParcelDetail` (with `access`, `owner_name`) |
+| GET | `/api/v1/parcels/{id}` | viewers | `ParcelDetail` (with `access`, `owner_name`, `pages`) |
 | PATCH | `/api/v1/parcels/{id}` | owner | `UpdateParcelRequest` → `ParcelSummary` (`tags` replace or `add_tags`/`remove_tags`, `archived`, `slug` (`""` clears; 409 if another of yours has it); none of these bumps `updated_at`) |
 | DELETE | `/api/v1/parcels/{id}` | owner | 204 |
-| GET | `/api/v1/parcels/{id}/view?version=N` | viewers | `ViewGrant` (signed content URL) |
+| GET | `/api/v1/parcels/{id}/view?version=N&path=P` | viewers | `ViewGrant` (signed content URL of the entry, or of page `P`; 404 if `P` isn't a page of that version) |
 | GET | `/api/v1/parcels/{id}/versions` | viewers | `VersionList` |
 | POST | `/api/v1/parcels/{id}/versions` | owner | multipart (`metadata` = `NewVersionMetadata`) → 201 `PublishResult` |
 | GET | `/api/v1/parcels/{id}/versions/{version}` | viewers | `VersionDetail` (`version` = number or `latest`) |
@@ -328,6 +328,37 @@ stable name a republish can target, and where each version came from.
   a restore copies the restored version's source; MCP publishes record
   `{client: "mcp"}`.
 
+## Pages within a parcel (v0.5)
+
+A version may hold several pages, linked to each other with relative links
+(they resolve under the same capability prefix, so following one in the
+frame just works).
+
+- A **page** is any `.html`/`.htm`/`.md`/`.markdown` file of a version.
+  `version_files.page_title` (migration 0008) keeps its `<title>` or first
+  `# heading`, read at publish: plain text, control characters stripped,
+  ≤ 200 characters; carried with the file when a merge keeps it, copied by a
+  restore, `NULL` for a page without one and for rows from before 0008
+  (clients then show the path). Titles are shown as text, never markup.
+- `FileEntry.page_title?`; `ParcelDetail.pages` and `VersionDetail.pages` =
+  `[{path, title|null}]`, the entry first, then by path (byte order). Anyone
+  who sees the file list sees them.
+- `GET /parcels/{id}/view?version=&path=` mints the grant for that page;
+  a `path` that isn't a page of that version is a 404. The grant still
+  covers the whole version.
+- **Markdown pages.** The entry, when Markdown, is always rendered into the
+  styled shell. Any other Markdown file is rendered only when it is opened
+  as a page: `Sec-Fetch-Dest: document` or `iframe`, or, with no
+  `Sec-Fetch-Dest`, an `Accept` naming `text/html`; anything else (a page's
+  `fetch()`) gets the raw text. The header picks a representation, never
+  access: both need the same capability and carry the same sandbox headers.
+  Both variants (304s included) carry `Vary: Sec-Fetch-Dest` and distinct
+  ETags; the variant is decided before the `If-None-Match` check. A rendered
+  page gets the helper like any HTML page. Raw HTML inside Markdown passes
+  through, so a rendered `.md` page is equivalent to an uploaded HTML page
+  and sandboxed the same way.
+- Search indexes the entry page only.
+
 ## Comments, live updates and page data (v0.2)
 
 **Live updates.** The viewer polls `GET /parcels/{id}/activity` every ~5 s
@@ -349,7 +380,7 @@ the owner. `via` is `web` or `cli` (a `pcl_` token). A parcel holds at most
 2000 comments.
 
 **Page helper.** Every HTML response on the content origin (HTML files and
-rendered Markdown entries) gets `<script src="/_parcel/helper.<hash>.js">`
+rendered Markdown pages) gets `<script src="/_parcel/helper.<hash>.js">`
 right after `<head>` (else after `<html>`, else after the doctype). The ETag
 includes the hash. The script (`crates/parcel-server/assets/parcel-helper.js`):
 
@@ -369,15 +400,17 @@ includes the hash. The script (`crates/parcel-server/assets/parcel-helper.js`):
 | viewer → page | `pins` | `pins: [{number, anchor, resolved, active}]` (the full set for the page; the one flagged `active` is highlighted) |
 | viewer → page | `draft` | `anchor \| null` (the spot being commented on) |
 | viewer → page | `focus` | `number` (scroll to and pulse that pin) |
-| page → viewer | `ready` | `path, title, version, token` (on load and on `hello`; `token` is the page's own capability token, read from its URL) |
+| page → viewer | `ready` | `path, title, version, token, hash?` (on load and on `hello`; `token` is the page's own capability token, read from its URL; `hash` is the page's `#fragment` when it has one) |
 | page → viewer | `anchor` | `anchor` (a click in comment mode) |
 | page → viewer | `pin-click` | `number` |
 | page → viewer | `located` | `found: number[], missing: number[]` |
 | page → viewer | `escape` | — (Escape pressed in comment mode) |
+| page → viewer | `hash` | `hash` (on `hashchange`: the page's `#fragment`, `""` when it has none) |
 | page → viewer | `bye` | — (`pagehide`: the viewer stops sending until the next verified `ready`) |
 
 Viewer messages carry `source: 'parcel-viewer'`, page messages
-`source: 'parcel-helper'`. The viewer accepts page messages only from its
+`source: 'parcel-helper'`. A reported `hash` is at most 200 printable ASCII
+characters including the `#` (a longer or odd one reads as none). The viewer accepts page messages only from its
 iframe's `contentWindow` and treats them as untrusted input (the page can
 forge any of them); it sends anchors and numbers, never comment text. The
 frame can be navigated to another site that allows framing, which posts from

@@ -238,6 +238,22 @@ pub struct FileEntry {
     pub content_type: String,
     /// Lowercase hex SHA-256 of the file's bytes.
     pub sha256: String,
+    /// A page's (`.html`, `.htm`, `.md`, `.markdown`) `<title>` or first
+    /// `# heading`, read when it was published. Absent for other files, for
+    /// a page without one, and for pages published before titles were kept.
+    /// Plain text: show it as text, never as markup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_title: Option<String>,
+}
+
+/// One page of a version: a file the viewer can open (HTML or Markdown).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PageEntry {
+    pub path: String,
+    /// The page's title (plain text), or null when it has none on record
+    /// (show the path instead).
+    pub title: Option<String>,
 }
 
 /// A version with its file list.
@@ -247,6 +263,9 @@ pub struct VersionDetail {
     #[serde(flatten)]
     pub summary: VersionSummary,
     pub files: Vec<FileEntry>,
+    /// The version's pages: the entry first, then the others by path.
+    #[serde(default)]
+    pub pages: Vec<PageEntry>,
 }
 
 /// A parcel with its history and current files.
@@ -265,6 +284,9 @@ pub struct ParcelDetail {
     pub versions: Vec<VersionSummary>,
     /// Files of the current version.
     pub files: Vec<FileEntry>,
+    /// Pages of the current version: the entry first, then the others by path.
+    #[serde(default)]
+    pub pages: Vec<PageEntry>,
 }
 
 /// `GET /api/v1/parcels/{id}/versions`.
@@ -570,7 +592,7 @@ pub struct ServerInfo {
 
 /// The optional features this version of the API has, as listed in
 /// [`ServerInfo::features`]: what the server reports and what a client looks for.
-pub const FEATURES: &[&str] = &["tags", "search", "archive", "slugs"];
+pub const FEATURES: &[&str] = &["tags", "search", "archive", "slugs", "pages"];
 
 /// An API token as listed (never includes the secret).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -726,8 +748,13 @@ mod tests {
                 source: None,
             },
             files: vec![],
+            pages: vec![PageEntry {
+                path: "index.html".into(),
+                title: None,
+            }],
         };
         let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["pages"][0]["title"], serde_json::Value::Null);
         assert_eq!(json["version"], 2);
         assert_eq!(json["created_at"], "1970-01-01T00:00:00Z");
         let back: VersionDetail = serde_json::from_value(json).unwrap();

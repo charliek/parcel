@@ -24,8 +24,8 @@ pub mod token;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::header::{
-    ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
-    CONTENT_TYPE, ETAG, IF_NONE_MATCH, LOCATION, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS,
+    ACCEPT, ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
+    CONTENT_TYPE, ETAG, IF_NONE_MATCH, LOCATION, REFERRER_POLICY, VARY, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -63,12 +63,14 @@ pub fn encode_path(path: &str) -> String {
         .join("/")
 }
 
-/// Mint a capability token for one version and build the URL of its entry.
+/// Mint a capability token for one version and build the URL of one of its
+/// files (the page the viewer opens). The token covers the whole version, so
+/// the page's relative links resolve under the same prefix.
 pub fn grant_url(
     state: &AppState,
     parcel_id: &str,
     version: i32,
-    entry: &str,
+    path: &str,
     scope: Scope,
 ) -> (String, OffsetDateTime) {
     let expires = OffsetDateTime::now_utc() + state.config.content_token_ttl;
@@ -84,7 +86,7 @@ pub fn grant_url(
     let url = format!(
         "{}/v/{token}/{}",
         state.config.content_origin_str(),
-        encode_path(entry)
+        encode_path(path)
     );
     (url, expires)
 }
@@ -242,7 +244,16 @@ async fn serve(
         );
     }
 
-    let render_markdown = row.path == row.entry && parcel_types::media::is_markdown(&row.path);
+    // The entry, when Markdown, is always rendered. Any other Markdown file
+    // has two representations: the styled page when it is opened as one
+    // (the viewer frame, a link followed inside it), the raw text for
+    // everything else (a page's `fetch()`). The request's headers choose
+    // which, never whether: both need this same capability and get the same
+    // sandbox headers, so a forged header gains nothing. Decided before the
+    // conditional check below, so an ETag only ever matches its own variant.
+    let markdown = parcel_types::media::is_markdown(&row.path);
+    let has_variants = markdown && row.path != row.entry;
+    let render_markdown = markdown && (!has_variants || wants_document(&request_headers));
     let is_html = render_markdown || is_html(&row.content_type);
     // The ETag covers what is sent: the rendered Markdown and the helper
     // version, not just the stored bytes.
@@ -263,6 +274,11 @@ async fn serve(
     {
         let mut response = StatusCode::NOT_MODIFIED.into_response();
         apply_file_headers(&state, response.headers_mut(), &etag);
+        if has_variants {
+            for name in MARKDOWN_VARY {
+                add_vary(response.headers_mut(), name);
+            }
+        }
         return response;
     }
 
@@ -298,8 +314,60 @@ async fn serve(
     }
     headers.insert(CONTENT_LENGTH, HeaderValue::from(body.len()));
     apply_file_headers(&state, headers, &etag);
+    if has_variants {
+        for name in MARKDOWN_VARY {
+            add_vary(headers, name);
+        }
+    }
     response
 }
+
+/// Whether a request is for a page to show (a document or frame
+/// navigation) rather than a resource for a script. `Sec-Fetch-Dest` says
+/// so when the browser sends it; without it (older browsers, plain HTTP
+/// clients), an `Accept` that names `text/html` does, as a navigation's does.
+fn wants_document(headers: &HeaderMap) -> bool {
+    if let Some(dest) = headers.get(SEC_FETCH_DEST) {
+        return dest
+            .to_str()
+            .is_ok_and(|d| d.eq_ignore_ascii_case("document") || d.eq_ignore_ascii_case("iframe"));
+    }
+    headers.get_all(ACCEPT).iter().any(|v| {
+        v.to_str().is_ok_and(|v| {
+            v.split(',').any(|range| {
+                range
+                    .split(';')
+                    .next()
+                    .is_some_and(|t| t.trim().eq_ignore_ascii_case("text/html"))
+            })
+        })
+    })
+}
+
+/// Add `name` to the response's `Vary`, keeping whatever it already lists.
+fn add_vary(headers: &mut HeaderMap, name: &str) {
+    let mut names: Vec<String> = headers
+        .get_all(VARY)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
+    if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        names.push(name.to_string());
+    }
+    if let Ok(v) = HeaderValue::from_str(&names.join(", ")) {
+        headers.insert(VARY, v);
+    }
+}
+
+const SEC_FETCH_DEST: HeaderName = HeaderName::from_static("sec-fetch-dest");
+
+/// What chooses a non-entry Markdown file's representation: `Sec-Fetch-Dest`,
+/// and `Accept` when that header is absent (P36). Both go in `Vary`, so a
+/// cache never answers a script's fetch with the rendered page or the reverse.
+const MARKDOWN_VARY: [&str; 2] = ["Sec-Fetch-Dest", "Accept"];
 
 fn is_html(content_type: &str) -> bool {
     content_type
@@ -426,11 +494,65 @@ fn error_page(state: &AppState, status: StatusCode, title: &str, detail: &str) -
 
 #[cfg(test)]
 mod tests {
-    use super::encode_path;
+    use super::*;
 
     #[test]
     fn encodes_segments_but_keeps_slashes() {
         assert_eq!(encode_path("a b/c#d.html"), "a%20b/c%23d.html");
         assert_eq!(encode_path("index.html"), "index.html");
+    }
+
+    fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.append(*k, HeaderValue::from_static(v));
+        }
+        h
+    }
+
+    #[test]
+    fn document_requests() {
+        for (pairs, document) in [
+            (&[("sec-fetch-dest", "document")][..], true),
+            (&[("sec-fetch-dest", "iframe")], true),
+            (&[("sec-fetch-dest", "IFrame")], true),
+            (&[("sec-fetch-dest", "empty")], false),
+            (&[("sec-fetch-dest", "script")], false),
+            // The header wins over Accept when present.
+            (
+                &[("sec-fetch-dest", "empty"), ("accept", "text/html")],
+                false,
+            ),
+            (
+                &[("accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")],
+                true,
+            ),
+            (
+                &[("accept", "text/plain"), ("accept", "Text/HTML; q=0.5")],
+                true,
+            ),
+            (&[("accept", "*/*")], false),
+            (&[("accept", "text/html-ish")], false),
+            (&[], false),
+        ] {
+            assert_eq!(wants_document(&headers(pairs)), document, "{pairs:?}");
+        }
+    }
+
+    #[test]
+    fn vary_merges() {
+        let mut h = HeaderMap::new();
+        add_vary(&mut h, "Sec-Fetch-Dest");
+        assert_eq!(h[VARY], "Sec-Fetch-Dest");
+        let mut h = headers(&[
+            ("vary", "Accept-Encoding"),
+            ("vary", "origin, sec-fetch-dest"),
+        ]);
+        add_vary(&mut h, "Sec-Fetch-Dest");
+        assert_eq!(h.get_all(VARY).iter().count(), 1);
+        assert_eq!(h[VARY], "Accept-Encoding, origin, sec-fetch-dest");
+        let mut h = headers(&[("vary", "Origin")]);
+        add_vary(&mut h, "Sec-Fetch-Dest");
+        assert_eq!(h[VARY], "Origin, Sec-Fetch-Dest");
     }
 }

@@ -19,6 +19,7 @@ const BEFORE_0005: [&str; 4] = [
 const DROP_USERS_SUB: &str = include_str!("../migrations/0005_drop_users_sub.sql");
 const TAGS_ARCHIVE_SEARCH: &str = include_str!("../migrations/0006_tags_archive_search.sql");
 const HANDLES_SLUGS: &str = include_str!("../migrations/0007_handles_slugs.sql");
+const PAGE_TITLES: &str = include_str!("../migrations/0008_page_titles.sql");
 
 async fn apply(pool: &PgPool, sql: &str) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(AssertSqlSafe(sql.to_string()))
@@ -410,4 +411,49 @@ async fn handles_backfill_existing_users_uniquely() {
     .unwrap();
     let expected: Vec<String> = cases.iter().map(|(_, h)| h.to_string()).collect();
     assert_eq!(again, expected);
+}
+
+/// 0008 meets file rows from before page titles, and an older revision
+/// keeps writing rows without one during the rollover: both read as pages
+/// with no title on record.
+#[tokio::test]
+async fn page_titles_start_empty_and_old_revisions_still_insert() {
+    let pool = common::schema_pool().await;
+    apply_through_0005(&pool).await;
+    let blobs = Arc::new(MemoryBlobStore::default());
+    let (_, id) = legacy_parcel(&pool, &blobs).await;
+    for (sql, name) in [
+        (TAGS_ARCHIVE_SEARCH, "0006"),
+        (HANDLES_SLUGS, "0007"),
+        (PAGE_TITLES, "0008"),
+    ] {
+        apply(&pool, sql).await.expect(name);
+    }
+    // What an older revision's merge publish writes.
+    for sql in [
+        format!(
+            "INSERT INTO parcel_versions (parcel_id, version, entry, file_count, total_bytes)
+             SELECT parcel_id, 2, entry, file_count, total_bytes FROM parcel_versions
+             WHERE parcel_id = '{id}' AND version = 1"
+        ),
+        format!(
+            "INSERT INTO version_files (parcel_id, version, path, blob_sha256, size_bytes, content_type)
+             SELECT parcel_id, 2, path, blob_sha256, size_bytes, content_type FROM version_files
+             WHERE parcel_id = '{id}' AND version = 1"
+        ),
+        format!("UPDATE parcels SET current_version = 2 WHERE id = '{id}'"),
+    ] {
+        apply(&pool, &sql).await.expect("old revision's publish");
+    }
+    for version in [1, 2] {
+        let files = parcels::version_files(&pool, &id, version).await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].page_title, None);
+        let pages = parcel_server::http::views::pages("index.html", &files);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(
+            (pages[0].path.as_str(), pages[0].title.as_deref()),
+            ("index.html", None)
+        );
+    }
 }

@@ -616,6 +616,13 @@
           "content_type": {
             "type": "string"
           },
+          "page_title": {
+            "description": "A page's (`.html`, `.htm`, `.md`, `.markdown`) `<title>` or first\n`# heading`, read when it was published. Absent for other files, for\na page without one, and for pages published before titles were kept.\nPlain text: show it as text, never as markup.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "path": {
             "type": "string"
           },
@@ -825,6 +832,25 @@
         ],
         "type": "object"
       },
+      "PageEntry": {
+        "description": "One page of a version: a file the viewer can open (HTML or Markdown).",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "title": {
+            "description": "The page's title (plain text), or null when it has none on record\n(show the path instead).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
       "ParcelAccess": {
         "description": "What the caller may do with a parcel.",
         "enum": [
@@ -889,6 +915,13 @@
               "string",
               "null"
             ]
+          },
+          "pages": {
+            "description": "Pages of the current version: the entry first, then the others by path.",
+            "items": {
+              "$ref": "#/components/schemas/PageEntry"
+            },
+            "type": "array"
           },
           "parcel": {
             "$ref": "#/components/schemas/ParcelSummary"
@@ -1548,6 +1581,13 @@
               "files": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
+                },
+                "type": "array"
+              },
+              "pages": {
+                "description": "The version's pages: the entry first, then the others by path.",
+                "items": {
+                  "$ref": "#/components/schemas/PageEntry"
                 },
                 "type": "array"
               }
@@ -3890,7 +3930,7 @@
     },
     "/api/v1/parcels/{id}/view": {
       "get": {
-        "description": "A short-lived signed URL on the sandboxed content origin for one version's entry page — what the viewer iframe loads.",
+        "description": "A short-lived signed URL on the sandboxed content origin for one page of a version (its entry unless `path` names another of its `pages`) — what the viewer iframe loads. The URL's capability covers the whole version, so the page's relative links to its other files and pages work.",
         "operationId": "view_parcel",
         "parameters": [
           {
@@ -3910,6 +3950,15 @@
             "schema": {
               "format": "int32",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Page to open (one of the version's `pages`; default: its entry).",
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3932,7 +3981,7 @@
                 }
               }
             },
-            "description": "Not Found"
+            "description": "No such parcel or version, or `path` is not a page of that version"
           }
         },
         "security": [

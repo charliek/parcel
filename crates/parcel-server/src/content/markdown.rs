@@ -1,4 +1,5 @@
-//! Markdown entry pages, rendered to a styled HTML document.
+//! Markdown pages (the entry, and any other page opened as one), rendered
+//! to a styled HTML document.
 //!
 //! Raw HTML inside the Markdown is passed through: the result is served on
 //! the sandboxed content origin like any other parcel page, so it has no more

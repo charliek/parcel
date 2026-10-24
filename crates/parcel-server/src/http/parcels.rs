@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use parcel_types::slugs::normalize_slug;
 use parcel_types::tags::{normalize_set, normalize_tags};
+use parcel_types::{media, paths};
 use parcel_types::{
     ArchivedFilter, CreateParcelMetadata, ErrorBody, ListScope, ParcelAccess, ParcelDetail,
     ParcelList, ParcelListItem, ParcelSummary, PublishResult, ShareRole, SharedInfo,
@@ -272,6 +273,7 @@ pub(crate) async fn detail_of(
             .iter()
             .map(|v| views::version_summary(v, access))
             .collect(),
+        pages: views::pages(&row.entry, &files),
         files: files.into_iter().map(Into::into).collect(),
     })
 }
@@ -412,19 +414,23 @@ pub(crate) async fn delete(state: &AppState, caller: &AuthUser, id: &str) -> App
 pub struct ViewQuery {
     /// Version to view (default: current).
     pub version: Option<i32>,
+    /// Page to open (one of the version's `pages`; default: its entry).
+    pub path: Option<String>,
 }
 
 #[utoipa::path(
     get,
     path = "/parcels/{id}/view",
     tag = "parcels",
-    description = "A short-lived signed URL on the sandboxed content origin for one version's \
-        entry page — what the viewer iframe loads.",
+    description = "A short-lived signed URL on the sandboxed content origin for one page of a \
+        version (its entry unless `path` names another of its `pages`) — what the viewer iframe \
+        loads. The URL's capability covers the whole version, so the page's relative links to \
+        its other files and pages work.",
     params(("id" = String, Path, description = "Parcel id"), ViewQuery),
     security((), ("bearer" = [])),
     responses(
         (status = 200, body = ViewGrant),
-        (status = 404, body = ErrorBody),
+        (status = 404, body = ErrorBody, description = "No such parcel or version, or `path` is not a page of that version"),
     )
 )]
 async fn view_parcel(
@@ -443,7 +449,27 @@ async fn view_parcel(
         (ParcelAccess::Viewer | ParcelAccess::Commenter, Some(c)) => Scope::Member(c.user.id),
         _ => Scope::Public,
     };
-    let (content_url, expires_at) = content::grant_url(&state, &id, version, &v.entry, scope);
+    let page = match q.path.as_deref() {
+        None => v.entry.clone(),
+        Some(path) => {
+            // A path no publish could store (a NUL byte, `..`) can't name a
+            // page; checking first also keeps it away from Postgres, which
+            // refuses NUL in text and would turn the miss into a 500.
+            let file = match paths::validate_path(path) {
+                Ok(()) => parcels::find_file(&state.db, &id, version, path).await?,
+                Err(_) => None,
+            };
+            match file {
+                Some(f) if media::is_entry_candidate(&f.path) => f.path,
+                _ => {
+                    return Err(AppError::NotFound(format!(
+                        "version {version} has no page {path:?}"
+                    )))
+                }
+            }
+        }
+    };
+    let (content_url, expires_at) = content::grant_url(&state, &id, version, &page, scope);
     Ok(Json(ViewGrant {
         parcel: views::summary(&state.config, &row, Audience::of(caller.as_ref())),
         version: views::version_summary(&v, access),

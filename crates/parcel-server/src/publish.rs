@@ -218,6 +218,7 @@ fn upload_row(u: &Upload) -> FileRow {
         blob_sha256: u.sha256.clone(),
         size_bytes: i64::try_from(u.bytes.len()).unwrap_or(i64::MAX),
         content_type: u.content_type.to_string(),
+        page_title: page_title(&u.path, &u.bytes),
     }
 }
 
@@ -305,16 +306,32 @@ fn check_version_limits(
 
 /// Default title: the entry's `<title>` or first `# heading`, else its file name.
 pub fn derive_title(entry: &str, bytes: &[u8]) -> String {
+    found_title(entry, bytes).unwrap_or_else(|| paths::file_name(entry).to_string())
+}
+
+/// The title a page (an HTML or Markdown file) gives itself, kept with its
+/// file row so the viewer can list the version's pages by name; `None` for
+/// other files and for a page without one.
+pub fn page_title(path: &str, bytes: &[u8]) -> Option<String> {
+    media::is_entry_candidate(path)
+        .then(|| found_title(path, bytes))
+        .flatten()
+}
+
+/// A page's `<title>` or first `# heading`, as plain text: control
+/// characters stripped (the comment rule; a title is shown in lists and
+/// terminals) and cut to the title limit.
+fn found_title(path: &str, bytes: &[u8]) -> Option<String> {
     let head = &bytes[..bytes.len().min(256 * 1024)];
     let text = String::from_utf8_lossy(head);
-    let found = if media::is_markdown(entry) {
+    let found = if media::is_markdown(path) {
         crate::content::markdown::first_heading(&text)
     } else {
         html_title(&text)
-    };
-    found
-        .map(|t| truncate_chars(&t, MAX_TITLE_CHARS))
-        .unwrap_or_else(|| paths::file_name(entry).to_string())
+    }?;
+    let clean: String = found.chars().filter(|c| !c.is_control()).collect();
+    let clean = clean.trim();
+    (!clean.is_empty()).then(|| truncate_chars(clean, MAX_TITLE_CHARS))
 }
 
 fn html_title(html: &str) -> Option<String> {
@@ -934,6 +951,7 @@ mod tests {
                         blob_sha256: "x".into(),
                         size_bytes: 10,
                         content_type: "text/html".into(),
+                        page_title: None,
                     },
                 )
             })
@@ -971,6 +989,37 @@ mod tests {
             derive_title("dir/page.html", b"<p>no title</p>"),
             "page.html"
         );
+    }
+
+    #[test]
+    fn page_titles() {
+        assert_eq!(page_title("dir/page.html", b"<p>no title</p>"), None);
+        assert_eq!(page_title("a.htm", b"<title>A</title>"), Some("A".into()));
+        assert_eq!(
+            page_title("docs/Notes.MARKDOWN", b"# Notes `v2`\n"),
+            Some("Notes v2".into())
+        );
+        // Only pages have titles, whatever their bytes say.
+        assert_eq!(page_title("x.txt", b"<title>T</title>"), None);
+        assert_eq!(page_title("x.svg", b"<title>T</title>"), None);
+        // Control characters go (escape sequences, bells, C1 controls); a
+        // title of nothing else is no title.
+        assert_eq!(
+            page_title(
+                "a.html",
+                "<title>\u{1b}[31mRed\u{7}\u{9b}</title>".as_bytes()
+            ),
+            Some("[31mRed".into())
+        );
+        assert_eq!(page_title("a.md", "# \u{1}\u{2}\n".as_bytes()), None);
+        let long = format!("<title>{}</title>", "é".repeat(300));
+        assert_eq!(
+            page_title("a.html", long.as_bytes()).map(|t| t.chars().count()),
+            Some(200)
+        );
+        // The parcel title falls back to the file name; a page title doesn't.
+        assert_eq!(derive_title("a.md", b"no heading"), "a.md");
+        assert_eq!(page_title("a.md", b"no heading"), None);
     }
 
     #[test]

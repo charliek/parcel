@@ -18,7 +18,8 @@
  *    comment text. The one credential, the page's own capability token, is
  *    sent in `ready` to the app origin that minted it, so the viewer can tell
  *    its parcel page from any other document the frame is navigated to; the
- *    page says `bye` when it unloads.
+ *    page reports its path and `#fragment` (so the viewer's address can
+ *    follow in-page navigation) and says `bye` when it unloads.
  * 4. Links to other sites open in a new tab. In the viewer's frame, a plain
  *    click on a link to another origin (with no target, or `_self`) gets
  *    `target="_blank" rel="noopener noreferrer"` before the browser follows
@@ -677,13 +678,27 @@
     }
   });
 
+  // The fragment the page is scrolled to (`#section-2`), so the viewer can
+  // keep it in its own address. Only a short, printable one is reported
+  // (`location.hash` is already percent-encoded); anything else reads as none.
+  const currentHash = () => {
+    const h = location.hash;
+    return h.length <= 200 && /^#[\x21-\x7e]+$/.test(h) ? h : '';
+  };
+
   // The token is what the viewer checks before it talks to this frame: only
   // the page it loaded knows it. `post` sends only to the app origin, which
   // minted it.
   function sendReady() {
-    post('ready', { path: pagePath, title: document.title, version: claims.version, token });
+    const extra = { path: pagePath, title: document.title, version: claims.version, token };
+    const hash = currentHash();
+    if (hash) extra.hash = hash;
+    post('ready', extra);
   }
   sendReady();
+  // In-page links (`href="#…"`) and history moves within the page. An empty
+  // `hash` means the page left its fragment.
+  window.addEventListener('hashchange', () => post('hash', { hash: currentHash() }));
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', sendReady, { once: true });
   }

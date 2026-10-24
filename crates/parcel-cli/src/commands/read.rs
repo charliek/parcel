@@ -207,6 +207,7 @@ pub fn info(settings: &Settings, args: InfoArgs) -> Result<()> {
         owner_name,
         versions,
         files,
+        pages: _,
     } = detail.value;
     let mut out = String::new();
     out.push_str(&format!("{}\n", parcel.title));
