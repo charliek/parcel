@@ -108,6 +108,7 @@ function UploadVersionForm({ parcel, currentFiles, onOpenChange }: UploadVersion
             selection.chosenEntry ??
             (mode === 'replace' ? (selection.entry ?? undefined) : undefined),
           base_version: parcel.current_version,
+          source: { client: 'web' },
         },
         selection.files,
       );

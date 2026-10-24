@@ -1,9 +1,8 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { removeShare, upsertShare } from '@/lib/shares';
 import type { ShareList, ShareRole } from '@/lib/types';
 import { queryKeys } from './queryKeys';
-import { PAGE_SIZE } from './useParcels';
 
 /** The people a parcel is shared with (owner only). */
 export function useShares(id: string, enabled: boolean) {
@@ -35,18 +34,5 @@ export function useDeleteShare(id: string) {
       client.setQueryData<ShareList>(queryKeys.shares(id), (list) =>
         list ? removeShare(list, email) : list,
       ),
-  });
-}
-
-/** Parcels other people shared with the caller by email, paged with "load more". */
-export function useSharedWithMe() {
-  return useInfiniteQuery({
-    queryKey: queryKeys.shared,
-    queryFn: ({ pageParam }) => api.listShared({ limit: PAGE_SIZE, offset: pageParam }),
-    initialPageParam: 0,
-    getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((n, page) => n + page.parcels.length, 0);
-      return loaded < last.total && last.parcels.length > 0 ? loaded : undefined;
-    },
   });
 }

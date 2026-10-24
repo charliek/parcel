@@ -19,6 +19,7 @@
  * can't know it. Until then the viewer sends nothing but `hello`.
  */
 
+import { safeHash } from './page-nav';
 import type { CommentAnchor } from './types';
 import { validatePublishedPath } from './upload';
 
@@ -45,7 +46,16 @@ const MAX_TITLE_CHARS = 300;
 export const MAX_TOKEN_CHARS = 512;
 
 export type PageMessage =
-  | { type: 'ready'; path: string; title: string; version: number | null; token: string }
+  | {
+      type: 'ready';
+      path: string;
+      title: string;
+      version: number | null;
+      token: string;
+      /** The page's `#fragment`, or empty. */
+      hash: string;
+    }
+  | { type: 'hash'; hash: string }
   | { type: 'anchor'; anchor: CommentAnchor }
   | { type: 'pin-click'; number: number }
   | { type: 'located'; found: number[]; missing: number[] }
@@ -143,6 +153,45 @@ export function contentToken(contentUrl: string): string | null {
   return match && isToken(match[1]) ? match[1] : null;
 }
 
+/** The published path a content URL opens (`…/v/{token}/docs/a.html` → `docs/a.html`). */
+export function contentPath(contentUrl: string): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(contentUrl).pathname;
+  } catch {
+    return null;
+  }
+  const match = /^\/v\/[^/]+\/(.+)$/.exec(pathname);
+  if (!match) return null;
+  try {
+    return match[1].split('/').map(decodeURIComponent).join('/');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The URL of a page of the same grant (`…/v/{token}/{path}`), spelled the
+ * way the browser spells a relative link to it, so a fragment-only change
+ * to the frame's URL is a scroll and not a reload. Null when `contentUrl`
+ * isn't a content URL.
+ */
+export function contentUrlFor(contentUrl: string, path: string): string | null {
+  const token = contentToken(contentUrl);
+  if (token === null) return null;
+  const url = new URL(contentUrl);
+  if (contentPath(contentUrl) === path) {
+    url.hash = '';
+    return url.href;
+  }
+  // The URL parser escapes the rest; these would end or garble the path.
+  const escaped = path
+    .split('/')
+    .map((segment) => segment.replace(/[%?#]/g, (c) => encodeURIComponent(c)))
+    .join('/');
+  return new URL(escaped, `${url.origin}/v/${token}/`).href;
+}
+
 /**
  * Whether a `ready` comes from the parcel page the viewer loaded: its token
  * must equal the one in the frame's URL. Never true without an expected token.
@@ -169,8 +218,12 @@ export function parsePageMessage(data: unknown): PageMessage | null {
         title: title.join(''),
         version: isCommentNumber(data.version) ? data.version : null,
         token: data.token,
+        hash: safeHash(data.hash),
       };
     }
+    case 'hash':
+      // An empty or unusable fragment reads as none (the page left it).
+      return { type: 'hash', hash: safeHash(data.hash) };
     case 'anchor': {
       const anchor = parseAnchor(data.anchor);
       return anchor ? { type: 'anchor', anchor } : null;

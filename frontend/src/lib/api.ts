@@ -11,6 +11,7 @@
 
 import { ApiError, errorFromBody, parseResponse } from './http';
 import type {
+  ArchivedFilter,
   Comment,
   CommentList,
   CommentStatus,
@@ -18,6 +19,7 @@ import type {
   CreateTokenRequest,
   DataSummary,
   DeviceInfo,
+  ListScope,
   Me,
   NewComment,
   ParcelActivity,
@@ -26,9 +28,10 @@ import type {
   ParcelSummary,
   PublishResult,
   Share,
-  SharedParcelList,
   ShareList,
   ShareRole,
+  TagList,
+  TagsUpdated,
   TokenList,
   UpdateComment,
   UpdateParcelRequest,
@@ -122,14 +125,34 @@ export function encodeFilePath(path: string): string {
   return path.split('/').map(enc).join('/');
 }
 
-function query(params: Record<string, string | number | undefined | null>): string {
+type QueryValue = string | number | undefined | null;
+
+/**
+ * A query string from `params`, leaving out empty values. An array repeats
+ * its key (`tag=a&tag=b`), which is how the API takes several tags.
+ */
+export function query(params: Record<string, QueryValue | readonly QueryValue[]>): string {
   const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null && value !== '') search.set(key, String(value));
+  for (const [key, raw] of Object.entries(params)) {
+    const values: readonly QueryValue[] = Array.isArray(raw) ? raw : [raw as QueryValue];
+    for (const value of values) {
+      if (value !== undefined && value !== null && value !== '') search.append(key, String(value));
+    }
   }
   const s = search.toString();
   return s ? `?${s}` : '';
 }
+
+/** Filters shared by `GET /parcels` and `GET /tags`. */
+export interface ListFilters {
+  scope?: ListScope;
+  tag?: readonly string[];
+  q?: string;
+  archived?: ArchivedFilter;
+}
+
+/** What `GET /tags` filters by: the list's filters, and optionally a tag prefix. */
+export type TagFilters = ListFilters & { prefix?: string };
 
 /** Fetch a file through the files API and hand it to the browser as a download. */
 export async function downloadFile(id: string, version: number, path: string): Promise<void> {
@@ -157,18 +180,39 @@ export async function downloadFile(id: string, version: number, path: string): P
 export const api = {
   me: () => apiFetch<Me>('/api/v1/me'),
 
-  listParcels: (params: { q?: string; limit?: number; offset?: number } = {}) =>
-    apiFetch<ParcelList>(`/api/v1/parcels${query(params)}`),
+  /** Change the signed-in user's handle (400 malformed, 409 taken). */
+  updateMe: (body: { handle: string }) =>
+    apiFetch<Me>('/api/v1/me', { method: 'PATCH', json: body }),
+
+  listParcels: (params: ListFilters & { limit?: number; offset?: number } = {}) =>
+    apiFetch<ParcelList>(`/api/v1/parcels${query({ ...params })}`),
 
   getParcel: (id: string) => apiFetch<ParcelDetail>(`/api/v1/parcels/${enc(id)}`),
+
+  /** Resolve a clean URL's handle and slug (every miss is the same 404). */
+  bySlug: (handle: string, slug: string) =>
+    apiFetch<ParcelDetail>(`/api/v1/parcels/by-slug${query({ handle, slug })}`),
+
+  /** Tag counts over the parcels matching the same filters as `listParcels`. */
+  listTags: (params: TagFilters & { limit?: number; offset?: number } = {}) =>
+    apiFetch<TagList>(`/api/v1/tags${query({ ...params })}`),
+
+  /** Rename a tag on every parcel the caller owns (into an existing one merges them). */
+  renameTag: (from: string, to: string) =>
+    apiFetch<TagsUpdated>('/api/v1/tags/rename', { method: 'POST', json: { from, to } }),
+
+  /** Remove a tag from every parcel the caller owns. */
+  deleteTag: (tag: string) =>
+    apiFetch<TagsUpdated>('/api/v1/tags/delete', { method: 'POST', json: { tag } }),
 
   updateParcel: (id: string, body: UpdateParcelRequest) =>
     apiFetch<ParcelSummary>(`/api/v1/parcels/${enc(id)}`, { method: 'PATCH', json: body }),
 
   deleteParcel: (id: string) => apiFetch<void>(`/api/v1/parcels/${enc(id)}`, { method: 'DELETE' }),
 
-  view: (id: string, version?: number) =>
-    apiFetch<ViewGrant>(`/api/v1/parcels/${enc(id)}/view${query({ version })}`),
+  /** A content URL for one page of a version (its entry unless `path` names another page). */
+  view: (id: string, version?: number | null, path?: string | null) =>
+    apiFetch<ViewGrant>(`/api/v1/parcels/${enc(id)}/view${query({ version, path })}`),
 
   listVersions: (id: string) => apiFetch<VersionList>(`/api/v1/parcels/${enc(id)}/versions`),
 
@@ -219,8 +263,6 @@ export const api = {
     apiFetch<void>(`/api/v1/parcels/${enc(id)}/shares/${enc(email)}`, { method: 'DELETE' }),
 
   /** Parcels other people shared with the caller by email. */
-  listShared: (params: { limit?: number; offset?: number } = {}) =>
-    apiFetch<SharedParcelList>(`/api/v1/shared${query(params)}`),
 
   listTokens: () => apiFetch<TokenList>('/api/v1/tokens'),
 

@@ -51,6 +51,11 @@ export const useServerInfoStore = create<ServerInfoState>((set, get) => ({
   },
 }));
 
+/** Hook: the app's origin, for URLs the app spells out itself (this page's until info loads). */
+export function useAppOrigin(): string {
+  return useServerInfoStore((s) => s.info?.app_origin) ?? window.location.origin;
+}
+
 /** Hook: the loaded server info (non-null inside the boot gate). */
 export function useServerInfo(): ServerInfo {
   const info = useServerInfoStore((s) => s.info);

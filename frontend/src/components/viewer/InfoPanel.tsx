@@ -1,9 +1,12 @@
-import { Database, Download, FileIcon, Pencil, X } from 'lucide-react';
+import { Database, Download, FileIcon, FileText, Pencil, X } from 'lucide-react';
+import type { MouseEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
+import { ArchivedBadge } from '@/components/common/ArchivedBadge';
 import { CopyButton } from '@/components/common/CopyButton';
 import { RelativeTime } from '@/components/common/RelativeTime';
 import { VisibilityBadge } from '@/components/common/VisibilityBadge';
+import { TagChip } from '@/components/tags/TagChip';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useDataSummary } from '@/hooks/useParcelData';
@@ -11,9 +14,16 @@ import { accessLabel } from '@/lib/access';
 import { downloadFile } from '@/lib/api';
 import { formatBytes, percentOf, pluralize } from '@/lib/format';
 import { errorMessage } from '@/lib/http';
-import type { FileEntry, ParcelAccess, ParcelSummary, VersionSummary } from '@/lib/types';
+import { canonicalPath, pageLabel } from '@/lib/refs';
+import type {
+  FileEntry,
+  PageEntry,
+  ParcelAccess,
+  ParcelSummary,
+  SourceInfo,
+  VersionSummary,
+} from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { versionPath } from './VersionMenu';
 
 interface InfoPanelProps {
   parcel: ParcelSummary;
@@ -29,6 +39,19 @@ interface InfoPanelProps {
   ownerName?: string;
   onEdit: () => void;
   onClose: () => void;
+  /** The in-app path of another version (the page in view kept). */
+  versionHref: (version: number) => string;
+  /** A click on a version link (the viewer may hold it to ask about an unsent comment). */
+  onVersionLinkClick?: (event: MouseEvent<HTMLAnchorElement>, href: string) => void;
+  /** Pages of the version in view; null while loading. */
+  pages: PageEntry[] | null;
+  /** The page in the frame. */
+  currentPage: string;
+  onOpenPage: (path: string) => void;
+  /** The link to copy: the canonical URL with the version and page in view. */
+  link: string;
+  /** Where a tag chip goes (the dashboard filtered to it); null: chips aren't links. */
+  tagHref: ((tag: string) => string) | null;
 }
 
 function Meta({ label, children }: { label: string; children: React.ReactNode }) {
@@ -45,6 +68,39 @@ function shortType(contentType: string): string {
 }
 
 const SECTION_HEADING = 'font-medium text-muted-foreground text-xs uppercase tracking-wide';
+
+/** Where the version in view was published from. Only the owner is ever sent this. */
+function SourceSection({ source }: { source: SourceInfo }) {
+  const rows: [string, string][] = [];
+  if (source.repo) rows.push(['Repo', source.repo]);
+  if (source.branch || source.commit) {
+    rows.push([
+      'Branch',
+      [source.branch, source.commit].filter(Boolean).join(source.branch ? ' @ ' : ''),
+    ]);
+  }
+  if (source.host) rows.push(['Machine', source.host]);
+  if (source.client) rows.push(['Via', source.client]);
+  if (rows.length === 0) return null;
+  return (
+    <section className="space-y-2" aria-label="Source">
+      <h3 className={cn(SECTION_HEADING, 'flex items-center gap-2')}>
+        Source
+        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-normal">
+          owner only
+        </span>
+      </h3>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        {rows.map(([label, value]) => (
+          <div key={label} className="contents">
+            <dt className="text-muted-foreground">{label}</dt>
+            <dd className="min-w-0 break-all text-right font-mono text-xs leading-5">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
 
 /** The parcel's stored data (what `window.parcel.data` keeps), when it has any. */
 function DataSection({ parcelId }: { parcelId: string }) {
@@ -94,7 +150,16 @@ export function InfoPanel({
   ownerName,
   onEdit,
   onClose,
+  versionHref,
+  onVersionLinkClick,
+  pages,
+  currentPage,
+  onOpenPage,
+  link,
+  tagHref,
 }: InfoPanelProps) {
+  const tags = parcel.tags ?? [];
+  const pageOf = (path: string) => pages?.find((p) => p.path === path) ?? null;
   const download = (path: string) => {
     downloadFile(parcel.id, version.version, path).catch((err) =>
       toast.error('Download failed', { description: errorMessage(err) }),
@@ -130,12 +195,24 @@ export function InfoPanel({
               </Button>
             )}
           </div>
+          {parcel.archived_at && <ArchivedBadge className="inline-flex" />}
           {parcel.description ? (
             <p className="whitespace-pre-wrap text-muted-foreground text-sm">
               {parcel.description}
             </p>
           ) : (
             <p className="text-muted-foreground text-sm italic">No description.</p>
+          )}
+          {tags.length > 0 ? (
+            <ul className="flex flex-wrap gap-1 pt-1" aria-label="Tags">
+              {tags.map((tag) => (
+                <li key={tag} className="min-w-0 max-w-full">
+                  <TagChip tag={tag} to={tagHref?.(tag)} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            isOwner && <p className="text-muted-foreground text-xs">No tags.</p>
           )}
         </section>
 
@@ -149,6 +226,24 @@ export function InfoPanel({
                 className="h-6 w-6"
                 aria-label="Copy parcel id"
                 toastMessage="Parcel id copied"
+              />
+            </span>
+          </Meta>
+          <Meta label="Link">
+            <span className="inline-flex max-w-full items-center gap-1">
+              <span
+                className="min-w-0 truncate font-mono text-xs"
+                title={link}
+                data-testid="canonical-link"
+              >
+                {canonicalPath(parcel)}
+              </span>
+              <CopyButton
+                value={link}
+                variant="ghost"
+                className="h-6 w-6 shrink-0"
+                aria-label="Copy link"
+                toastMessage="Link copied"
               />
             </span>
           </Meta>
@@ -192,34 +287,69 @@ export function InfoPanel({
             </div>
           ) : (
             <ul className="divide-y rounded-lg border" aria-label="Files">
-              {files.map((file) => (
-                <li key={file.path} className="flex items-center gap-2 py-1.5 pr-1 pl-3">
-                  <FileIcon
-                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                    aria-hidden="true"
-                  />
-                  <div className="min-w-0 flex-1">
+              {files.map((file) => {
+                const page = pageOf(file.path);
+                const open = page !== null && file.path === currentPage;
+                const details = (
+                  <>
                     <p className="truncate font-mono text-xs" title={file.path}>
                       {file.path}
                     </p>
                     <p className="truncate text-[11px] text-muted-foreground">
+                      {page ? `${pageLabel(page)} · ` : ''}
                       {shortType(file.content_type)} · {formatBytes(file.size_bytes)}
                     </p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="h-7 w-7 shrink-0 text-muted-foreground"
-                    onClick={() => download(file.path)}
-                    aria-label={`Download ${file.path}`}
+                  </>
+                );
+                return (
+                  <li
+                    key={file.path}
+                    className={cn(
+                      'flex items-center gap-2 py-1.5 pr-1 pl-3',
+                      open && 'bg-muted/60',
+                    )}
                   >
-                    <Download />
-                  </Button>
-                </li>
-              ))}
+                    {page ? (
+                      <FileText
+                        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <FileIcon
+                        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                    )}
+                    {page ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenPage(file.path)}
+                        aria-current={open ? 'page' : undefined}
+                        aria-label={`Open page ${file.path}`}
+                        className="min-w-0 flex-1 rounded text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {details}
+                      </button>
+                    ) : (
+                      <div className="min-w-0 flex-1">{details}</div>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="h-7 w-7 shrink-0 text-muted-foreground"
+                      onClick={() => download(file.path)}
+                      aria-label={`Download ${file.path}`}
+                    >
+                      <Download />
+                    </Button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
+
+        {isOwner && version.source && <SourceSection source={version.source} />}
 
         <DataSection parcelId={parcel.id} />
 
@@ -234,7 +364,8 @@ export function InfoPanel({
                 return (
                   <li key={v.version}>
                     <Link
-                      to={versionPath(parcel.id, v.version, parcel.current_version)}
+                      to={versionHref(v.version)}
+                      onClick={(event) => onVersionLinkClick?.(event, versionHref(v.version))}
                       aria-current={active ? 'page' : undefined}
                       className={cn(
                         'flex items-start gap-3 rounded-md px-2 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',

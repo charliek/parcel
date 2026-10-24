@@ -144,3 +144,60 @@ export async function catchSignIn(page: Page): Promise<URL[]> {
   });
   return seen;
 }
+
+export interface UploadFile {
+  /** The published path. */
+  path: string;
+  body: string | Buffer;
+  mimeType?: string;
+}
+
+/**
+ * Publish through the API with any metadata and several files (dev auth).
+ * Returns the publish result.
+ */
+export async function publishViaApi(
+  request: APIRequestContext,
+  { metadata = {}, files, parcel }: { metadata?: object; files: UploadFile[]; parcel?: string },
+): Promise<any> {
+  const form = new FormData();
+  form.append('metadata', JSON.stringify(metadata));
+  for (const file of files) {
+    const type = file.mimeType ?? (file.path.endsWith('.md') ? 'text/markdown' : 'text/html');
+    const bytes = typeof file.body === 'string' ? file.body : new Uint8Array(file.body);
+    form.append('file', new Blob([bytes], { type }), file.path);
+  }
+  const url = parcel ? `/api/v1/parcels/${parcel}/versions` : '/api/v1/parcels';
+  const response = await request.post(url, { multipart: form });
+  expect(response.ok(), await response.text()).toBe(true);
+  return response.json();
+}
+
+/** PATCH a parcel through the API. */
+export async function patchParcelViaApi(
+  request: APIRequestContext,
+  id: string,
+  body: object,
+): Promise<any> {
+  const response = await request.patch(`/api/v1/parcels/${id}`, { data: body });
+  expect(response.ok(), await response.text()).toBe(true);
+  return response.json();
+}
+
+/** The dev user's handle. */
+export async function myHandle(request: APIRequestContext): Promise<string> {
+  const me = await (await request.get('/api/v1/me')).json();
+  return me.handle as string;
+}
+
+/** A word of lowercase letters only (full-text search splits on digits and `-`). */
+export function uniqWord(prefix: string): string {
+  let word = '';
+  while (word.length < 10) word += String.fromCharCode(97 + Math.floor(Math.random() * 26));
+  return `${prefix}${word}`;
+}
+
+/** A tag value unique to this run (lowercase letters, digits and `-`). */
+export function uniqTag(prefix: string): string {
+  return uniq(prefix).toLowerCase();
+}

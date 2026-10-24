@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  contentPath,
   contentToken,
+  contentUrlFor,
   copyAnchor,
   isVerifiedReady,
   MAX_ANCHOR_TEXT_CHARS,
@@ -89,10 +91,17 @@ describe('parsePageMessage', () => {
   it('parses ready', () => {
     expect(
       parsePageMessage(msg('ready', { path: 'index.html', title: 'Hi', version: 3, token: TOKEN })),
-    ).toEqual({ type: 'ready', path: 'index.html', title: 'Hi', version: 3, token: TOKEN });
+    ).toEqual({
+      type: 'ready',
+      path: 'index.html',
+      title: 'Hi',
+      version: 3,
+      token: TOKEN,
+      hash: '',
+    });
     expect(
       parsePageMessage(msg('ready', { path: 'a.html', version: Number.NaN, token: TOKEN })),
-    ).toEqual({ type: 'ready', path: 'a.html', title: '', version: null, token: TOKEN });
+    ).toEqual({ type: 'ready', path: 'a.html', title: '', version: null, token: TOKEN, hash: '' });
     expect(
       parsePageMessage(msg('ready', { path: '../etc', title: 'x', version: 1, token: TOKEN })),
     ).toBeNull();
@@ -100,6 +109,19 @@ describe('parsePageMessage', () => {
       msg('ready', { path: 'a.html', title: 'x'.repeat(5000), token: TOKEN }),
     );
     expect(long?.type === 'ready' && long.title.length).toBe(300);
+  });
+
+  it('keeps only a short, printable fragment', () => {
+    const ready = (hash: unknown) =>
+      parsePageMessage(msg('ready', { path: 'a.html', token: TOKEN, hash }));
+    expect(ready('#intro')).toMatchObject({ hash: '#intro' });
+    expect(ready('#caf%C3%A9')).toMatchObject({ hash: '#caf%C3%A9' });
+    for (const bad of ['intro', '#', '#a b', '#\u0000', `#${'x'.repeat(200)}`, 7, null]) {
+      expect(ready(bad)).toMatchObject({ hash: '' });
+    }
+    expect(parsePageMessage(msg('hash', { hash: '#s2' }))).toEqual({ type: 'hash', hash: '#s2' });
+    expect(parsePageMessage(msg('hash', { hash: '' }))).toEqual({ type: 'hash', hash: '' });
+    expect(parsePageMessage(msg('hash', {}))).toEqual({ type: 'hash', hash: '' });
   });
 
   it('requires a token on ready, as an opaque bounded string', () => {
@@ -233,6 +255,7 @@ describe('isVerifiedReady', () => {
     title: '',
     version: 1,
     token,
+    hash: '',
   });
 
   it('accepts only the token of the URL the frame was given', () => {
@@ -252,5 +275,36 @@ describe('isVerifiedReady', () => {
   it('round-trips with contentToken', () => {
     const expected = contentToken(`http://127.0.0.1:18110/v/${TOKEN}/index.html`);
     expect(isVerifiedReady(ready(TOKEN), expected)).toBe(true);
+  });
+});
+
+describe('contentPath', () => {
+  it('reads the page a content URL opens', () => {
+    expect(contentPath('https://c.test/v/tok.en/index.html')).toBe('index.html');
+    expect(contentPath('https://c.test/v/tok/docs/a%20b.html')).toBe('docs/a b.html');
+    expect(contentPath('https://c.test/v/tok/')).toBeNull();
+    expect(contentPath('not a url')).toBeNull();
+  });
+});
+
+describe('contentUrlFor', () => {
+  const url = `https://c.test/v/${TOKEN}/index.html`;
+
+  it("is the grant's own URL for the page it opened", () => {
+    expect(contentUrlFor(url, 'index.html')).toBe(url);
+    expect(contentUrlFor(`${url}#top`, 'index.html')).toBe(url);
+  });
+
+  it('spells another page the way a relative link to it would', () => {
+    expect(contentUrlFor(url, 'two.html')).toBe(`https://c.test/v/${TOKEN}/two.html`);
+    expect(contentUrlFor(url, 'docs/a b.html')).toBe(`https://c.test/v/${TOKEN}/docs/a%20b.html`);
+    // Characters that would end the path are escaped, not interpreted.
+    expect(contentUrlFor(url, 'q?.html')).toBe(`https://c.test/v/${TOKEN}/q%3F.html`);
+    expect(contentUrlFor(url, '50%#.html')).toBe(`https://c.test/v/${TOKEN}/50%25%23.html`);
+  });
+
+  it('is null for a URL that is not a content URL', () => {
+    expect(contentUrlFor('https://c.test/elsewhere', 'index.html')).toBeNull();
+    expect(contentUrlFor('not a url', 'index.html')).toBeNull();
   });
 });

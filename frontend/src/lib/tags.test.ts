@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { normalizeTag, normalizeTags } from './tags';
+import { groupTags, normalizeTag, normalizeTags, tagNamespace, tagValue } from './tags';
 
 // The case list the Rust implementation is tested against too.
 interface TagCases {
@@ -46,5 +46,26 @@ describe('normalizeTags', () => {
       error: 'invalid',
       tag: 'not fine!',
     });
+  });
+});
+
+describe('groupTags', () => {
+  it('orders projects, kinds, other namespaces, then bare tags', () => {
+    const groups = groupTags(
+      ['auth', 'team:web', 'kind:plan', 'project:roost', 'area:ios', 'project:parcel'],
+      (t) => t,
+    );
+    expect(groups.map((g) => [g.label, g.items])).toEqual([
+      ['Projects', ['project:roost', 'project:parcel']],
+      ['Kind', ['kind:plan']],
+      ['Area', ['area:ios']],
+      ['Team', ['team:web']],
+      ['Tags', ['auth']],
+    ]);
+  });
+
+  it('splits namespace and value', () => {
+    expect([tagNamespace('project:a:b'), tagValue('project:a:b')]).toEqual(['project', 'a:b']);
+    expect([tagNamespace('auth'), tagValue('auth')]).toEqual(['', 'auth']);
   });
 });

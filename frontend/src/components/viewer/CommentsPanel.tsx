@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { anchorLabel, countThreads } from '@/lib/comments';
 import { errorMessage } from '@/lib/http';
-import type { Comment, CommentAnchor } from '@/lib/types';
+import type { Comment, CommentAnchor, PageEntry } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { CommentComposer } from './CommentComposer';
 import { CommentThread } from './CommentThread';
@@ -29,6 +29,10 @@ interface CommentsPanelProps {
   missing: ReadonlySet<number>;
   active: number | null;
   onActivate: (thread: Comment) => void;
+  /** Pages of the version in view (null while loading). */
+  pages: PageEntry[] | null;
+  /** Open the page a thread on another page points at, then show it there. */
+  onOpenThreadPage: (thread: Comment) => void;
   /** Scroll to and focus this thread (the nonce repeats a reveal of the same one). */
   reveal: { number: number; nonce: number } | null;
   commentMode: boolean;
@@ -63,6 +67,8 @@ export function CommentsPanel({
   missing,
   active,
   onActivate,
+  pages,
+  onOpenThreadPage,
   reveal,
   commentMode,
   onStartCommenting,
@@ -184,6 +190,8 @@ export function CommentsPanel({
                   missing={missing.has(thread.number)}
                   active={active === thread.number}
                   onActivate={() => onActivate(thread)}
+                  pages={pages}
+                  onOpenPage={() => onOpenThreadPage(thread)}
                   onDelete={setDeleting}
                   onComposingChange={onComposingChange}
                 />
