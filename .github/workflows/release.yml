@@ -2,7 +2,7 @@ name: Release (server image)
 
 # Builds and pushes the parcel-server image on date tags (vYYYY.MM.DD[.N]),
 # the fleet's /deploy:build convention. CLI releases use semver tags and
-# release-cli.yml. Not yet exercised: no date tag has been pushed.
+# release-cli.yml. First run: v2026.10.25.
 
 on:
   push:
