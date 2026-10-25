@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.2.0
+
+The CLI and both plugins for the server's tags, slugs, search and pages
+(server `v2026.10.25`, which has the full list). Against an older server the
+CLI refuses the new flags with "this server doesn't support … yet" instead of
+silently ignoring them; everything from v0.1.2 keeps working.
+
+### CLI (`parcel`)
+- **Refs everywhere:** any `<ref>` takes an id, a `/p/<id>[/v/<n>]` or
+  `/@handle/slug?v=&page=#fragment` URL, `@handle/slug`, or one of your own
+  slugs.
+- **Organize:** `publish --tag/--kind/--slug/--project` (inside a git repo a
+  new parcel gets `project:<origin repo>` automatically; `--no-auto-tags`,
+  `--no-source`), `--slug` upserts so republishing from any machine versions
+  the same parcel; `update --add-tag/--remove-tag/--set-tags/--slug/
+  --archive/--unarchive`; new `tag`, `archive`, `unarchive`, `tags`
+  (`rename`, `delete`) and `handle`.
+- **Find:** `list --tag/--project/--kind`, `-q` full text with a snippet
+  under each match, `--all`, `--archived`/`--archived-only`.
+- **Link and pages:** `link <ref> [--page PATH] [--markdown]` and
+  `open --page` print the clean (canonical) URL; `info` shows tags, slug,
+  archive state, pages with titles and the version's source (owner only).
+- Each publish records a credential-free source (repo, branch, commit,
+  host, CLI version); the server shows it only to the owner.
+
+### Claude Code plugins
+- `parcel`: the skill teaches organizing and finding parcels (tag
+  conventions and kinds, slugs for plans, look before publishing, how
+  search matches).
+- `parcel-mcp`: the skill covers the 25 MCP tools, including `list_tags`,
+  `rename_tag`, `delete_tag`, slug upserts and refs.
+
 ## v2026.10.25
 
 Tags, slugs, archive, full-text search and pages (PLAN.md, "Tags, slugs,
