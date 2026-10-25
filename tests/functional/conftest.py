@@ -797,7 +797,10 @@ def legacy_cli_bin() -> Path:
     if not _is_worktree(source):
         # CI's cache restores target/ (this directory included) into a fresh
         # clone that has no worktree registered for it: start over.
-        shutil.rmtree(source, ignore_errors=True)
+        if source.is_symlink():
+            source.unlink()
+        else:
+            shutil.rmtree(source, ignore_errors=True)
         _git("worktree", "prune")
         added = _git("worktree", "add", "--force", "--detach", str(source), commit)
         if added.returncode != 0:
@@ -831,7 +834,9 @@ def legacy_cli_bin() -> Path:
 
 def _is_worktree(path: Path) -> bool:
     """Whether `path` is the top of a git worktree this clone knows about."""
-    if not (path / "Cargo.toml").exists():
+    # Never a link (it could lead back to ROOT, where the fixture's forced
+    # checkout would discard the developer's changes).
+    if path.is_symlink() or not (path / "Cargo.toml").exists():
         return False
     def rev_parse(where: Path, *args: str) -> Path | None:
         out = subprocess.run(
