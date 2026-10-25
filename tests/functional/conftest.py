@@ -794,7 +794,13 @@ def legacy_cli_bin() -> Path:
     stamp.unlink(missing_ok=True)
     binary.unlink(missing_ok=True)
     source = LEGACY_CLI_DIR / "src"
-    if not (source / "Cargo.toml").exists():
+    if not _is_worktree(source):
+        # CI's cache restores target/ (this directory included) into a fresh
+        # clone that has no worktree registered for it: start over.
+        if source.is_symlink():
+            source.unlink()
+        else:
+            shutil.rmtree(source, ignore_errors=True)
         _git("worktree", "prune")
         added = _git("worktree", "add", "--force", "--detach", str(source), commit)
         if added.returncode != 0:
@@ -824,6 +830,26 @@ def legacy_cli_bin() -> Path:
     assert binary.exists(), binary
     stamp.write_text(commit + "\n")
     return binary
+
+
+def _is_worktree(path: Path) -> bool:
+    """Whether `path` is the top of a git worktree this clone knows about."""
+    # Never a link (it could lead back to ROOT, where the fixture's forced
+    # checkout would discard the developer's changes).
+    if path.is_symlink() or not (path / "Cargo.toml").exists():
+        return False
+    def rev_parse(where: Path, *args: str) -> Path | None:
+        out = subprocess.run(
+            ["git", "-C", str(where), "rev-parse", "--path-format=absolute", *args],
+            capture_output=True, text=True, check=False,
+        )
+        return Path(out.stdout.strip()).resolve() if out.returncode == 0 else None
+
+    # The top of a work tree, and one sharing ROOT's repository (a standalone
+    # clone left in the cache is a work tree too, of another repository).
+    return rev_parse(path, "--show-toplevel") == path.resolve() and rev_parse(
+        path, "--git-common-dir"
+    ) == rev_parse(ROOT, "--git-common-dir")
 
 
 @pytest.fixture
