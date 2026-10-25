@@ -131,5 +131,3 @@ in dev. Keep them strong but pragmatic: a library never holds parcel back.
   and check nobody claimed the next minor; docs-only release commit (dated
   CHANGELOG, README `tag` snippets); local merge commit, annotated tag on it;
   send peers the SHA.
-- **Gap.** parcel isn't in the library's `scripts/downstream-check.sh` yet:
-  add it at the next tag (Postgres 5439, fake-gcs 4447, env unset).
