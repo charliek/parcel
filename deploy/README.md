@@ -176,6 +176,19 @@ invoker, and probes both domains. By hand, with your own gcloud login:
 
 Full-text search (migration 0006) needs no deploy step of its own:
 each parcel's page text is extracted after its next publish, and the server's
-backfill loop fills in the rest a batch a minute. To index everything at once,
-run `parcel-server reindex` with the service's environment (a one-off Cloud Run
-job, like the migrate one); it is safe to repeat.
+backfill loop fills in the rest a batch a minute. The service runs with CPU
+throttling, so that loop only advances while the instance is serving requests
+(the deploy's health probes were enough to index production's parcels on
+v2026.10.25). To index everything at once, run `parcel-server reindex` as a
+one-off Cloud Run job with the migrate job's settings plus `BLOB_BACKEND=gcs`
+and `GCS_BUCKET`; it is safe to repeat:
+
+```bash
+gcloud run jobs deploy parcel-reindex --region us-central1 --image <image@digest> \
+  --service-account parcel-prod@projects-413401.iam.gserviceaccount.com \
+  --command parcel-server --args reindex --max-retries 0 \
+  --set-env-vars APP_ENV=production,LOG_FORMAT=json,PARCEL_APP_ORIGIN=https://parcel.stridelabs.ai,PARCEL_CONTENT_ORIGIN=https://parcelcontent.stridelabs.ai,BLOB_BACKEND=gcs,GCS_BUCKET=parcel-prod-blobs \
+  --set-secrets DATABASE_URL=prod-parcel-database-url-direct:latest,PARCEL_CONTENT_SIGNING_KEY=prod-parcel-content-signing-key:latest \
+  --execute-now --wait
+gcloud run jobs delete parcel-reindex --region us-central1 --quiet
+```

@@ -134,7 +134,7 @@ slauth registers as `http://localhost:3118/callback`; change both together.
 
 ## One-time setup
 
-Do these once, after the repo is pushed to `github.com/charliek/parcel`. Status as of 2026-10-18: 1–5 done, 6 skipped, 7 done (v0.1.2).
+Do these once, after the repo is pushed to `github.com/charliek/parcel`. Status as of 2026-10-25: all done.
 
 1. ✅ **Push the repo** and keep it **public** — the homebrew job downloads the
    release tarballs anonymously to hash them.
@@ -157,10 +157,12 @@ Do these once, after the repo is pushed to `github.com/charliek/parcel`. Status 
 5. ✅ **apt-charliek:** add a `parcel` entry to `apt-charliek/packages.yaml`
    (source repo `charliek/parcel`, asset glob `parcel_*.deb`), following the
    existing `strix` entry.
-6. ⏭ Skipped while this repo commits straight to `main` (CLAUDE.md); without a ruleset the release skill pushes directly. If one is added later: **Branch protection on `main`:** a ruleset requiring `ci-success`, with the
-   release-bot App (type `Integration`) and the Admin role (id `5`,
-   `RepositoryRole`) as bypass actors so `/release-workflows:release` can push
-   the changelog and version commits plus the tag.
+6. ✅ **Branch protection on `main`** (2026-10-25): the `main-protection`
+   ruleset (as strix's) requires `ci-success`, blocks deletion and
+   force-pushes, and lists the release-bot App (type `Integration`, id
+   `3902108`) and the Admin role (id `5`, `RepositoryRole`) as bypass actors.
+   Regular work goes through PRs; `/release-workflows:release` and
+   `/deploy:build` push their commits and tags through the bypass.
 7. ✅ **First release** (v0.1.2): the tree starts at `0.1.0`. Cut `v0.1.1` (or `v0.1.0`
    after confirming nothing has been tagged) with the release skill; the
    version-bump commit must be a real change, so pick a version other than the
