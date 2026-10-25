@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## v2026.10.25
 
 Tags, slugs, archive, full-text search and pages (PLAN.md, "Tags, slugs,
 archive and search (v0.5)"). Everything is additive: an older CLI keeps
@@ -89,6 +89,14 @@ working against the new server, and the server deploys before the CLI.
   where both revisions run, a transaction can fail with a deadlock (40P01)
   and the client retries.
 - Dev builds use line-tables-only debug info (none for dependencies).
+
+### Fixed
+- Refs: `?v=` pins only clean (`/@handle/slug`) and slug refs; an id URL is
+  pinned by `/v/<n>`, as the web app reads it.
+- The web app refreshes cached slug resolutions after a delete, publish, slug
+  or handle change, so a reused name never opens the parcel that held it.
+- The functional suite rebuilds the released-CLI worktree when CI's cache
+  restored its folder without the worktree.
 
 ### Security
 - `make lint` and CI now run `cargo deny --locked check` (advisories, yanked
