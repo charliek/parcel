@@ -186,9 +186,13 @@ and `GCS_BUCKET`; it is safe to repeat:
 ```bash
 gcloud run jobs deploy parcel-reindex --region us-central1 --image <image@digest> \
   --service-account parcel-prod@projects-413401.iam.gserviceaccount.com \
-  --command parcel-server --args reindex --max-retries 0 \
+  --command parcel-server --args reindex --max-retries 0 --task-timeout 1h \
   --set-env-vars APP_ENV=production,LOG_FORMAT=json,PARCEL_APP_ORIGIN=https://parcel.stridelabs.ai,PARCEL_CONTENT_ORIGIN=https://parcelcontent.stridelabs.ai,BLOB_BACKEND=gcs,GCS_BUCKET=parcel-prod-blobs \
   --set-secrets DATABASE_URL=prod-parcel-database-url-direct:latest,PARCEL_CONTENT_SIGNING_KEY=prod-parcel-content-signing-key:latest \
-  --execute-now --wait
-gcloud run jobs delete parcel-reindex --region us-central1 --quiet
+  --execute-now --wait \
+  && gcloud run jobs delete parcel-reindex --region us-central1 --quiet
 ```
+
+The task timeout is generous (the default is 10 minutes); a reindex cut short
+just leaves the rest to the backfill, and re-running continues it. A failed
+run keeps the job for its logs.

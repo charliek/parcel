@@ -38,7 +38,7 @@ container image is deployed separately (see `deploy/`).
 
 ## TL;DR
 
-    /release-workflows:release v0.1.1
+    /release-workflows:release vX.Y.Z      # latest: v0.2.0 (2026-10-25)
 
 Everything after that is automatic.
 
@@ -163,10 +163,9 @@ Do these once, after the repo is pushed to `github.com/charliek/parcel`. Status 
    `3902108`) and the Admin role (id `5`, `RepositoryRole`) as bypass actors.
    Regular work goes through PRs; `/release-workflows:release` and
    `/deploy:build` push their commits and tags through the bypass.
-7. ✅ **First release** (v0.1.2): the tree starts at `0.1.0`. Cut `v0.1.1` (or `v0.1.0`
-   after confirming nothing has been tagged) with the release skill; the
-   version-bump commit must be a real change, so pick a version other than the
-   one already in `Cargo.toml`.
+7. ✅ **First release:** v0.1.2 (2026-10-18; v0.1.1 stopped at `ci-gate`, see
+   the status note at the top). The version-bump commit must be a real change,
+   so a release always picks a version other than the one in `Cargo.toml`.
 
 ## When things break
 
