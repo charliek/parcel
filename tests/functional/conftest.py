@@ -833,11 +833,18 @@ def _is_worktree(path: Path) -> bool:
     """Whether `path` is the top of a git worktree this clone knows about."""
     if not (path / "Cargo.toml").exists():
         return False
-    top = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, check=False,
-    )
-    return top.returncode == 0 and Path(top.stdout.strip()).resolve() == path.resolve()
+    def rev_parse(where: Path, *args: str) -> Path | None:
+        out = subprocess.run(
+            ["git", "-C", str(where), "rev-parse", "--path-format=absolute", *args],
+            capture_output=True, text=True, check=False,
+        )
+        return Path(out.stdout.strip()).resolve() if out.returncode == 0 else None
+
+    # The top of a work tree, and one sharing ROOT's repository (a standalone
+    # clone left in the cache is a work tree too, of another repository).
+    return rev_parse(path, "--show-toplevel") == path.resolve() and rev_parse(
+        path, "--git-common-dir"
+    ) == rev_parse(ROOT, "--git-common-dir")
 
 
 @pytest.fixture
