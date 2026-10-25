@@ -234,7 +234,8 @@ first, so concurrent publishes stay bounded as on the REST API.
 
 ## Later
 
-- Per-parcel origins (wildcard subdomain) to allow storage inside parcels.
+Tracked as GitHub issues (see ROADMAP.md), e.g. per-parcel origins to allow
+storage inside parcels (#12).
 
 ## HTTP surface (MVP)
 
@@ -683,9 +684,9 @@ callers). `ServerInfo.auth` becomes `{mode, providers: [{id, label}]}` plus
 After a provider refuses someone (wrong domain), its own session may still
 be signed in, so choosing it again refuses again until they sign out there.
 
-Not now (ROADMAP): groups from provider claims, an editor role, invite
-emails/notifications, an admin UI (disable users, see sign-ins), SCIM,
-discovery of internal parcels.
+Not now (tracked as GitHub issues): groups from provider claims (#14), an editor
+role (#13), invite emails/notifications (#15), an admin UI and SCIM (#17),
+discovery of internal parcels (#16).
 
 ## Status (2026-10-16)
 
@@ -771,7 +772,7 @@ configuration the query uses.
 
 Deviations from the original brief, by design:
 - CLI auth is a device flow + app-local `pcl_` tokens rather than slauth PATs or
-  a loopback OAuth client (see "Auth"). Accepting slauth PATs too is on the roadmap.
+  a loopback OAuth client (see "Auth"). Accepting slauth PATs too is tracked in #22.
 - Nothing is deployed: Cloud Run/Neon/GCS/DNS setup is scripted and documented in
   `deploy/README.md` but not executed; GitHub workflows are written but not run.
 - slauth registration lives on slauth's local `feature/add-parcel-app` branch
