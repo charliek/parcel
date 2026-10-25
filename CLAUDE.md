@@ -107,8 +107,6 @@ Also (PLAN.md, "Tags, slugs, archive and search"):
 - Config reads go through `Config::from_lookup`; tests never mutate process
   env and get an isolated Postgres schema per `TestApp` (`tests/common/mod.rs`).
 - Comments explain *why*, at the surrounding density.
-- Commit straight to `main` while the project is being set up (larger plans
-  use a feature branch and one PR).
 
 ## Shared libraries (stridelabs-*)
 
