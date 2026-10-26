@@ -19,9 +19,11 @@
 //! is shorter than its client's per-attempt timeout, so a timed-out attempt
 //! is never retried, while quick transient failures still are. Worst cases:
 //! a reader waits about 10 s of quick retries plus one 30 s attempt; a
-//! writer about 30 s plus one 60 s attempt. A GC delete runs while it holds
-//! the blob row's lock (`gc.rs`), so that lock is held within the writer's
-//! bound: accepted.
+//! writer about 30 s plus one 60 s attempt. GC deletes a batch's objects
+//! one after another while it holds that batch's blob-row locks (`gc.rs`),
+//! so a lock lasts for the whole batch: each delete within the writer's
+//! bound, the batch their sum. Accepted: ordering is unchanged, and only a
+//! publish touching one of those blobs waits.
 //!
 //! **Object names** go to GCS as given ([`ObjectNamePolicy::Literal`]), with
 //! `GCS_PREFIX` (outer slashes trimmed, nothing else) and a `/` in front of

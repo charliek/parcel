@@ -3,6 +3,18 @@
 ## [Unreleased]
 
 ### Changed
+- **Deadlocks are retried once.** A publish, new version, restore, PATCH,
+  tag rename or tag delete that hits a deadlock or serialization failure
+  (SQLSTATE 40P01/40001) is retried once after a short jittered wait,
+  instead of failing with a 500. Blob uploads are not repeated.
+- **Database errors are logged value-free.** Unexpected database errors are
+  logged with the call site, SQLSTATE and a fixed description only, never
+  PostgreSQL's message, DETAIL or HINT (which can quote input values).
+- Search vectors are rebuilt only when a parcel's title, description, tags
+  or page text actually change (migration 0009), so a visibility-only change
+  or a new version over already-empty page text no longer recomputes them.
+- A search `q` (or `/tags` `prefix`) containing a NUL character is a 400; it
+  was a 500.
 - **Search falls back to any word.** `q` (`GET /api/v1/parcels`, the web
   app's search, `parcel list -q`, MCP `list_parcels`): every word must
   match; when nothing does, parcels matching any of the words are returned,
