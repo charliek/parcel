@@ -4,7 +4,7 @@ mod common;
 
 use std::sync::Arc;
 
-use parcel_server::db::parcels::{self, ListFilter};
+use parcel_server::db::parcels::{self, ListFilter, SearchMode};
 use parcel_server::state::AppState;
 use parcel_server::storage::{blob_key, BlobStore, MemoryBlobStore};
 use parcel_types::{ArchivedFilter, ListScope};
@@ -197,7 +197,7 @@ async fn tags_and_search_reach_existing_parcels() {
         (Some("capybara"), false), // page text: not extracted yet
         (None, true),
     ] {
-        let (rows, total) = parcels::search(&pool, &mine(owner, query), 50, 0)
+        let (rows, total) = parcels::search(&pool, &mine(owner, query), SearchMode::Exact, 50, 0)
             .await
             .unwrap();
         assert_eq!(total, i64::from(found), "{query:?}");
@@ -214,9 +214,15 @@ async fn tags_and_search_reach_existing_parcels() {
         .await
         .unwrap();
     assert_eq!(report.indexed, 1);
-    let (rows, total) = parcels::search(&pool, &mine(owner, Some("capybara")), 50, 0)
-        .await
-        .unwrap();
+    let (rows, total) = parcels::search(
+        &pool,
+        &mine(owner, Some("capybara")),
+        SearchMode::Exact,
+        50,
+        0,
+    )
+    .await
+    .unwrap();
     assert_eq!(total, 1);
     let snippet = parcel_server::search::segments(rows[0].headline.as_deref().unwrap()).unwrap();
     assert!(
@@ -493,9 +499,15 @@ async fn the_search_vector_guard_meets_existing_parcels_and_old_revisions() {
         apply(&pool, sql).await.expect(name);
     }
     // Existing vectors are untouched by the migration, and still match.
-    let (rows, total) = parcels::search(&pool, &mine(owner, Some("capybara")), 50, 0)
-        .await
-        .unwrap();
+    let (rows, total) = parcels::search(
+        &pool,
+        &mine(owner, Some("capybara")),
+        SearchMode::Exact,
+        50,
+        0,
+    )
+    .await
+    .unwrap();
     assert_eq!((rows.len(), total), (1, 1));
 
     let sentinel = "UPDATE parcels SET search_vec = 'sentinel'::tsvector";
@@ -534,9 +546,10 @@ async fn the_search_vector_guard_meets_existing_parcels_and_old_revisions() {
     }
     assert!(!is_sentinel().await, "clearing the text rebuilds it");
     for (query, found) in [("capybara", false), ("ocelot", true)] {
-        let (_, total) = parcels::search(&pool, &mine(owner, Some(query)), 50, 0)
-            .await
-            .unwrap();
+        let (_, total) =
+            parcels::search(&pool, &mine(owner, Some(query)), SearchMode::Exact, 50, 0)
+                .await
+                .unwrap();
         assert_eq!(total, i64::from(found), "{query}");
     }
 

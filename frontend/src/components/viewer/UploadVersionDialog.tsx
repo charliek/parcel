@@ -22,6 +22,7 @@ import { api } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
 import { ApiError, errorMessage } from '@/lib/http';
 import { queryClient } from '@/lib/query-client';
+import { canonicalPath } from '@/lib/refs';
 import type { FileEntry, ParcelSummary, PublishMode } from '@/lib/types';
 import { buildPublishForm } from '@/lib/upload';
 import { cn } from '@/lib/utils';
@@ -116,7 +117,9 @@ function UploadVersionForm({ parcel, currentFiles, onOpenChange }: UploadVersion
       await invalidateParcel(queryClient, parcel.id);
       toast.success(`Published version ${result.version.version}`);
       onOpenChange(false);
-      navigate(`/p/${parcel.id}`);
+      // The current version at the parcel's canonical address (as a new
+      // parcel lands), also when the upload started from a pinned version.
+      navigate(canonicalPath(result.parcel));
     } catch (err) {
       setProgress(null);
       const conflict = err instanceof ApiError && err.status === 409;

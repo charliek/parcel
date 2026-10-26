@@ -37,7 +37,8 @@ Errors print one line (sometimes followed by an indented list) on stderr as
 | `another of your parcels already has this slug` (409) | `--slug` on `update` (or `PATCH`) names a slug another of your parcels holds | Pick another slug; to version that parcel, `publish --slug` instead |
 | `no parcel has the slug "x" yet, so there is no base_version to check` (409) | `publish --slug S --base-version N` before the first publish | Drop `--base-version` for the first publish |
 | `"x" is not a parcel id or URL (expected a 12-character id, …)` | A bare ref that is neither an id nor a valid slug: often a one-segment slug of 10–14 id-alphabet letters (`management`) | Use `@<handle>/<slug>` or the clean URL |
-| `list -q` finds nothing, though the parcel exists | Search needs every word (stemmed) in the title, description, tags or entry page's text | Use two or three distinctive words, `or` or quotes; add `--all` / `--archived` |
+| `list -q` finds nothing, though the parcel exists | Search matches stemmed words in the title, description, tags or entry page's text: every word must match; when nothing does, parcels matching any of the words are returned, best first, and marked relaxed; operators (quotes, `-word`, `or`) turn that off; an empty relaxed list means no parcel in scope has any of the words | Try other distinctive words; add `--all` / `--archived` |
+| `list -q` says "No exact matches; showing parcels that match any of the words." | No parcel has every word, so the list is the relaxed one: those with the most words first | Read the top rows; add a word they lack, or quote a phrase / use `-word` / `or` for an exact search |
 | `could not connect to <server>` | Server down, wrong URL, or offline | `parcel config show` to check the server; retry later |
 | `warning: skipping symlink …` | Folder publishes don't follow symlinks | `--file <published>=<target>` to include it explicitly |
 

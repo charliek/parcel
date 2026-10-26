@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import json
+import random
+import string
 import time
 
 import httpx
@@ -25,9 +28,14 @@ def found(api: httpx.Client, q: str, **params) -> dict:
         time.sleep(0.1)
 
 
+def word(prefix: str) -> str:
+    """A word of letters only (full-text search splits on digits), unique to this run."""
+    return prefix + "".join(random.choices(string.ascii_lowercase, k=10))
+
+
 def test_server_lists_its_features(server):
     info = httpx.get(f"{server.app_url}/api/v1/info").json()
-    assert {"tags", "search", "archive", "slugs", "pages"} <= set(info["features"])
+    assert {"tags", "search", "archive", "slugs", "pages", "search-relaxed"} <= set(info["features"])
 
 
 def test_tags_filter_count_rename_and_delete(api: Browser, stranger: Browser):
@@ -144,3 +152,26 @@ def test_the_current_cli_lists_tagged_and_archived_parcels(cli: Cli, api: Browse
     assert "Tagged for the CLI" in out and "Archived for the CLI" not in out
     listed = cli.json("list", token=user)
     assert [p["tags"] for p in listed["parcels"] if p["id"] == pid] == [["kind:plan"]]
+
+
+def test_a_search_nothing_matches_exactly_relaxes(cli: Cli, api: Browser, user: str):
+    # Titles are searchable as soon as the publish commits.
+    a, b = word("ka"), word("kb")
+    first = publish(api, {"index.html": "<p>x</p>"}, {"title": f"Notes on {a}", "tags": ["birds"]})
+    second = publish(api, {"index.html": "<p>x</p>"}, {"title": f"Notes on {b}"})
+    expected = sorted(r.json()["parcel"]["id"] for r in (first, second))
+
+    listing = api.get("/api/v1/parcels", params={"q": f"{a} {b}"}).json()
+    assert listing["relaxed"] is True and sorted(ids(listing)) == expected
+    assert "relaxed" not in api.get("/api/v1/parcels", params={"q": a}).json()
+    tags = api.get("/api/v1/tags", params={"q": f"{a} {b}"}).json()
+    assert tags == {"tags": [{"tag": "birds", "count": 1}], "total": 1, "relaxed": True}
+
+    # The CLI: the body as is on stdout with --json, the notice on stderr only.
+    out = cli.run("list", "-q", f"{a} {b}", "--json", token=user)
+    assert json.loads(out.stdout)["relaxed"] is True and out.stderr == ""
+    out = cli.run("list", "-q", f"{a} {b}", token=user)
+    assert out.stderr == "No exact matches; showing parcels that match any of the words.\n"
+    assert a in out.stdout and b in out.stdout and "No exact matches" not in out.stdout
+    out = cli.run("list", "-q", a, token=user)
+    assert out.stderr == "" and a in out.stdout

@@ -117,6 +117,12 @@ pub fn install(dirs: &[PathBuf], force: bool) -> Result<Vec<(PathBuf, Outcome)>>
 mod tests {
     use super::*;
 
+    /// How search matches, in the words every skill, PLAN.md and the
+    /// CHANGELOG use (plan 002 §3.4).
+    const RELAXED_RULE: &str = "every word must match; when nothing does, parcels matching \
+        any of the words are returned, best first, and marked relaxed; operators (quotes, \
+        `-word`, `or`) turn that off";
+
     fn repo_skill_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/parcel")
     }
@@ -260,7 +266,8 @@ mod tests {
             "--page",
             "parcel archive",
             "@<handle>/",
-            "every word",
+            RELAXED_RULE,
+            "No exact matches; showing parcels that match any of the words.",
             "two or three distinctive words",
             "as its git remote spells it",
         ] {
@@ -323,7 +330,8 @@ mod tests {
             "@handle/slug",
             "project:",
             "kind:",
-            "every word",
+            RELAXED_RULE,
+            "relaxed: true",
             "two or three distinctive words",
         ] {
             assert!(

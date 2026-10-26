@@ -127,7 +127,9 @@ async fn a_user_without_a_handle_gets_one_lazily() {
         archived: parcel_types::ArchivedFilter::Exclude,
         query: None,
     };
-    let (rows, total) = parcels::search(&app.pool, &filter, 50, 0).await.unwrap();
+    let (rows, total) = parcels::search(&app.pool, &filter, parcels::SearchMode::Exact, 50, 0)
+        .await
+        .unwrap();
     assert_eq!(total, 1, "the handle join is an outer join");
     assert_eq!(rows[0].parcel.owner_handle, None);
     let summary = parcel_server::http::views::summary(

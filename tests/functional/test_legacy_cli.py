@@ -58,6 +58,13 @@ def test_the_released_cli_still_works(
     assert listed["parcels"][0]["url"] == f"{server.app_url}/p/{pid}"
     # -q is full text now (the slug and tags match too); the table still reads it.
     assert "Slugged plan" in legacy_cli.run("list", "-q", "legacy", token=user).stdout
+    # A relaxed list (no parcel has both words) parses too: the table shows
+    # it without the notice, and --json passes `relaxed` through.
+    assert owner.get("/api/v1/parcels", params={"q": "slugged nowhere"}).json()["relaxed"] is True
+    relaxed = legacy_cli.run("list", "-q", "slugged nowhere", token=user)
+    assert "Slugged plan" in relaxed.stdout and "No exact matches" not in relaxed.stderr, relaxed
+    relaxed = legacy_cli.json("list", "-q", "slugged nowhere", token=user)
+    assert relaxed["relaxed"] is True and [p["id"] for p in relaxed["parcels"]] == [pid]
     # list --shared: the legacy endpoint, unchanged.
     shared_table = legacy_cli.run("list", "--shared", token=user).stdout
     assert "Shared with me" in shared_table, shared_table

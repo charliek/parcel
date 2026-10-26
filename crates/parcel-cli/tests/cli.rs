@@ -2809,6 +2809,12 @@ async fn list_filters_reach_the_server_and_snippets_stay_printable() {
     );
     assert!(lines[3].contains(r"Theirs \u{1b}[31m"), "{text}");
     assert!(!text.contains('\u{1b}') && !text.contains('\u{7}'));
+    // A body without `relaxed` (every exact list, and any older server) is exact.
+    assert!(
+        !stderr(&out).contains("No exact matches"),
+        "{}",
+        stderr(&out)
+    );
 
     let gets = requests_to(&server, "GET", "/api/v1/parcels").await;
     let tags: Vec<String> = gets[0]
@@ -2854,6 +2860,68 @@ async fn list_shared_with_filters_uses_the_unified_list() {
     assert!(requests_to(&server, "GET", "/api/v1/shared")
         .await
         .is_empty());
+}
+
+/// A relaxed list says so on stderr, above the table; `--json` prints the
+/// body alone; a relaxed list with nothing in it is the plain "no match".
+#[tokio::test]
+async fn a_relaxed_list_says_so_on_stderr_only() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    mount_new_info(&server).await;
+    let phrase = "how do we handle failed payments";
+    let raw = format!(
+        r#"{{"parcels":[{}],"total":1,"relaxed":true}}"#,
+        serde_json::to_string(&summary(&server.uri(), 1)).unwrap()
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/v1/parcels"))
+        .and(query_param("q", phrase))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(raw.clone(), "application/json"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/parcels"))
+        .and(query_param("q", "nothing at all"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"parcels": [], "total": 0, "relaxed": true})),
+        )
+        .mount(&server)
+        .await;
+    let list = |args: &[&str]| {
+        run(sandbox
+            .parcel(&server.uri())
+            .env("PARCEL_TOKEN", TOKEN)
+            .arg("list")
+            .args(args))
+    };
+
+    let out = list(&["-q", phrase]);
+    assert_code(&out, 0);
+    assert_eq!(
+        stderr(&out),
+        "No exact matches; showing parcels that match any of the words.\n"
+    );
+    assert!(stdout(&out).starts_with("ID "), "{}", stdout(&out));
+    assert!(
+        !stdout(&out).contains("No exact matches"),
+        "{}",
+        stdout(&out)
+    );
+
+    let out = list(&["-q", phrase, "--json"]);
+    assert_code(&out, 0);
+    assert_eq!(stderr(&out), "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&out)).unwrap(),
+        serde_json::from_str::<Value>(&raw).unwrap()
+    );
+
+    let out = list(&["-q", "nothing at all"]);
+    assert_code(&out, 0);
+    assert_eq!(stdout(&out), "No parcels match \"nothing at all\".\n");
+    assert_eq!(stderr(&out), "");
 }
 
 #[tokio::test]

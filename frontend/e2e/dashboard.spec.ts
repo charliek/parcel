@@ -225,6 +225,36 @@ test('a full-text search finds page text and shows where', async ({ page, reques
   await expect(snippet.locator('mark').first()).toHaveText(word);
 });
 
+test('a search nothing matches exactly falls back to any word, and says so', async ({
+  page,
+  request,
+}) => {
+  const [a, b] = [uniqWord('ra'), uniqWord('rb')];
+  const topic = uniqTag('relaxed');
+  // Titles are searchable as soon as the publish commits.
+  await tagged(request, uniq(`e2e ${a}`), [topic, 'kind:plan']);
+  await tagged(request, uniq(`e2e ${b}`), [topic, 'kind:notes']);
+
+  // The facet requests carry the list's mode.
+  const facets = page.waitForRequest(
+    (r) =>
+      r.url().includes('/api/v1/tags?') && new URL(r.url()).searchParams.get('mode') === 'relaxed',
+  );
+  await page.goto('/');
+  await searchBox(page).fill(`${a} ${b}`);
+  const notice = page.getByTestId('relaxed-notice');
+  await expect(notice).toHaveText('No exact matches; showing parcels that match any of the words.');
+  await expect(page.getByTestId('parcel-card')).toHaveCount(2);
+  await facets;
+  const sidebar = page.getByRole('complementary', { name: 'Filters' });
+  await expect(sidebar.locator(`[data-tag="${topic}"]`)).toContainText('2');
+
+  // Another query clears it: one word matches exactly.
+  await searchBox(page).fill(a);
+  await expect(page.getByTestId('parcel-card')).toHaveCount(1);
+  await expect(notice).toHaveCount(0);
+});
+
 test('scope All lists your parcels and the ones shared with you', async ({ page, request }) => {
   const title = uniq('e2e-scope');
   const id = await createParcelViaApi(request, { title, marker: title });

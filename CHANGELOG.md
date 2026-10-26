@@ -1,5 +1,29 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Search falls back to any word.** `q` (`GET /api/v1/parcels`, the web
+  app's search, `parcel list -q`, MCP `list_parcels`): every word must
+  match; when nothing does, parcels matching any of the words are returned,
+  best first, and marked relaxed; operators (quotes, `-word`, `or`) turn that
+  off, and so does a query of one word or one token (`plan-002`, `e-mail`).
+  Relaxed results rank by how many of the words they have, then relevance,
+  and their snippets mark every matched word. `ParcelList` and `TagList`
+  gain `relaxed: true` (absent when false); `GET /api/v1/tags` takes
+  `mode=auto|exact|relaxed` (default `auto`: as the list decides), and the
+  web app's facet counts follow the list's mode. The MCP `list_parcels`
+  (every `which`) and `list_tags` pages carry `relaxed: true` too. New
+  feature `search-relaxed` in `/api/v1/info`.
+- `parcel list -q` prints "No exact matches; showing parcels that match any
+  of the words." on stderr above a relaxed list (`--json` output is the
+  body, unchanged but for the flag); the dashboard shows the same notice.
+  Older CLIs (and their skills) show relaxed results without the notice:
+  they ignore the new field.
+- After uploading a new version in the web app, the viewer lands on the
+  parcel's canonical address (`/@handle/slug` when it has a slug), as a new
+  parcel does, also when the upload started from a pinned old version.
+
 ## v0.2.0
 
 The CLI and both plugins for the server's tags, slugs, search and pages

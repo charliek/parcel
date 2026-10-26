@@ -1,7 +1,7 @@
 //! Full-text search over the real router and Postgres: what is indexed,
 //! how results rank, snippets, re-indexing on new versions and restores,
-//! the guarded write, the backfill, value-free failure logs, and when the
-//! search vector is rebuilt.
+//! the guarded write, the backfill, value-free failure logs, when the
+//! search vector is rebuilt, and the relaxed (any-word) fallback.
 
 mod common;
 
@@ -10,7 +10,7 @@ use common::*;
 use parcel_server::db::parcels::HEADLINE_OPTIONS;
 use parcel_server::search::{self, MAX_ATTEMPTS};
 use parcel_server::storage::{blob_key, BlobStore};
-use parcel_types::{ParcelList, ParcelListItem, PublishResult, Visibility};
+use parcel_types::{ParcelList, ParcelListItem, PublishResult, TagList, Visibility};
 use serde_json::{json, Value};
 use sqlx::AssertSqlSafe;
 
@@ -686,4 +686,526 @@ async fn new_versions_and_upserts_apply_the_metadata_they_send() {
     settle(&app).await;
     assert_eq!(find(&app, &me, "bandicoot").await.total, 1);
     assert_eq!(find(&app, &me, "aardvark").await.total, 0);
+}
+
+// ---- Relaxed search: when nothing matches every word, any word will do.
+
+/// `GET /parcels?<query>` as `who`.
+async fn list_as(app: &TestApp, token: &str, query: &str) -> ParcelList {
+    let uri = format!("/api/v1/parcels?{query}");
+    expect_json(app.get(&uri, Some(token)).await, StatusCode::OK).await
+}
+
+/// `GET /tags?<query>` as `who`.
+async fn tags_as(app: &TestApp, token: &str, query: &str) -> TagList {
+    let uri = format!("/api/v1/tags?{query}");
+    expect_json(app.get(&uri, Some(token)).await, StatusCode::OK).await
+}
+
+fn counts(list: &TagList) -> Vec<(&str, i64)> {
+    list.tags
+        .iter()
+        .map(|t| (t.tag.as_str(), t.count))
+        .collect()
+}
+
+/// Tag counts computed from a list's own items, in `/tags` order.
+fn counts_of(list: &ParcelList) -> Vec<(String, i64)> {
+    let mut counts = std::collections::BTreeMap::<String, i64>::new();
+    for item in &list.parcels {
+        for tag in &item.tags {
+            *counts.entry(tag.clone()).or_default() += 1;
+        }
+    }
+    let mut counts: Vec<_> = counts.into_iter().collect();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    counts
+}
+
+fn owned(counts: Vec<(&str, i64)>) -> Vec<(String, i64)> {
+    counts
+        .into_iter()
+        .map(|(t, n)| (t.to_string(), n))
+        .collect()
+}
+
+/// The walkthrough phrases of plan 001: each target parcel lacks one of the
+/// phrase's words (the reason the AND query found nothing), and distractors
+/// share a single word with it.
+async fn seed_walkthrough(app: &TestApp, me: &str) {
+    let page = |body: &str| format!("<html><body><p>{body}</p></body></html>");
+    for (title, tags, body) in [
+        (
+            "Invoice retry strategy",
+            vec!["project:billing", "kind:plan"],
+            "What to do when a payment fails: retry the invoice with backoff, then email the customer.",
+        ),
+        (
+            "Rust build settings review",
+            vec!["project:tooling", "kind:review"],
+            "Switching to the mold linker gave us quicker incremental compiles.",
+        ),
+        (
+            "Query latency dashboard",
+            vec!["project:search", "kind:dashboard"],
+            "Cutting p95 search latency for the listing page.",
+        ),
+        // Distractors: one word each.
+        ("Payment provider notes", vec!["project:billing"], "Which payment provider we use."),
+        ("Error handling guide", vec!["kind:notes"], "Handling errors in services."),
+        ("Rust newsletter", vec!["kind:notes"], "Monthly rust news."),
+        ("Search tips", vec!["kind:notes"], "Tips for the search box."),
+    ] {
+        publish(
+            app,
+            me,
+            json!({"title": title, "tags": tags}),
+            &[("index.html", &page(body))],
+        )
+        .await;
+    }
+    settle(app).await;
+}
+
+/// A4: natural-language phrases that match nothing exactly return their
+/// obvious parcel first, marked relaxed; a phrase that matches exactly
+/// isn't relaxed.
+#[tokio::test]
+async fn natural_phrases_fall_back_to_any_word_best_first() {
+    let app = TestApp::new().await;
+    let me = user_token();
+    seed_walkthrough(&app, &me).await;
+
+    for (phrase, first) in [
+        ("how do we handle failed payments", "Invoice retry strategy"),
+        ("faster rust builds", "Rust build settings review"),
+        ("reduce latency in search", "Query latency dashboard"),
+    ] {
+        let found = find(&app, &me, phrase).await;
+        assert!(found.relaxed, "{phrase}: {found:?}");
+        assert_eq!(titles(&found)[0], first, "{phrase}");
+        assert!(found.total >= 2, "{phrase}: the distractors match too");
+        assert_eq!(found.total, found.parcels.len() as i64, "{phrase}");
+    }
+    let exact = find(&app, &me, "rust build").await;
+    assert!(!exact.relaxed);
+    assert_eq!(titles(&exact), ["Rust build settings review"]);
+    // On the wire an exact list has no `relaxed` at all; a relaxed one says so.
+    let raw = body_bytes(app.get("/api/v1/parcels?q=rust+build", Some(&me)).await).await;
+    let raw: Value = serde_json::from_slice(&raw).unwrap();
+    assert!(raw.get("relaxed").is_none(), "{raw}");
+    let raw = body_bytes(
+        app.get("/api/v1/parcels?q=faster+rust+builds", Some(&me))
+            .await,
+    )
+    .await;
+    let raw: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(raw["relaxed"], true, "{raw}");
+}
+
+/// Relaxed results rank by how many of the query's words they have, before
+/// `ts_rank_cd` (which alone would put a one-word title match first); the
+/// snippet marks every matched word; pages are consistent with the total.
+#[tokio::test]
+async fn relaxed_results_rank_by_matched_words_first() {
+    let app = TestApp::new().await;
+    let me = user_token();
+    let page = |body: &str| format!("<p>{body}</p>");
+    // Oldest first, so recency alone would reverse the order.
+    for (title, body) in [
+        (
+            "Three of four",
+            "Notes on quartz, then basalt, and finally granite samples.",
+        ),
+        ("Two of four", "Notes on quartz and basalt samples."),
+        ("Marble", "Nothing else from the query here."),
+        ("None of them", "Sandstone only."),
+    ] {
+        publish(
+            &app,
+            &me,
+            json!({"title": title}),
+            &[("index.html", &page(body))],
+        )
+        .await;
+    }
+    settle(&app).await;
+
+    let query = "quartz basalt granite marble";
+    let found = find(&app, &me, query).await;
+    assert!(found.relaxed);
+    assert_eq!(titles(&found), ["Three of four", "Two of four", "Marble"]);
+    assert_eq!(found.total, 3);
+    assert_eq!(hits(&found.parcels[0]), ["quartz", "basalt", "granite"]);
+    assert_eq!(hits(&found.parcels[1]), ["quartz", "basalt"]);
+    assert!(found.parcels[2].matched.is_none(), "a title-only match");
+
+    // Page by page, in the same order, each page saying it is relaxed.
+    let q = urlencode(query);
+    let mut paged = Vec::new();
+    for offset in 0..3 {
+        let one = list_as(&app, &me, &format!("q={q}&limit=1&offset={offset}")).await;
+        assert!(one.relaxed);
+        assert_eq!(one.total, 3);
+        paged.push(one.parcels[0].title.clone());
+    }
+    assert_eq!(paged, titles(&found));
+    let past = list_as(&app, &me, &format!("q={q}&limit=1&offset=3")).await;
+    assert!(past.relaxed && past.parcels.is_empty());
+    assert_eq!(past.total, 3);
+
+    // Repeated and stem-equivalent words count once: "quartzes" is "quartz".
+    let found = find(&app, &me, "quartz quartzes granite").await;
+    assert!(!found.relaxed, "Three of four has both, exactly");
+    let found = find(&app, &me, "granite granites marble").await;
+    assert!(found.relaxed);
+    assert_eq!(titles(&found), ["Marble", "Three of four"]);
+}
+
+/// Only plain multi-word queries relax: an exact hit (full text or
+/// substring), an operator, a single (hyphenated or dotted) token, one
+/// distinct word, or only stop words keep the exact meaning.
+#[tokio::test]
+async fn operators_single_tokens_and_exact_hits_never_relax() {
+    let app = TestApp::new().await;
+    let me = user_token();
+    let page = |body: &str| format!("<p>{body}</p>");
+    for (title, slug, body) in [
+        ("Wombat care", None, "wombat"),
+        ("Zone map", None, "zone"),
+        ("Plan", Some("ops/zebrafish-migration"), "plan mail"),
+        ("Xxkoala bearyy", None, "nothing"),
+    ] {
+        publish(
+            &app,
+            &me,
+            json!({"title": title, "slug": slug}),
+            &[("index.html", &page(body))],
+        )
+        .await;
+    }
+    settle(&app).await;
+
+    // Words that appear only in different parcels relax...
+    assert!(find(&app, &me, "wombat zone").await.relaxed);
+    // ...but not as a substring of a title (the exact clause's ILIKE).
+    let substring = find(&app, &me, "xkoala beary").await;
+    assert!(!substring.relaxed);
+    assert_eq!(titles(&substring), ["Xxkoala bearyy"]);
+    // A slug fragment is an exact (substring) hit.
+    let slug = find(&app, &me, "zebrafish-migr").await;
+    assert!(!slug.relaxed);
+    assert_eq!(titles(&slug), ["Plan"]);
+
+    for q in [
+        "\"wombat zone\"",
+        "wombat -zone",
+        "-zone wombat",
+        "wombat or zone",
+        "wombat OR zone",
+        "plan-002",
+        "e-mail",
+        "example.com",
+        "zebra zebras",
+        "the and of it",
+        "nothing",
+    ] {
+        let found = find(&app, &me, q).await;
+        assert!(!found.relaxed, "{q:?}: {found:?}");
+    }
+    // The operators still mean what they did.
+    assert_eq!(find(&app, &me, "wombat or zone").await.total, 2);
+    assert_eq!(
+        titles(&find(&app, &me, "wombat -zone").await),
+        ["Wombat care"]
+    );
+    assert_eq!(find(&app, &me, "\"wombat zone\"").await.total, 0);
+    assert_eq!(find(&app, &me, "plan-002").await.total, 0);
+}
+
+/// Hostile queries (quotes, URLs, tsquery syntax, backslashes, a 500
+/// character query) never error, relaxed or not, in lists and tag counts.
+#[tokio::test]
+async fn hostile_queries_never_error() {
+    let app = TestApp::new().await;
+    let me = user_token();
+    publish(
+        &app,
+        &me,
+        json!({"title": "O'Brien report", "tags": ["people"]}),
+        &[(
+            "index.html",
+            "<p>See http://example.com/it's/x and C:\\foo\\bar.</p>",
+        )],
+    )
+    .await;
+    settle(&app).await;
+
+    let mut long = String::new();
+    let mut i = 0u32;
+    while long.chars().count() < 490 {
+        // Distinct words of letters only, so each is its own lexeme.
+        let word: String = format!("{i:05}")
+            .bytes()
+            .map(|d| char::from(b'a' + (d - b'0')))
+            .collect();
+        long.push_str(&word);
+        long.push(' ');
+        i += 1;
+    }
+    let long = long.trim_end().to_string();
+    assert!(long.chars().count() <= 500);
+    let inputs = [
+        "O'Brien report",
+        "O'Brien quarterly",
+        "http://example.com/it's/x docs",
+        "foo:bar baz*qux",
+        "C:\\foo\\bar baz",
+        "a|b & !c <-> d",
+        "foo:* bar:A",
+        "'' \\' \\\\",
+        "() ) (",
+        "例え テスト",
+        long.as_str(),
+    ];
+    for q in inputs {
+        let enc = urlencode(q);
+        let list = list_as(&app, &me, &format!("q={enc}")).await;
+        for mode in ["auto", "exact", "relaxed"] {
+            tags_as(&app, &me, &format!("q={enc}&mode={mode}")).await;
+        }
+        if q.starts_with("O'Brien") {
+            assert_eq!(titles(&list), ["O'Brien report"], "{q}");
+        }
+    }
+    assert!(!find(&app, &me, "O'Brien report").await.relaxed);
+    assert!(find(&app, &me, "O'Brien quarterly").await.relaxed);
+    assert!(
+        find(&app, &me, "http://example.com/it's/x docs")
+            .await
+            .relaxed
+    );
+    assert_eq!(find(&app, &me, &long).await.total, 0);
+
+    // PostgreSQL refuses NUL in text: a 400 here, never a 500.
+    for uri in [
+        "/api/v1/parcels?q=quartz%00%20basalt",
+        "/api/v1/tags?q=quartz%00%20basalt",
+        "/api/v1/tags?prefix=a%00b",
+    ] {
+        let res = app.get(uri, Some(&me)).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{uri}");
+    }
+}
+
+/// `/tags` counts what the list shows: `auto` decides as `/parcels` does
+/// (ignoring `prefix`), an explicit mode is followed, and a facet's swap
+/// request with the list's mode counts over the relaxed list.
+#[tokio::test]
+async fn tag_counts_follow_the_lists_mode() {
+    let app = TestApp::new().await;
+    let me = user_token();
+    seed_walkthrough(&app, &me).await;
+    let phrase = urlencode("faster rust builds");
+
+    let list = list_as(&app, &me, &format!("q={phrase}")).await;
+    assert!(list.relaxed);
+    for query in [
+        format!("q={phrase}"),
+        format!("q={phrase}&mode=auto"),
+        format!("q={phrase}&mode=relaxed"),
+    ] {
+        let tags = tags_as(&app, &me, &query).await;
+        assert!(tags.relaxed, "{query}");
+        assert_eq!(owned(counts(&tags)), counts_of(&list), "{query}");
+    }
+    // `prefix` narrows the counts, never the decision.
+    let kinds = tags_as(&app, &me, &format!("q={phrase}&prefix=kind:")).await;
+    assert!(kinds.relaxed);
+    assert_eq!(counts(&kinds), [("kind:notes", 1), ("kind:review", 1)]);
+    // Exact: what every word matches (nothing), and no flag.
+    let exact = tags_as(&app, &me, &format!("q={phrase}&mode=exact")).await;
+    assert!(!exact.relaxed && exact.tags.is_empty());
+    // An exact list's counts are exact under auto; relaxed counts are wider.
+    let exact_list = find(&app, &me, "rust build").await;
+    let auto = tags_as(&app, &me, "q=rust+build").await;
+    assert!(!auto.relaxed);
+    assert_eq!(owned(counts(&auto)), counts_of(&exact_list));
+    assert!(
+        tags_as(&app, &me, "q=rust+build&mode=relaxed")
+            .await
+            .relaxed
+    );
+    // No query: nothing to relax, whatever is asked.
+    assert!(!tags_as(&app, &me, "mode=relaxed").await.relaxed);
+
+    // A swap request (the dashboard's facet for a selected project) drops
+    // that project and keeps the list's mode. Within project:a nothing has
+    // both words, so the list is relaxed; across projects one parcel has
+    // both, so `auto` would decide exact and count only that one.
+    let page = |body: &str| format!("<p>{body}</p>");
+    for (project, body) in [("a", "kestrel"), ("a", "falcon"), ("b", "kestrel falcon")] {
+        publish(
+            &app,
+            &me,
+            json!({"title": format!("Birds {project}"), "tags": [format!("project:{project}"), "topic:birds"]}),
+            &[("index.html", &page(body))],
+        )
+        .await;
+    }
+    settle(&app).await;
+    let birds = urlencode("kestrel falcon");
+    let selected = list_as(
+        &app,
+        &me,
+        &format!("q={birds}&tag=topic:birds&tag=project:a"),
+    )
+    .await;
+    assert!(selected.relaxed);
+    assert_eq!(selected.total, 2);
+    let swap = tags_as(
+        &app,
+        &me,
+        &format!("q={birds}&tag=topic:birds&prefix=project:&mode=relaxed"),
+    )
+    .await;
+    assert!(swap.relaxed);
+    assert_eq!(counts(&swap), [("project:a", 2), ("project:b", 1)]);
+    let unswapped = list_as(
+        &app,
+        &me,
+        &format!("q={birds}&tag=topic:birds&tag=project:a"),
+    )
+    .await;
+    assert_eq!(
+        unswapped.total,
+        counts(&swap)[0].1,
+        "the selected facet's count is the list's"
+    );
+    let auto = tags_as(
+        &app,
+        &me,
+        &format!("q={birds}&tag=topic:birds&prefix=project:"),
+    )
+    .await;
+    assert!(!auto.relaxed);
+    assert_eq!(counts(&auto), [("project:b", 1)]);
+}
+
+/// A4 / plan 001's sentinel rule, relaxed: someone else's private parcel
+/// holding every word of the query (and a unique word) never shows up in
+/// relaxed results, totals, snippets or facets, and doesn't even make the
+/// query exact for anyone else (the probe is scoped). Scopes and the
+/// archive filter hold.
+#[tokio::test]
+async fn relaxed_search_keeps_scopes_and_leaks_nothing() {
+    let app = TestApp::new().await;
+    let ada = person("ada");
+    let bob = person("bob");
+    let sentinel = "xylophonesentinel";
+    let page = |body: &str| format!("<p>{body}</p>");
+    // Ada's private parcel matches the whole query exactly.
+    let private = publish(
+        &app,
+        &ada.token,
+        json!({"title": format!("Birds {sentinel}"), "tags": [sentinel]}),
+        &[(
+            "index.html",
+            &page(&format!("kestrel falcon osprey {sentinel}")),
+        )],
+    )
+    .await;
+    // Shared with Bob: one word.
+    let shared = publish(
+        &app,
+        &ada.token,
+        json!({"title": "Falcon notes", "tags": ["birds"]}),
+        &[("index.html", &page("falcon"))],
+    )
+    .await;
+    expect_status(
+        app.put_json(
+            &format!("/api/v1/parcels/{}/shares/{}", shared.parcel.id, bob.email),
+            Some(&ada.token),
+            &json!({"role": "viewer"}),
+        )
+        .await,
+        StatusCode::OK,
+    )
+    .await;
+    // Bob's own: one word, and an archived one with another.
+    let own = publish(
+        &app,
+        &bob.token,
+        json!({"title": "Kestrel watch", "tags": ["birds"]}),
+        &[("index.html", &page("kestrel"))],
+    )
+    .await;
+    let archived = publish(
+        &app,
+        &bob.token,
+        json!({"title": "Osprey log", "tags": ["old"]}),
+        &[("index.html", &page("osprey"))],
+    )
+    .await;
+    patched(&app, &bob, &archived.parcel.id, json!({"archived": true})).await;
+    settle(&app).await;
+
+    let ids = |l: &ParcelList| -> Vec<String> {
+        let mut ids: Vec<String> = l.parcels.iter().map(|p| p.id.clone()).collect();
+        ids.sort();
+        ids
+    };
+    let sorted = |mut v: Vec<&str>| -> Vec<String> {
+        v.sort_unstable();
+        v.into_iter().map(str::to_string).collect()
+    };
+    let (own_id, shared_id, archived_id) = (
+        own.parcel.id.as_str(),
+        shared.parcel.id.as_str(),
+        archived.parcel.id.as_str(),
+    );
+    for words in [
+        "kestrel falcon osprey",
+        &format!("{sentinel} kestrel falcon"),
+    ] {
+        let q = urlencode(words);
+        for (scope, archived, expect) in [
+            ("mine", "exclude", vec![own_id]),
+            ("mine", "include", vec![own_id, archived_id]),
+            ("mine", "only", vec![archived_id]),
+            ("shared", "exclude", vec![shared_id]),
+            ("all", "exclude", vec![own_id, shared_id]),
+            ("all", "include", vec![own_id, shared_id, archived_id]),
+        ] {
+            let filters = format!("q={q}&scope={scope}&archived={archived}");
+            let list = list_as(&app, &bob.token, &filters).await;
+            let mut expect = expect;
+            if words.starts_with(sentinel) {
+                // Bob's archived parcel has no word of this query.
+                expect.retain(|id| *id != archived_id);
+                if expect.is_empty() {
+                    assert_eq!(list.total, 0, "{filters}");
+                    continue;
+                }
+            }
+            assert!(list.relaxed, "{filters}: Ada's exact match is out of scope");
+            assert_eq!(ids(&list), sorted(expect.clone()), "{filters}");
+            assert_eq!(list.total, expect.len() as i64, "{filters}");
+            assert!(!ids(&list).contains(&private.parcel.id), "{filters}");
+            let raw = serde_json::to_string(&list).unwrap();
+            assert!(!raw.contains(sentinel), "{filters}: {raw}");
+            for mode in ["auto", "relaxed"] {
+                let tags = tags_as(&app, &bob.token, &format!("{filters}&mode={mode}")).await;
+                assert!(tags.relaxed, "{filters} {mode}");
+                assert_eq!(owned(counts(&tags)), counts_of(&list), "{filters} {mode}");
+                let raw = serde_json::to_string(&tags).unwrap();
+                assert!(!raw.contains(sentinel), "{filters} {mode}: {raw}");
+            }
+        }
+    }
+    // Ada, whose parcel it is, gets it as an exact match.
+    let mine = find(&app, &ada.token, "kestrel falcon osprey").await;
+    assert!(!mine.relaxed);
+    assert_eq!(titles(&mine), [format!("Birds {sentinel}").as_str()]);
 }

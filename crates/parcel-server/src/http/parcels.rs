@@ -18,7 +18,9 @@ use utoipa_axum::routes;
 
 use crate::auth::{AuthUser, MaybeAuthUser};
 use crate::content::{self, token::Scope};
-use crate::db::parcels::{self, ListFilter, ParcelRow, Patch, PatchRefused, SearchRow, TagsChange};
+use crate::db::parcels::{
+    self, ListFilter, ParcelRow, Patch, PatchRefused, SearchMode, SearchRow, TagsChange,
+};
 use crate::db::users;
 use crate::error::{busy, slug_error, slug_taken, tag_error, AppError, AppResult};
 use crate::http::views::{self, owned, readable, Audience};
@@ -37,8 +39,13 @@ pub fn router() -> OpenApiRouter<AppState> {
 pub struct ListQuery {
     /// Search: a case-insensitive substring of the id, title, description or slug,
     /// or full text (title, description, tags and the entry page's text;
-    /// web-search syntax: `"exact phrase"`, `-word`, `or`). Results are then
-    /// ordered by relevance, and carry `match` when the page text matched.
+    /// web-search syntax: `"exact phrase"`, `-word`, `or`). Every word must
+    /// match; when no parcel matches them all, parcels matching any of the
+    /// words are returned instead, those matching the most words first, and
+    /// the list is marked `relaxed`. A query with an operator (quotes,
+    /// `-word`, `or`) or fewer than two distinct words never relaxes.
+    /// Results are ordered by relevance, and carry `match` when the page
+    /// text matched.
     pub q: Option<String>,
     /// `mine` (default), `shared` (shared with you by email) or `all`.
     #[param(inline)]
@@ -62,8 +69,9 @@ pub struct ListQuery {
     tag = "parcels",
     description = "List parcels: the caller's own by default, or those shared with them \
         (`scope=shared`), or both (`scope=all`); most recently updated first, or by relevance \
-        with `q`. Filter by tags (`tag=a&tag=b`: all of them) and archive state. Items shared \
-        with the caller carry `shared`.",
+        with `q` (and `relaxed` when no parcel matched every word, so the list holds those \
+        matching any of them). Filter by tags (`tag=a&tag=b`: all of them) and archive state. \
+        Items shared with the caller carry `shared`.",
     params(ListQuery),
     security(("bearer" = [])),
     responses(
@@ -96,6 +104,10 @@ pub(crate) fn list_filter(
             parcels::MAX_QUERY_CHARS
         )));
     }
+    // PostgreSQL refuses NUL in text, so it would surface as a 500.
+    if query.is_some_and(|q| q.contains('\0')) {
+        return Err(AppError::BadRequest("q must not contain NUL".to_string()));
+    }
     Ok(ListFilter {
         scope: scope.unwrap_or_default(),
         user_id: caller.user.id,
@@ -115,10 +127,12 @@ pub(crate) async fn list(
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let offset = q.offset.unwrap_or(0).max(0);
     let filter = list_filter(caller, q.scope, &q.tag, q.archived, q.q.as_deref())?;
-    let (rows, total) = parcels::search(&state.db, &filter, limit, offset).await?;
+    let mode = parcels::search_mode(&state.db, &filter).await?;
+    let (rows, total) = parcels::search(&state.db, &filter, mode, limit, offset).await?;
     Ok(ParcelList {
         parcels: rows.into_iter().map(|r| list_item(state, r)).collect(),
         total,
+        relaxed: mode == SearchMode::Relaxed,
     })
 }
 

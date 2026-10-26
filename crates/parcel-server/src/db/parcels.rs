@@ -164,7 +164,23 @@ pub const MAX_QUERY_CHARS: usize = 500;
 // share is matched by (parcel_id, email), the primary key, so a parcel
 // joins at most one share row. Without `q`, `params.tsq` is NULL and the
 // rank is 0 throughout.
-const PARAMS_CTE: &str = "WITH params AS (SELECT websearch_to_tsquery('english', $4) AS tsq)";
+//
+// `params` is what the search mode changes, and all it changes: `tsq` is
+// the query every clause, rank and snippet below uses, and `terms` (one
+// single-lexeme query per word, for counting matched words) is set in
+// relaxed mode only.
+const EXACT_PARAMS: &str =
+    "WITH params AS (SELECT websearch_to_tsquery('english', $4) AS tsq, NULL::tsquery[] AS terms)";
+// Relaxed: an OR of the query's lexemes, stemmed as the index is. Each
+// lexeme is quoted by hand: `quote_literal` writes `E'…'` for a string with a
+// backslash, which the tsquery parser rejects. A stop-word-only query has no
+// lexemes, so `tsq` is NULL and only the substring match applies.
+const RELAXED_PARAMS: &str = r"WITH lexemes AS (
+         SELECT '''' || replace(replace(l, '\', '\\'), '''', '''''') || '''' AS quoted
+         FROM unnest(tsvector_to_array(to_tsvector('english', $4))) AS l),
+     params AS (
+         SELECT (SELECT string_agg(quoted, ' | ') FROM lexemes)::tsquery AS tsq,
+                ARRAY(SELECT quoted::tsquery FROM lexemes) AS terms)";
 const SCOPED_FROM: &str = concat!(
     parcel_from!(),
     "
@@ -177,13 +193,83 @@ const SHARED_COLUMNS: &str = "o.name AS owner_name, o.email AS owner_email,
             s.role AS share_role, s.created_at AS shared_at";
 const TAGS_CLAUSE: &str = "\n       AND p.tags @> $3::text[]";
 // A query that parses to no lexemes (only stop words or punctuation) has
-// numnode 0: then only the substring match applies.
+// numnode 0 (NULL in relaxed mode): then only the substring match applies.
 const QUERY_CLAUSE: &str = "
        AND (p.id ILIKE $5 ESCAPE '\\' OR p.title ILIKE $5 ESCAPE '\\'
             OR p.description ILIKE $5 ESCAPE '\\' OR p.slug ILIKE $5 ESCAPE '\\'
             OR (numnode(params.tsq) > 0 AND p.search_vec @@ params.tsq))";
 const RANK: &str =
     "CASE WHEN numnode(params.tsq) > 0 THEN ts_rank_cd(p.search_vec, params.tsq) ELSE 0 END";
+// How many of the query's words a parcel has: the first sort key in relaxed
+// mode, since `ts_rank_cd` over an OR query would put a title matching one
+// word above a page matching all but one. 0 in exact mode (`terms` NULL).
+const MATCHED: &str = "(SELECT count(*) FROM unnest(params.terms) AS t WHERE p.search_vec @@ t)";
+
+/// How a query's words are matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchMode {
+    /// Every word (websearch syntax: quotes, `-word`, `or`).
+    #[default]
+    Exact,
+    /// Any word, best first: the fallback when nothing matches every word.
+    Relaxed,
+}
+
+impl SearchMode {
+    fn params(self) -> &'static str {
+        match self {
+            SearchMode::Exact => EXACT_PARAMS,
+            SearchMode::Relaxed => RELAXED_PARAMS,
+        }
+    }
+}
+
+/// Whether a query may fall back to matching any of its words, as far as
+/// its text says: at least two words and none of websearch's operators (a
+/// `"`, a word starting with `-`, the word `or`), since an operator means
+/// the caller asked for something exact. A single hyphenated or dotted
+/// token (`plan-002`, `e-mail`) is one word, though several lexemes, so it
+/// never relaxes. [`search_mode`] also needs two distinct lexemes, so
+/// repeated or stem-equal words and stop words don't either.
+pub fn relaxable(q: &str) -> bool {
+    !q.contains('"')
+        && q.split_whitespace().count() >= 2
+        && !q
+            .split_whitespace()
+            .any(|w| w.starts_with('-') || w.eq_ignore_ascii_case("or"))
+}
+
+/// The mode a list's query runs in: [`SearchMode::Relaxed`] when the query
+/// is [`relaxable`], has at least two distinct lexemes, and matches nothing
+/// exactly in the caller's scope and filters; else exact. One `EXISTS` probe
+/// over the same relation and clause as [`search`] (no statement when the
+/// text already rules relaxing out). The probe, the page and the total are
+/// separate statements: under concurrent writes they agree on a best-effort
+/// basis, as page and total always have.
+pub async fn search_mode(pool: &PgPool, f: &ListFilter) -> Result<SearchMode> {
+    if !f.query.as_deref().is_some_and(relaxable) {
+        return Ok(SearchMode::Exact);
+    }
+    // CASE evaluates the probe (an InitPlan) only when the count allows it.
+    let (relaxed,): (bool,) = bind_filter(
+        sqlx::query_as(AssertSqlSafe(format!(
+            "{EXACT_PARAMS}
+             SELECT CASE WHEN cardinality(tsvector_to_array(to_tsvector('english', $4))) >= 2
+                         THEN NOT EXISTS (SELECT 1 {SCOPED_FROM} WHERE {})
+                         ELSE false END",
+            conditions(f)
+        ))),
+        f,
+    )
+    .fetch_one(pool)
+    .await
+    .db_context("probing the search mode")?;
+    Ok(if relaxed {
+        SearchMode::Relaxed
+    } else {
+        SearchMode::Exact
+    })
+}
 
 /// The `WHERE` conditions of the scoped relation for a filter.
 fn conditions(f: &ListFilter) -> String {
@@ -216,16 +302,19 @@ fn bind_filter<'q, O>(
 }
 
 /// One page of a parcel list, and the total. With a query, ordered by
-/// relevance (`ts_rank_cd`, title over description and tags over page text)
-/// then recency; without, by recency. Snippets are computed only for the
-/// page's rows, after `LIMIT`.
+/// relevance (`ts_rank_cd`, title over description and tags over page text;
+/// in relaxed mode, how many of the words matched comes first) then
+/// recency; without, by recency. Snippets are computed only for the page's
+/// rows, after `LIMIT`, and mark the words `mode` matched.
 pub async fn search(
     pool: &PgPool,
     f: &ListFilter,
+    mode: SearchMode,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<SearchRow>, i64)> {
     let conditions = conditions(f);
+    let params = mode.params();
     let headline = if f.query.is_some() {
         "(SELECT CASE WHEN numnode(params.tsq) > 0 AND x.search_text <> ''
                       THEN ts_headline('english', x.search_text, params.tsq, $8) END
@@ -235,15 +324,17 @@ pub async fn search(
     };
     let rows = bind_filter(
         sqlx::query_as::<_, SearchRow>(AssertSqlSafe(format!(
-            "{PARAMS_CTE}, page AS (
-             SELECT {PARCEL_COLUMNS}, {SHARED_COLUMNS}, {RANK} AS search_rank
+            "{params}, page AS (
+             SELECT {PARCEL_COLUMNS}, {SHARED_COLUMNS},
+                    {MATCHED} AS search_matched, {RANK} AS search_rank
              {SCOPED_FROM}
              WHERE {conditions}
-             ORDER BY search_rank DESC, p.updated_at DESC, p.id
+             ORDER BY search_matched DESC, search_rank DESC, p.updated_at DESC, p.id
              LIMIT $6 OFFSET $7)
              SELECT page.*, {headline} AS headline
              FROM page CROSS JOIN params
-             ORDER BY page.search_rank DESC, page.updated_at DESC, page.id"
+             ORDER BY page.search_matched DESC, page.search_rank DESC, page.updated_at DESC,
+                      page.id"
         ))),
         f,
     )
@@ -253,7 +344,7 @@ pub async fn search(
     .fetch_all(pool);
     let total = bind_filter(
         sqlx::query_as::<_, (i64,)>(AssertSqlSafe(format!(
-            "{PARAMS_CTE} SELECT count(*) {SCOPED_FROM} WHERE {conditions}"
+            "{params} SELECT count(*) {SCOPED_FROM} WHERE {conditions}"
         ))),
         f,
     )
@@ -267,15 +358,18 @@ pub async fn search(
 
 /// Tags on the parcels a filter covers, with how many of them carry each
 /// (facet counts): most used first, then by name. `prefix` (normalized)
-/// keeps tags that start with it. Returns a page and the distinct total.
+/// keeps tags that start with it. `mode` is the list's, so the counts
+/// describe the parcels it shows. Returns a page and the distinct total.
 pub async fn tag_counts(
     pool: &PgPool,
     f: &ListFilter,
+    mode: SearchMode,
     prefix: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<(String, i64)>, i64)> {
     let pattern = prefix.map(|p| format!("{}%", escape_like(p)));
+    let params = mode.params();
     let relation = format!(
         "{SCOPED_FROM}
      CROSS JOIN LATERAL unnest(p.tags) AS t(tag)
@@ -285,7 +379,7 @@ pub async fn tag_counts(
     );
     let rows = bind_filter(
         sqlx::query_as::<_, (String, i64)>(AssertSqlSafe(format!(
-            "{PARAMS_CTE} SELECT t.tag, count(*) AS n {relation}
+            "{params} SELECT t.tag, count(*) AS n {relation}
              GROUP BY t.tag ORDER BY n DESC, t.tag COLLATE \"C\" LIMIT $7 OFFSET $8"
         ))),
         f,
@@ -296,7 +390,7 @@ pub async fn tag_counts(
     .fetch_all(pool);
     let total = bind_filter(
         sqlx::query_as::<_, (i64,)>(AssertSqlSafe(format!(
-            "{PARAMS_CTE} SELECT count(DISTINCT t.tag) {relation}"
+            "{params} SELECT count(DISTINCT t.tag) {relation}"
         ))),
         f,
     )
@@ -803,10 +897,49 @@ pub async fn lock_owner_quota(tx: &mut Transaction<'_, Postgres>, owner_id: Uuid
 
 #[cfg(test)]
 mod tests {
-    use super::escape_like;
+    use super::{escape_like, relaxable};
 
     #[test]
     fn like_patterns_are_escaped() {
         assert_eq!(escape_like("50%_off\\"), "50\\%\\_off\\\\");
+    }
+
+    #[test]
+    fn only_plain_multi_word_queries_relax() {
+        for q in [
+            "rust build",
+            "how do we handle failed payments",
+            "  faster\trust\nbuilds ",
+            // `or` only as a whole word.
+            "order form",
+            "for the records",
+            "orange ore",
+            // Mid-word dashes and apostrophes are text, not operators.
+            "plan-002 notes",
+            "O'Brien report",
+            "C:\\foo\\bar baz",
+        ] {
+            assert!(relaxable(q), "{q:?}");
+        }
+        for q in [
+            "",
+            "   ",
+            "single",
+            // One token: the lexeme count decides, and it never reaches two
+            // words here anyway.
+            "plan-002",
+            "e-mail",
+            "example.com",
+            "\"rate limit\" throttling",
+            "rate \"limit",
+            "rate limit -throttling",
+            "-draft plan",
+            "- plan",
+            "rate or limit",
+            "rate OR limit",
+            "rate Or limit",
+        ] {
+            assert!(!relaxable(q), "{q:?}");
+        }
     }
 }

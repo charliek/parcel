@@ -4,9 +4,9 @@
  * through with Back and Forward. Pure, so it is unit-tested.
  */
 
-import type { ListFilters } from './api';
+import type { ListFilters, TagFilters } from './api';
 import { SINGLE_VALUE_NAMESPACES, tagNamespace } from './tags';
-import type { ArchivedFilter, ListScope, TagCount } from './types';
+import type { ArchivedFilter, ListScope, ParcelList, SearchMode, TagCount } from './types';
 
 export interface DashboardQuery {
   scope: ListScope;
@@ -101,6 +101,41 @@ export function listFilters(query: DashboardQuery): ListFilters {
   };
 }
 
+/**
+ * The search mode the facet counts use, so they count what the list shows:
+ * none without a query (there is nothing to relax, and the counts share a
+ * cache entry with the search box's vocabulary), the list's own once its
+ * first page for these filters is in (`stale`: what is on screen is still a
+ * previous filter's), and `null` until then (wait rather than guess).
+ */
+export function facetMode(
+  query: DashboardQuery,
+  first: ParcelList | undefined,
+  stale: boolean,
+): SearchMode | undefined | null {
+  if (!query.q) return undefined;
+  if (!first || stale) return null;
+  return first.relaxed ? 'relaxed' : 'exact';
+}
+
+/** The main facet counts' filters: the list's, in the list's mode. */
+export function facetFilters(query: DashboardQuery, mode?: SearchMode): TagFilters {
+  const filters = listFilters(query);
+  return mode ? { ...filters, mode } : filters;
+}
+
+/**
+ * Whether to say "No exact matches…" above the results: the list on screen
+ * is relaxed, for the current filters (not a previous query's, kept up
+ * while the new one loads), and has something in it.
+ */
+export function showsRelaxedNotice(first: ParcelList | undefined, stale: boolean): boolean {
+  return !stale && first?.relaxed === true && first.parcels.length > 0;
+}
+
+/** The notice above a relaxed list (the CLI prints the same words). */
+export const RELAXED_NOTICE = 'No exact matches; showing parcels that match any of the words.';
+
 /** Whether anything narrows the list (so an empty result says "no match", not "nothing yet"). */
 export function isFiltered(query: DashboardQuery): boolean {
   return query.tags.length > 0 || query.q !== '' || query.archived === 'only';
@@ -122,12 +157,14 @@ export function splitLastWord(text: string): { rest: string; last: string } {
  * kind) replaces the one selected, so that facet's counts must say what
  * the list would hold *after* the swap: the same filters without its own
  * selection, limited to its namespace. One query per such namespace with a
- * selection; the other facets use the main counts.
+ * selection; the other facets use the main counts. Each keeps the list's
+ * `mode`, like the main counts.
  */
 export function swapFacetFilters(
   query: DashboardQuery,
-): { namespace: string; filters: ListFilters & { prefix: string } }[] {
-  const base = listFilters(query);
+  mode?: SearchMode,
+): { namespace: string; filters: TagFilters & { prefix: string } }[] {
+  const base = facetFilters(query, mode);
   return SINGLE_VALUE_NAMESPACES.filter((ns) => query.tags.some((t) => tagNamespace(t) === ns)).map(
     (ns) => ({
       namespace: ns,

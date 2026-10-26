@@ -259,7 +259,7 @@ Types are in `crates/parcel-types/src/api.rs`.
 | GET | `/api/v1/info` | — | `ServerInfo` (with `features`: optional API features such as `tags`, `search`, `archive`, `slugs`) |
 | GET | `/api/v1/me` | required | `Me` (with `handle`) |
 | PATCH | `/api/v1/me` | required | `UpdateMeRequest` `{handle}` → `Me`; 400 malformed, 409 taken (by anyone, current or retired); the old handle stays yours and keeps resolving |
-| GET | `/api/v1/parcels?scope=&tag=&tag=&archived=&q=&limit=&offset=` | required | `ParcelList` of `ParcelListItem` (summary fields flattened, plus `match` snippet segments and `shared`); `scope` = `mine` (default) / `shared` / `all`, tags AND, `archived` = `exclude` (default) / `include` / `only`, `q` = substring or full text, ranked |
+| GET | `/api/v1/parcels?scope=&tag=&tag=&archived=&q=&limit=&offset=` | required | `ParcelList` of `ParcelListItem` (summary fields flattened, plus `match` snippet segments and `shared`); `scope` = `mine` (default) / `shared` / `all`, tags AND, `archived` = `exclude` (default) / `include` / `only`, `q` = substring or full text, ranked (all words; else any word, with `relaxed: true`) |
 | POST | `/api/v1/parcels` | required | multipart (`metadata` JSON part = `CreateParcelMetadata`, `file` parts whose *filename* is the published path) → 201 `PublishResult`; with a `slug` you already use (or a redirect of yours), 200 and a new version of that parcel (`created: false`; see "Handles, slugs and sources") |
 | GET | `/api/v1/parcels/by-slug?handle=&slug=` | viewers | `ParcelDetail` of the parcel `/@<handle>/<slug>` names (old handles and slugs too; `parcel.canonical_url` is the current one); every miss is the same 404; `handle` defaults to yours, 400 without one when signed out |
 | GET | `/api/v1/parcels/{id}` | viewers | `ParcelDetail` (with `access`, `owner_name`, `pages`) |
@@ -287,7 +287,7 @@ Types are in `crates/parcel-types/src/api.rs`.
 | GET | `/api/v1/parcels/{id}/shares` | owner | `ShareList` |
 | PUT/DELETE | `/api/v1/parcels/{id}/shares/{email}` | owner | `PutShareRequest` → `Share` / 204 |
 | GET | `/api/v1/shared?limit=&offset=` | required | `SharedParcelList` (shared with me by email; legacy, unchanged: archived included) |
-| GET | `/api/v1/tags?scope=&tag=&q=&archived=&prefix=&limit=&offset=` | required | `TagList` (facet counts over the parcels the same filters select; limit ≤ 1000) |
+| GET | `/api/v1/tags?scope=&tag=&q=&mode=&archived=&prefix=&limit=&offset=` | required | `TagList` (facet counts over the parcels the same filters select, `q` in `mode` `auto`/`exact`/`relaxed`; `relaxed` when the relaxed search ran; limit ≤ 1000) |
 | POST | `/api/v1/tags/rename` | required | `RenameTagRequest` → `TagsUpdated` (the caller's parcels; merges) |
 | POST | `/api/v1/tags/delete` | required | `DeleteTagRequest` → `TagsUpdated` (the caller's parcels) |
 | GET | anything else | — | SPA (`index.html` fallback) when `PARCEL_STATIC_DIR` is set |
@@ -329,7 +329,7 @@ older revision can't know is done in the database: a trigger clears
 or restore from the old revision still invalidates the page text and
 un-archives. Handles are allocated by one SQL function, lazily for a user an
 older revision created. Clients feature-check: `ServerInfo.features` lists
-`tags`, `search`, `archive`, `slugs`, `pages`, and the CLI refuses a new
+`tags`, `search`, `archive`, `slugs`, `pages`, `search-relaxed`, and the CLI refuses a new
 parameter an old server would silently ignore.
 
 ### Tags
@@ -381,16 +381,39 @@ fresh plan). The legacy `/shared` endpoint lists archived parcels as before.
   working) plus `match` and, for someone else's parcel, `shared`.
   `ParcelSummary.url` stays `<app>/p/<id>` for good (an old CLI appends
   `/v/<n>` to it); `canonical_url` is the clean URL when there is a slug.
-- **Query semantics.** `q` matches by substring (ILIKE) on id, title,
-  description and slug, **or** `search_vec @@ websearch_to_tsquery('english',
-  q)`: every word must appear, stemmed, in the title, description, tags or
-  the entry page's text, and quotes, `or` and `-word` work as in a web
-  search. Order with `q`: `ts_rank_cd` (title over description and tags over
-  page text), then `updated_at`, then id; without, `updated_at`. A query that
-  parses to nothing (stop words, punctuation) falls back to the substring
-  match alone. Natural-language sentences therefore return nothing when one
-  word is absent from the parcel; agents search with two or three
-  distinctive words.
+- **Query semantics.** In short: every word must match; when nothing does,
+  parcels matching any of the words are returned, best first, and marked
+  relaxed; operators (quotes, `-word`, `or`) turn that off. Exactly: `q`
+  matches by substring (ILIKE) on id, title, description and slug, **or**
+  `search_vec @@ websearch_to_tsquery('english', q)` (every word, stemmed,
+  in the title, description, tags or the entry page's text; quotes, `or`
+  and `-word` work as in a web search). Order with `q`: `ts_rank_cd` (title
+  over description and tags over page text), then `updated_at`, then id;
+  without, `updated_at`. A query that parses to nothing (stop words,
+  punctuation) falls back to the substring match alone.
+- **Relaxed fallback (plan 002).** When that exact clause matches nothing
+  in the caller's scope and filters (one `EXISTS` probe,
+  `db::parcels::search_mode`) and the query is *relaxable* — at least two
+  whitespace-separated words, no `"`, no word starting with `-`, no word
+  `or` (Rust, `parcels::relaxable`), and at least two distinct lexemes
+  (`cardinality(tsvector_to_array(to_tsvector('english', q)))`, so
+  `plan-002` or `e-mail` alone never relaxes) — the list reruns with the
+  full-text branch's query replaced by an OR of the query's lexemes, built
+  in SQL with hand-written quoting (`quote_literal` would write `E'…'`,
+  which the tsquery parser rejects); the substring branches stay. Relaxed
+  order: how many of the lexemes a parcel has, then `ts_rank_cd` over the OR
+  query, then `updated_at`, id (plain `ts_rank_cd` over an OR would put a
+  one-word title match above a page with all but one word); snippets mark
+  the OR terms. `ParcelList.relaxed` is `true` then (absent otherwise, so
+  exact bodies are unchanged, and old clients ignore it). `GET /tags` takes
+  `mode=auto|exact|relaxed`: `auto` (default) runs the same probe (`prefix`
+  plays no part); the SPA passes the list's mode to every facet request,
+  the main one and each swap, so the sidebar counts what the list shows;
+  `TagList.relaxed` says which ran. The probe, page and total are separate
+  statements: under concurrent writes they agree on a best-effort basis.
+  The probe of a relaxable query that matches nothing scans the caller's
+  scope once more (measured in plan 002's artifacts). Feature
+  `search-relaxed`.
 - **The index.** `search_vec` is maintained by triggers (never by the app):
   title (weight A), description and tags (B) and page text (D), all with the
   `english` configuration the query uses. `parcels_a_version_changed` runs

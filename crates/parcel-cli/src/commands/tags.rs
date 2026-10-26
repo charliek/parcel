@@ -63,6 +63,8 @@ fn list(settings: &Settings, args: TagsListArgs) -> Result<()> {
         let body = TagList {
             total: i64::try_from(tags.len()).unwrap_or(i64::MAX),
             tags,
+            // No query: nothing to relax.
+            relaxed: false,
         };
         return output::print_json(&serde_json::to_vec(&body)?);
     }

@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  Info,
   LayoutGrid,
   List,
   Loader2,
@@ -31,10 +32,13 @@ import { errorMessage } from '@/lib/http';
 import {
   type DashboardQuery,
   dashboardSearch,
+  facetMode,
   isFiltered,
   isLegacyDashboardSearch,
   listFilters,
   parseDashboardQuery,
+  RELAXED_NOTICE,
+  showsRelaxedNotice,
   toggleTag,
 } from '@/lib/search-query';
 import { readStorage, STORAGE_KEYS, writeStorage } from '@/lib/storage';
@@ -273,7 +277,16 @@ export function DashboardPage() {
   const list = useParcelList(filters);
   const parcels = list.data?.pages.flatMap((page) => page.parcels) ?? [];
   const total = list.data?.pages[0]?.total ?? 0;
-  const counts = useFacetCounts(query);
+  // The first page says whether the search was relaxed; until it is in for
+  // these filters (the previous filters' results stay up meanwhile), the
+  // facets wait and the notice stays off. A failed list lets the server
+  // decide the facets' mode.
+  const first = list.data?.pages[0];
+  const counts = useFacetCounts(
+    query,
+    list.isError ? undefined : facetMode(query, first, list.isPlaceholderData),
+  );
+  const relaxed = showsRelaxedNotice(first, list.isPlaceholderData);
   // Autocomplete offers everything in scope, not only what the filters leave.
   const vocabulary = useTagCounts({ scope: query.scope, archived: query.archived });
   const filtered = isFiltered(query);
@@ -472,6 +485,16 @@ export function DashboardPage() {
             >
               {pluralize(total, 'parcel')}
               {filtered ? ' match' : ''}
+            </p>
+          )}
+          {relaxed && !list.isError && (
+            <p
+              className="mb-3 flex items-center gap-1.5 text-muted-foreground text-sm"
+              role="status"
+              data-testid="relaxed-notice"
+            >
+              <Info className="h-4 w-4 shrink-0" aria-hidden />
+              {RELAXED_NOTICE}
             </p>
           )}
           <div className={cn(parcels.length === 0 && 'mt-3')}>
