@@ -111,9 +111,9 @@ Also (PLAN.md, "Tags, slugs, archive and search"):
 ## Shared libraries (stridelabs-*)
 
 The owner's guidance, shared by every app on the libraries. parcel pins
-`stridelabs-rust` at one git tag (`crates/parcel-server/Cargo.toml`): config,
-observability, http, auth, mcp, postgres, plus testing and `test-support`
-in dev. Keep them strong but pragmatic: a library never holds parcel back.
+`stridelabs-rust` at one tag (or, between tags, one merged rev)
+(`crates/parcel-server/Cargo.toml`): config, observability, http, auth, mcp,
+postgres, gcp, plus testing and `test-support` in dev. Keep them strong but pragmatic: a library never holds parcel back.
 
 - **Where code goes.** Only parcel needs it: plain code, or a module built to
   lift out (narrow API, no parcel config, database or types, own tests). Other

@@ -37,6 +37,7 @@ async fn round_trips_through_the_emulator() {
         "env".into(),
         Some(EMULATOR.into()),
         None,
+        1 << 20,
     )
     .unwrap();
     let key = "blobs/sha256/ab/abcdef";

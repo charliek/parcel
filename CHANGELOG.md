@@ -23,6 +23,23 @@
 - After uploading a new version in the web app, the viewer lands on the
   parcel's canonical address (`/@handle/slug` when it has a slug), as a new
   parcel does, also when the upload started from a pinned old version.
+- **Storage:** the GCS blob store now runs on the shared `stridelabs-gcp`
+  client (parcel's own GCS client and token code are gone). Env vars and object
+  names are unchanged, and production's metadata-server token request is the
+  same request. Behaviour notes: a `GOOGLE_CREDENTIALS` key without a `type`
+  is taken as `service_account`; a key that is set is validated at startup
+  (it must sign, and its `token_uri` must be https or loopback http), as is
+  `GCS_BUCKET`'s name, and the server refuses to start rather than fail the
+  first request; transient GCS failures (408, 429, 500, 502, 503, 504,
+  dropped connections, token-endpoint hiccups) are retried — writes and
+  deletes up to 3 attempts of 60 s each, retrying within 30 s; reads up to 2
+  attempts of 30 s each, retrying within 10 s; an attempt that timed out is
+  never retried; a read stops at `max(entry/file limit,
+  PARCEL_MAX_UPLOAD_BYTES, 64 MiB)` bytes; GCS errors are the library's
+  value-free ones, and the existence check's operation label is now `exists`
+  (was `stat`).
+- The stridelabs-rust crates are pinned to merged commit `20d3967` (adds
+  `GcsClient::exists`) until a tag includes it.
 
 ## v0.2.0
 

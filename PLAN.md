@@ -25,8 +25,9 @@ call that is cheap to revisit.
 - Skill (`skills/parcel/SKILL.md`), embedded in the CLI with `include_str!` and
   installed by `parcel skill install` into `~/.claude/skills/parcel/` (which Claude
   Code, craze native and opencode all scan). Also a Claude plugin manifest.
-- Blob storage behind a `BlobStore` trait: filesystem (dev default), GCS (prod; JSON
-  API over reqwest, tested against `fake-gcs-server`), in-memory (tests).
+- Blob storage behind a `BlobStore` trait: filesystem (dev default), GCS (prod;
+  `stridelabs-gcp`'s JSON-API client since plan 002, tested against
+  `fake-gcs-server` and wiremock), in-memory (tests). See "Blob storage" below.
 - Deploy artifacts for Cloud Run + Neon + GCS (Dockerfile, service template, docs,
   workflows) — prepared, not executed. The goal for now is **fully working locally**.
 - Tests: Rust unit + integration (real Postgres, fail-loud), Python functional tests
@@ -117,6 +118,48 @@ search (v0.5)".
 
 These mirror the published limits of Claude artifacts so skills written for one
 port to the other.
+
+### Blob storage
+
+The GCS backend (`storage/gcs.rs`) is a `BlobStore` adapter over
+`stridelabs-gcp`'s `GcsClient`; parcel keeps only the policy:
+
+- **Names:** `GCS_PREFIX` with its outer slashes trimmed (nothing else), `/`,
+  then the blob key, sent as GCS addresses it (`ObjectNamePolicy::Literal`), so
+  objects written before the library stay reachable under any prefix.
+- **Endpoint and credentials, chosen independently:** `STORAGE_EMULATOR_HOST`
+  (scheme defaulting to `http://`, trailing slashes dropped) picks the emulator,
+  otherwise the JSON API; `GOOGLE_CREDENTIALS` (strict base64 service-account
+  JSON; a missing `type` is taken as `service_account`, `token_uri` is required,
+  the scope is `devstorage.read_write`, no `x-goog-user-project`) picks the key,
+  otherwise the emulator goes unauthenticated and the JSON API uses the metadata
+  server (no `?scopes=`, 10 s timeout). A blank `GOOGLE_CREDENTIALS` is unset,
+  like every variable. A key that is set is checked at startup
+  (`ServiceAccountKey::validate`: it signs, and its `token_uri` is https or
+  loopback http with no userinfo, query or fragment), as is `GCS_BUCKET`'s name;
+  a bad one stops the server, with an error that never quotes the value. Never a
+  fallback to another identity, and no process-environment credential lookup.
+- **Two clients:** the writer (`put`, `exists`, `delete`) has 60 s per attempt, at
+  most 3 attempts, retrying only within 30 s of the first attempt's start; the
+  reader (`get`, viewing and indexing) 30 s, 2 attempts, within 10 s. Both retry
+  408/429/500/502/503/504, transient transport or token failures and attempts cut
+  off by their timeout, on Google's backoff (1 s doubling), never 401/403/404. A
+  retry starts only if its backoff ends within the deadline, and each deadline is
+  shorter than its client's timeout, so a timed-out attempt is never retried while
+  quick failures are. Worst cases: a viewer waits about 10 s of quick retries plus
+  one 30 s attempt, a write (or a GC delete, which holds its blob row's lock
+  meanwhile) about 30 s plus one 60 s attempt.
+- **Read cap:** a download stops at `max(max(PARCEL_MAX_ENTRY_BYTES,
+  PARCEL_MAX_FILE_BYTES), PARCEL_MAX_UPLOAD_BYTES, 64 MiB)` bytes. No blob is
+  larger than the limits in force when it was stored, so a stored blob becomes
+  unreadable only if its size exceeds 64 MiB *and* every current one of
+  `PARCEL_MAX_ENTRY_BYTES`, `PARCEL_MAX_FILE_BYTES` and `PARCEL_MAX_UPLOAD_BYTES`
+  (e.g. 100 MiB stored under 128 MiB limits, then all three lowered to 96 MiB).
+  Raising the limits again makes it readable.
+- **Errors** are the library's: an operation (`upload`, `download`, `exists`,
+  `delete`), a status and Google's plain `error.status` code; never an object
+  name, Google's free-text message, a bearer or key material, and no URL beyond a
+  token endpoint's origin (`scheme://host[:port]`).
 
 ### Auth
 
