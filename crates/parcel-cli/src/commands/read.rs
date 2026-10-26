@@ -133,7 +133,11 @@ pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
     if args.json.json {
         return output::print_json(&list.raw);
     }
-    let ParcelList { parcels, total } = list.value;
+    let ParcelList {
+        parcels,
+        total,
+        relaxed,
+    } = list.value;
     if parcels.is_empty() {
         let message = match (&args.query, total) {
             (Some(q), _) => format!("No parcels match {q:?}.\n"),
@@ -144,6 +148,10 @@ pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
             (None, _) => format!("No parcels on this page ({total} in total).\n"),
         };
         return output::print(&message);
+    }
+    if relaxed {
+        // On stderr, so the table on stdout stays what it is.
+        eprintln!("{RELAXED_NOTICE}");
     }
     let with_owner = scope != ListScope::Mine;
     let with_tags = parcels.iter().any(|p| !p.tags.is_empty());
@@ -215,6 +223,9 @@ pub fn list(settings: &Settings, args: ListArgs) -> Result<()> {
     // Titles, names and snippets can be other people's (or page text).
     output::print(&printable(&out))
 }
+
+/// Said (on stderr) above a relaxed list: no parcel matched every word.
+const RELAXED_NOTICE: &str = "No exact matches; showing parcels that match any of the words.";
 
 /// A table cell from text someone else may have written: control
 /// characters spelled out, kept on one line.

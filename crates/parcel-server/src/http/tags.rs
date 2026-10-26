@@ -6,7 +6,7 @@ use axum::Json;
 use parcel_types::tags::{normalize_tag, MAX_TAG_CHARS};
 use parcel_types::{
     ArchivedFilter, DeleteTagRequest, ErrorBody, ListScope, RenameTagRequest, TagCount, TagList,
-    TagsUpdated,
+    TagsMode, TagsUpdated,
 };
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -14,7 +14,8 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::auth::AuthUser;
-use crate::db::{parcels, tags};
+use crate::db::parcels::{self, SearchMode};
+use crate::db::tags;
 use crate::error::{tag_error, AppError, AppResult};
 use crate::http::parcels::list_filter;
 use crate::state::AppState;
@@ -38,6 +39,12 @@ pub struct TagsQuery {
     pub tag: Vec<String>,
     /// Count only parcels matching this search (as `GET /parcels`).
     pub q: Option<String>,
+    /// How `q` matches: `auto` (default) as `GET /parcels` decides for the same
+    /// filters (`prefix` plays no part), `exact` (every word) or `relaxed`
+    /// (any word). Pass a list's mode (`relaxed` when it was marked so, else
+    /// `exact`) to count what that list shows.
+    #[param(inline)]
+    pub mode: Option<TagsMode>,
     /// `exclude` (default), `include` or `only`.
     #[param(inline)]
     pub archived: Option<ArchivedFilter>,
@@ -55,7 +62,8 @@ pub struct TagsQuery {
     tag = "tags",
     description = "The tags on the parcels the filters select, each with how many of those \
         parcels carry it (facet counts): most used first, then by name. Takes the same \
-        `scope`, `tag`, `q` and `archived` filters as `GET /parcels`.",
+        `scope`, `tag`, `q` and `archived` filters as `GET /parcels`, and `mode` for how `q` \
+        matches; `relaxed` says the counts are over parcels matching any of `q`'s words.",
     params(TagsQuery),
     security(("bearer" = [])),
     responses(
@@ -90,14 +98,28 @@ pub(crate) async fn list(state: &AppState, caller: &AuthUser, q: &TagsQuery) -> 
             "prefix must be at most {MAX_TAG_CHARS} characters"
         )));
     }
+    if prefix.as_ref().is_some_and(|p| p.contains('\0')) {
+        return Err(AppError::BadRequest(
+            "prefix must not contain NUL".to_string(),
+        ));
+    }
+    let mode = match q.mode.unwrap_or_default() {
+        // The list's own decision: the same filters, without `prefix`.
+        TagsMode::Auto => parcels::search_mode(&state.db, &filter).await?,
+        TagsMode::Exact => SearchMode::Exact,
+        // Without a query there is nothing to relax.
+        TagsMode::Relaxed if filter.query.is_some() => SearchMode::Relaxed,
+        TagsMode::Relaxed => SearchMode::Exact,
+    };
     let (rows, total) =
-        parcels::tag_counts(&state.db, &filter, prefix.as_deref(), limit, offset).await?;
+        parcels::tag_counts(&state.db, &filter, mode, prefix.as_deref(), limit, offset).await?;
     Ok(TagList {
         tags: rows
             .into_iter()
             .map(|(tag, count)| TagCount { tag, count })
             .collect(),
         total,
+        relaxed: mode == SearchMode::Relaxed,
     })
 }
 

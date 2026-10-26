@@ -1268,6 +1268,7 @@ async fn the_instructions_teach_finding_and_organizing() {
         "<repo>/<plan-name>",
         "list_parcels",
         "canonical_url",
+        "relaxed: true",
     ] {
         assert!(text.contains(needle), "instructions lack {needle:?}");
     }
@@ -1899,4 +1900,73 @@ async fn a_slug_ref_to_a_private_parcel_looks_like_a_missing_one() {
     let (_, still) = call(&app, &ada, "get_parcel", json!({"parcel": "secret/plan"})).await;
     assert_eq!(still["parcel"]["slug"], "secret/plan");
     assert!(still["parcel"]["archived_at"].is_null());
+}
+
+/// `relaxed: true` rides on `list_parcels` pages of both item shapes (the
+/// flattened mine/all items and the `which=shared` ones) and on
+/// `list_tags`, only when the relaxed search ran; an exact page keeps the
+/// keys it always had.
+#[tokio::test]
+async fn relaxed_pages_say_so_for_every_item_shape() {
+    let app = mcp_app(|_| {}).await;
+    known_user(&app, "sub-ada", "ada@example.com").await;
+    known_user(&app, "sub-bob", "bob@example.com").await;
+    let scopes = ["parcel:read", "parcel:write"];
+    let ada = mcp_token(&app, "sub-ada", "ada@example.com", &scopes);
+    let bob = mcp_token(&app, "sub-bob", "bob@example.com", &scopes);
+    // Titles are searched as soon as a publish commits; no word pair is in
+    // any one parcel, so "kestrel falcon" matches nothing exactly.
+    publish_page(&app, &ada, "<title>Kestrel notes</title>").await;
+    let falcon = publish_page(&app, &ada, "<title>Falcon notes</title>").await;
+    publish_page(&app, &bob, "<title>Kestrel watch</title>").await;
+    let (err, shared) = call(
+        &app,
+        &ada,
+        "share_parcel",
+        json!({"parcel": falcon, "email": "bob@example.com"}),
+    )
+    .await;
+    assert!(!err, "{shared}");
+
+    let words = "kestrel falcon";
+    let (_, mine) = call(&app, &ada, "list_parcels", json!({"query": words})).await;
+    assert_eq!(keys(&mine), ["has_more", "items", "relaxed", "total"]);
+    assert_eq!(
+        (&mine["relaxed"], &mine["total"]),
+        (&json!(true), &json!(2))
+    );
+    assert!(mine["items"][0].get("id").is_some(), "{mine}");
+    let (_, exact) = call(&app, &ada, "list_parcels", json!({"query": "kestrel"})).await;
+    assert_eq!(keys(&exact), ["has_more", "items", "total"]);
+
+    let (_, theirs) = call(
+        &app,
+        &bob,
+        "list_parcels",
+        json!({"query": words, "which": "shared"}),
+    )
+    .await;
+    assert_eq!(theirs["relaxed"], true, "{theirs}");
+    assert_eq!(theirs["total"], 1);
+    for key in ["parcel", "owner_name", "role", "shared_at"] {
+        assert!(theirs["items"][0].get(key).is_some(), "{key} in {theirs}");
+    }
+    let (_, all) = call(
+        &app,
+        &bob,
+        "list_parcels",
+        json!({"query": words, "which": "all"}),
+    )
+    .await;
+    assert_eq!((&all["relaxed"], &all["total"]), (&json!(true), &json!(2)));
+    let flattened = all["items"].as_array().unwrap();
+    assert!(flattened.iter().all(|i| i.get("id").is_some()), "{all}");
+    assert!(flattened.iter().any(|i| i.get("shared").is_some()), "{all}");
+
+    let (_, tags) = call(&app, &ada, "list_tags", json!({"query": words})).await;
+    assert_eq!(keys(&tags), ["has_more", "items", "relaxed", "total"]);
+    let (_, exact) = call(&app, &ada, "list_tags", json!({"query": "kestrel"})).await;
+    assert_eq!(keys(&exact), ["has_more", "items", "total"]);
+    let (_, plain) = call(&app, &ada, "list_tags", json!({})).await;
+    assert_eq!(keys(&plain), ["has_more", "items", "total"]);
 }

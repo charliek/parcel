@@ -1,5 +1,58 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Deadlocks are retried once.** A publish, new version, restore, PATCH,
+  tag rename or tag delete that hits a deadlock or serialization failure
+  (SQLSTATE 40P01/40001) is retried once after a short jittered wait,
+  instead of failing with a 500. Blob uploads are not repeated.
+- **Database errors are logged value-free.** Unexpected database errors are
+  logged with the call site, SQLSTATE and a fixed description only, never
+  PostgreSQL's message, DETAIL or HINT (which can quote input values).
+- Search vectors are rebuilt only when a parcel's title, description, tags
+  or page text actually change (migration 0009), so a visibility-only change
+  or a new version over already-empty page text no longer recomputes them.
+- A search `q` (or `/tags` `prefix`) containing a NUL character is a 400; it
+  was a 500.
+- **Search falls back to any word.** `q` (`GET /api/v1/parcels`, the web
+  app's search, `parcel list -q`, MCP `list_parcels`): every word must
+  match; when nothing does, parcels matching any of the words are returned,
+  best first, and marked relaxed; operators (quotes, `-word`, `or`) turn that
+  off, and so does a query of one word or one token (`plan-002`, `e-mail`).
+  Relaxed results rank by how many of the words they have, then relevance,
+  and their snippets mark every matched word. `ParcelList` and `TagList`
+  gain `relaxed: true` (absent when false); `GET /api/v1/tags` takes
+  `mode=auto|exact|relaxed` (default `auto`: as the list decides), and the
+  web app's facet counts follow the list's mode. The MCP `list_parcels`
+  (every `which`) and `list_tags` pages carry `relaxed: true` too. New
+  feature `search-relaxed` in `/api/v1/info`.
+- `parcel list -q` prints "No exact matches; showing parcels that match any
+  of the words." on stderr above a relaxed list (`--json` output is the
+  body, unchanged but for the flag); the dashboard shows the same notice.
+  Older CLIs (and their skills) show relaxed results without the notice:
+  they ignore the new field.
+- After uploading a new version in the web app, the viewer lands on the
+  parcel's canonical address (`/@handle/slug` when it has a slug), as a new
+  parcel does, also when the upload started from a pinned old version.
+- **Storage:** the GCS blob store now runs on the shared `stridelabs-gcp`
+  client (parcel's own GCS client and token code are gone). Env vars and object
+  names are unchanged, and production's metadata-server token request is the
+  same request. Behaviour notes: a `GOOGLE_CREDENTIALS` key without a `type`
+  is taken as `service_account`; a key that is set is validated at startup
+  (it must sign, and its `token_uri` must be https or loopback http), as is
+  `GCS_BUCKET`'s name, and the server refuses to start rather than fail the
+  first request; transient GCS failures (408, 429, 500, 502, 503, 504,
+  dropped connections, token-endpoint hiccups) are retried — writes and
+  deletes up to 3 attempts of 60 s each, retrying within 30 s; reads up to 2
+  attempts of 30 s each, retrying within 10 s; an attempt that timed out is
+  never retried; a read stops at `max(entry/file limit,
+  PARCEL_MAX_UPLOAD_BYTES, 64 MiB)` bytes; GCS errors are the library's
+  value-free ones, and the existence check's operation label is now `exists`
+  (was `stat`).
+- The stridelabs-rust crates are pinned to merged commit `20d3967` (adds
+  `GcsClient::exists`) until a tag includes it.
+
 ## v0.2.0
 
 The CLI and both plugins for the server's tags, slugs, search and pages

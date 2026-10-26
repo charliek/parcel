@@ -320,12 +320,22 @@ pub struct VersionList {
 }
 
 /// `GET /api/v1/parcels`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ParcelList {
     pub parcels: Vec<ParcelListItem>,
     /// Total number of matching parcels (for pagination).
     pub total: i64,
+    /// Set (`true`) when no parcel matched every word of `q`, so the list holds
+    /// the parcels matching any of them instead, best first. Absent otherwise.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub relaxed: bool,
+}
+
+/// For `skip_serializing_if`: leave a `false` flag off the wire, so a body
+/// is byte-for-byte what it was before the flag existed.
+pub fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// The `metadata` part of a create (`POST /api/v1/parcels`) multipart upload.
@@ -457,7 +467,7 @@ pub struct TagCount {
 }
 
 /// `GET /api/v1/tags`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TagList {
     /// Most used first, then by name.
@@ -465,6 +475,24 @@ pub struct TagList {
     /// How many distinct tags match (for paging).
     #[serde(default)]
     pub total: i64,
+    /// Set (`true`) when the parcels were counted with the relaxed search
+    /// (any of `q`'s words, as `ParcelList.relaxed`). Absent otherwise.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub relaxed: bool,
+}
+
+/// Which search `GET /api/v1/tags` counts the parcels of (`mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TagsMode {
+    /// As `GET /api/v1/parcels` decides for the same filters (the default).
+    #[default]
+    Auto,
+    /// Every word of `q` must match.
+    Exact,
+    /// Any word of `q` may match (what a list marked `relaxed` used).
+    Relaxed,
 }
 
 /// `POST /api/v1/tags/rename`.
@@ -614,7 +642,14 @@ pub struct ServerInfo {
 
 /// The optional features this version of the API has, as listed in
 /// [`ServerInfo::features`]: what the server reports and what a client looks for.
-pub const FEATURES: &[&str] = &["tags", "search", "archive", "slugs", "pages"];
+pub const FEATURES: &[&str] = &[
+    "tags",
+    "search",
+    "archive",
+    "slugs",
+    "pages",
+    "search-relaxed",
+];
 
 /// An API token as listed (never includes the secret).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

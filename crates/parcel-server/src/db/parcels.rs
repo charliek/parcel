@@ -10,6 +10,9 @@ use sqlx::{AssertSqlSafe, PgExecutor, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::error::{DbContext, DbError};
+use super::retry::{retry_once, retryable};
+
 /// A parcel joined with its current version's entry and totals.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ParcelRow {
@@ -108,7 +111,7 @@ pub async fn get(pool: &PgPool, id: &str) -> Result<Option<ParcelRow>> {
         .bind(id)
         .fetch_optional(pool)
         .await
-        .context("loading parcel")
+        .db_context("loading parcel")
 }
 
 /// What a parcel list (or its tag counts) covers. Every scope, filter and
@@ -161,7 +164,23 @@ pub const MAX_QUERY_CHARS: usize = 500;
 // share is matched by (parcel_id, email), the primary key, so a parcel
 // joins at most one share row. Without `q`, `params.tsq` is NULL and the
 // rank is 0 throughout.
-const PARAMS_CTE: &str = "WITH params AS (SELECT websearch_to_tsquery('english', $4) AS tsq)";
+//
+// `params` is what the search mode changes, and all it changes: `tsq` is
+// the query every clause, rank and snippet below uses, and `terms` (one
+// single-lexeme query per word, for counting matched words) is set in
+// relaxed mode only.
+const EXACT_PARAMS: &str =
+    "WITH params AS (SELECT websearch_to_tsquery('english', $4) AS tsq, NULL::tsquery[] AS terms)";
+// Relaxed: an OR of the query's lexemes, stemmed as the index is. Each
+// lexeme is quoted by hand: `quote_literal` writes `E'…'` for a string with a
+// backslash, which the tsquery parser rejects. A stop-word-only query has no
+// lexemes, so `tsq` is NULL and only the substring match applies.
+const RELAXED_PARAMS: &str = r"WITH lexemes AS (
+         SELECT '''' || replace(replace(l, '\', '\\'), '''', '''''') || '''' AS quoted
+         FROM unnest(tsvector_to_array(to_tsvector('english', $4))) AS l),
+     params AS (
+         SELECT (SELECT string_agg(quoted, ' | ') FROM lexemes)::tsquery AS tsq,
+                ARRAY(SELECT quoted::tsquery FROM lexemes) AS terms)";
 const SCOPED_FROM: &str = concat!(
     parcel_from!(),
     "
@@ -174,13 +193,83 @@ const SHARED_COLUMNS: &str = "o.name AS owner_name, o.email AS owner_email,
             s.role AS share_role, s.created_at AS shared_at";
 const TAGS_CLAUSE: &str = "\n       AND p.tags @> $3::text[]";
 // A query that parses to no lexemes (only stop words or punctuation) has
-// numnode 0: then only the substring match applies.
+// numnode 0 (NULL in relaxed mode): then only the substring match applies.
 const QUERY_CLAUSE: &str = "
        AND (p.id ILIKE $5 ESCAPE '\\' OR p.title ILIKE $5 ESCAPE '\\'
             OR p.description ILIKE $5 ESCAPE '\\' OR p.slug ILIKE $5 ESCAPE '\\'
             OR (numnode(params.tsq) > 0 AND p.search_vec @@ params.tsq))";
 const RANK: &str =
     "CASE WHEN numnode(params.tsq) > 0 THEN ts_rank_cd(p.search_vec, params.tsq) ELSE 0 END";
+// How many of the query's words a parcel has: the first sort key in relaxed
+// mode, since `ts_rank_cd` over an OR query would put a title matching one
+// word above a page matching all but one. 0 in exact mode (`terms` NULL).
+const MATCHED: &str = "(SELECT count(*) FROM unnest(params.terms) AS t WHERE p.search_vec @@ t)";
+
+/// How a query's words are matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchMode {
+    /// Every word (websearch syntax: quotes, `-word`, `or`).
+    #[default]
+    Exact,
+    /// Any word, best first: the fallback when nothing matches every word.
+    Relaxed,
+}
+
+impl SearchMode {
+    fn params(self) -> &'static str {
+        match self {
+            SearchMode::Exact => EXACT_PARAMS,
+            SearchMode::Relaxed => RELAXED_PARAMS,
+        }
+    }
+}
+
+/// Whether a query may fall back to matching any of its words, as far as
+/// its text says: at least two words and none of websearch's operators (a
+/// `"`, a word starting with `-`, the word `or`), since an operator means
+/// the caller asked for something exact. A single hyphenated or dotted
+/// token (`plan-002`, `e-mail`) is one word, though several lexemes, so it
+/// never relaxes. [`search_mode`] also needs two distinct lexemes, so
+/// repeated or stem-equal words and stop words don't either.
+pub fn relaxable(q: &str) -> bool {
+    !q.contains('"')
+        && q.split_whitespace().count() >= 2
+        && !q
+            .split_whitespace()
+            .any(|w| w.starts_with('-') || w.eq_ignore_ascii_case("or"))
+}
+
+/// The mode a list's query runs in: [`SearchMode::Relaxed`] when the query
+/// is [`relaxable`], has at least two distinct lexemes, and matches nothing
+/// exactly in the caller's scope and filters; else exact. One `EXISTS` probe
+/// over the same relation and clause as [`search`] (no statement when the
+/// text already rules relaxing out). The probe, the page and the total are
+/// separate statements: under concurrent writes they agree on a best-effort
+/// basis, as page and total always have.
+pub async fn search_mode(pool: &PgPool, f: &ListFilter) -> Result<SearchMode> {
+    if !f.query.as_deref().is_some_and(relaxable) {
+        return Ok(SearchMode::Exact);
+    }
+    // CASE evaluates the probe (an InitPlan) only when the count allows it.
+    let (relaxed,): (bool,) = bind_filter(
+        sqlx::query_as(AssertSqlSafe(format!(
+            "{EXACT_PARAMS}
+             SELECT CASE WHEN cardinality(tsvector_to_array(to_tsvector('english', $4))) >= 2
+                         THEN NOT EXISTS (SELECT 1 {SCOPED_FROM} WHERE {})
+                         ELSE false END",
+            conditions(f)
+        ))),
+        f,
+    )
+    .fetch_one(pool)
+    .await
+    .db_context("probing the search mode")?;
+    Ok(if relaxed {
+        SearchMode::Relaxed
+    } else {
+        SearchMode::Exact
+    })
+}
 
 /// The `WHERE` conditions of the scoped relation for a filter.
 fn conditions(f: &ListFilter) -> String {
@@ -213,16 +302,19 @@ fn bind_filter<'q, O>(
 }
 
 /// One page of a parcel list, and the total. With a query, ordered by
-/// relevance (`ts_rank_cd`, title over description and tags over page text)
-/// then recency; without, by recency. Snippets are computed only for the
-/// page's rows, after `LIMIT`.
+/// relevance (`ts_rank_cd`, title over description and tags over page text;
+/// in relaxed mode, how many of the words matched comes first) then
+/// recency; without, by recency. Snippets are computed only for the page's
+/// rows, after `LIMIT`, and mark the words `mode` matched.
 pub async fn search(
     pool: &PgPool,
     f: &ListFilter,
+    mode: SearchMode,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<SearchRow>, i64)> {
     let conditions = conditions(f);
+    let params = mode.params();
     let headline = if f.query.is_some() {
         "(SELECT CASE WHEN numnode(params.tsq) > 0 AND x.search_text <> ''
                       THEN ts_headline('english', x.search_text, params.tsq, $8) END
@@ -232,15 +324,17 @@ pub async fn search(
     };
     let rows = bind_filter(
         sqlx::query_as::<_, SearchRow>(AssertSqlSafe(format!(
-            "{PARAMS_CTE}, page AS (
-             SELECT {PARCEL_COLUMNS}, {SHARED_COLUMNS}, {RANK} AS search_rank
+            "{params}, page AS (
+             SELECT {PARCEL_COLUMNS}, {SHARED_COLUMNS},
+                    {MATCHED} AS search_matched, {RANK} AS search_rank
              {SCOPED_FROM}
              WHERE {conditions}
-             ORDER BY search_rank DESC, p.updated_at DESC, p.id
+             ORDER BY search_matched DESC, search_rank DESC, p.updated_at DESC, p.id
              LIMIT $6 OFFSET $7)
              SELECT page.*, {headline} AS headline
              FROM page CROSS JOIN params
-             ORDER BY page.search_rank DESC, page.updated_at DESC, page.id"
+             ORDER BY page.search_matched DESC, page.search_rank DESC, page.updated_at DESC,
+                      page.id"
         ))),
         f,
     )
@@ -250,29 +344,32 @@ pub async fn search(
     .fetch_all(pool);
     let total = bind_filter(
         sqlx::query_as::<_, (i64,)>(AssertSqlSafe(format!(
-            "{PARAMS_CTE} SELECT count(*) {SCOPED_FROM} WHERE {conditions}"
+            "{params} SELECT count(*) {SCOPED_FROM} WHERE {conditions}"
         ))),
         f,
     )
     .fetch_one(pool);
     let (rows, (total,)) =
-        tokio::try_join!(async { rows.await.context("listing parcels") }, async {
-            total.await.context("counting parcels")
+        tokio::try_join!(async { rows.await.db_context("listing parcels") }, async {
+            total.await.db_context("counting parcels")
         },)?;
     Ok((rows, total))
 }
 
 /// Tags on the parcels a filter covers, with how many of them carry each
 /// (facet counts): most used first, then by name. `prefix` (normalized)
-/// keeps tags that start with it. Returns a page and the distinct total.
+/// keeps tags that start with it. `mode` is the list's, so the counts
+/// describe the parcels it shows. Returns a page and the distinct total.
 pub async fn tag_counts(
     pool: &PgPool,
     f: &ListFilter,
+    mode: SearchMode,
     prefix: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<(String, i64)>, i64)> {
     let pattern = prefix.map(|p| format!("{}%", escape_like(p)));
+    let params = mode.params();
     let relation = format!(
         "{SCOPED_FROM}
      CROSS JOIN LATERAL unnest(p.tags) AS t(tag)
@@ -282,7 +379,7 @@ pub async fn tag_counts(
     );
     let rows = bind_filter(
         sqlx::query_as::<_, (String, i64)>(AssertSqlSafe(format!(
-            "{PARAMS_CTE} SELECT t.tag, count(*) AS n {relation}
+            "{params} SELECT t.tag, count(*) AS n {relation}
              GROUP BY t.tag ORDER BY n DESC, t.tag COLLATE \"C\" LIMIT $7 OFFSET $8"
         ))),
         f,
@@ -293,15 +390,15 @@ pub async fn tag_counts(
     .fetch_all(pool);
     let total = bind_filter(
         sqlx::query_as::<_, (i64,)>(AssertSqlSafe(format!(
-            "{PARAMS_CTE} SELECT count(DISTINCT t.tag) {relation}"
+            "{params} SELECT count(DISTINCT t.tag) {relation}"
         ))),
         f,
     )
     .bind(pattern.as_deref())
     .fetch_one(pool);
     let (rows, (total,)) =
-        tokio::try_join!(async { rows.await.context("counting tags") }, async {
-            total.await.context("counting distinct tags")
+        tokio::try_join!(async { rows.await.db_context("counting tags") }, async {
+            total.await.db_context("counting distinct tags")
         },)?;
     Ok((rows, total))
 }
@@ -320,7 +417,7 @@ pub async fn list_versions(pool: &PgPool, parcel_id: &str) -> Result<Vec<Version
     .bind(parcel_id)
     .fetch_all(pool)
     .await
-    .context("listing versions")
+    .db_context("listing versions")
 }
 
 /// Generic over the executor so a publish can read inside its own
@@ -338,7 +435,7 @@ pub async fn get_version<'e>(
     .bind(version)
     .fetch_optional(db)
     .await
-    .context("loading version")
+    .db_context("loading version")
 }
 
 pub async fn version_files<'e>(
@@ -354,7 +451,7 @@ pub async fn version_files<'e>(
     .bind(version)
     .fetch_all(db)
     .await
-    .context("listing version files")
+    .db_context("listing version files")
 }
 
 pub async fn find_file(
@@ -372,7 +469,7 @@ pub async fn find_file(
     .bind(path)
     .fetch_optional(pool)
     .await
-    .context("finding file")
+    .db_context("finding file")
 }
 
 /// Everything the content server needs for one request, in one round trip.
@@ -407,7 +504,7 @@ pub async fn content_lookup(
     .bind(path)
     .fetch_optional(pool)
     .await
-    .context("content lookup")
+    .db_context("content lookup")
 }
 
 /// What a content grant needs re-checked: the parcel's visibility and
@@ -420,7 +517,7 @@ pub async fn grant_state(pool: &PgPool, id: &str) -> Result<Option<(Visibility, 
     .bind(id)
     .fetch_optional(pool)
     .await
-    .context("loading parcel grant state")?;
+    .db_context("loading parcel grant state")?;
     Ok(row.map(|(v, disabled)| (Visibility::parse(&v).unwrap_or_default(), disabled)))
 }
 
@@ -433,7 +530,7 @@ pub async fn version_entry(pool: &PgPool, parcel_id: &str, version: i32) -> Resu
     .bind(version)
     .fetch_optional(pool)
     .await
-    .context("loading version entry")
+    .db_context("loading version entry")
 }
 
 /// How a PATCH changes the tag set.
@@ -475,14 +572,29 @@ pub enum PatchRefused {
 /// Apply a PATCH in one transaction: the owner's lock, then the parcel's
 /// row lock (the one lock order, so a concurrent publish or tag rename
 /// can't deadlock with it), then the tag edit computed against the locked
-/// row, so two concurrent edits never lose each other's tags.
+/// row, so two concurrent edits never lose each other's tags. A deadlock or
+/// serialization failure reruns it once ([`retry_once`]), from the locks.
 pub async fn apply_patch(
     pool: &PgPool,
     owner_id: Uuid,
     id: &str,
     patch: &Patch<'_>,
 ) -> Result<Result<(), PatchRefused>> {
-    let mut tx = pool.begin().await.context("beginning parcel update")?;
+    retry_once(
+        "parcel update",
+        || apply_patch_once(pool, owner_id, id, patch),
+        retryable,
+    )
+    .await
+}
+
+async fn apply_patch_once(
+    pool: &PgPool,
+    owner_id: Uuid,
+    id: &str,
+    patch: &Patch<'_>,
+) -> Result<Result<(), PatchRefused>> {
+    let mut tx = pool.begin().await.db_context("beginning parcel update")?;
     lock_owner_quota(&mut tx, owner_id).await?;
     let Some(locked) = lock_for_update(&mut tx, id).await? else {
         return Ok(Err(PatchRefused::ParcelGone));
@@ -520,14 +632,15 @@ pub async fn apply_patch(
         )
         .await?;
     }
-    tx.commit().await.context("committing parcel update")?;
+    tx.commit().await.db_context("committing parcel update")?;
     Ok(Ok(()))
 }
 
 /// Set the tags and/or the archive state, leaving `updated_at` alone.
 /// `archived: Some(true)` keeps an existing archive time. Only a tags change
-/// names `tags` in its `SET`: the search trigger (0006) rebuilds the search
-/// vector whenever the column is listed, changed or not.
+/// names `tags` in its `SET`: the search trigger (0006) fires whenever the
+/// column is listed, and though it rebuilds the vector only when a searched
+/// column actually changed (0009), an unchanged row isn't worth the update.
 pub async fn update_organization(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
@@ -540,7 +653,7 @@ pub async fn update_organization(
             .bind(tags)
             .execute(&mut **tx)
             .await
-            .context("updating parcel tags")?;
+            .db_context("updating parcel tags")?;
     }
     if let Some(archived) = archived {
         sqlx::query(
@@ -552,7 +665,7 @@ pub async fn update_organization(
         .bind(archived)
         .execute(&mut **tx)
         .await
-        .context("updating parcel archive state")?;
+        .db_context("updating parcel archive state")?;
     }
     Ok(())
 }
@@ -564,7 +677,7 @@ pub async fn delete(pool: &PgPool, id: &str) -> Result<bool> {
         .bind(id)
         .execute(pool)
         .await
-        .context("deleting parcel")?;
+        .db_context("deleting parcel")?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -580,7 +693,7 @@ pub async fn usage(pool: &PgPool, owner_id: Uuid) -> Result<Usage> {
     .bind(owner_id)
     .fetch_one(pool)
     .await
-    .context("computing usage")?;
+    .db_context("computing usage")?;
     Ok(Usage {
         parcel_count,
         version_count,
@@ -623,19 +736,15 @@ pub async fn insert_parcel(tx: &mut Transaction<'_, Postgres>, p: &NewParcel<'_>
     .bind(p.slug)
     .execute(&mut **tx)
     .await
-    .context("inserting parcel")?;
+    .db_context("inserting parcel")?;
     Ok(())
 }
 
 /// The name of the unique constraint `e` violated, if that is what it is.
 pub fn violated_constraint(e: &anyhow::Error) -> Option<&str> {
-    e.chain().find_map(|cause| {
-        cause
-            .downcast_ref::<sqlx::Error>()
-            .and_then(|s| s.as_database_error())
-            .filter(|d| d.is_unique_violation())
-            .map(|d| d.constraint().unwrap_or_default())
-    })
+    DbError::find(e)
+        .filter(|d| d.is_unique_violation())
+        .map(|d| d.constraint().unwrap_or_default())
 }
 
 /// A parcel's row, locked for the rest of the transaction.
@@ -659,7 +768,7 @@ pub async fn lock_for_update(
     .bind(id)
     .fetch_optional(&mut **tx)
     .await
-    .context("locking parcel")
+    .db_context("locking parcel")
 }
 
 pub struct NewVersion<'a> {
@@ -692,7 +801,7 @@ pub async fn insert_version(tx: &mut Transaction<'_, Postgres>, v: &NewVersion<'
     .bind(v.source.map(Json))
     .execute(&mut **tx)
     .await
-    .context("inserting version")?;
+    .db_context("inserting version")?;
 
     let paths: Vec<&str> = v.files.iter().map(|f| f.path.as_str()).collect();
     let shas: Vec<&str> = v.files.iter().map(|f| f.blob_sha256.as_str()).collect();
@@ -715,19 +824,20 @@ pub async fn insert_version(tx: &mut Transaction<'_, Postgres>, v: &NewVersion<'
     .bind(&titles)
     .execute(&mut **tx)
     .await
-    .context("inserting version files")?;
+    .db_context("inserting version files")?;
 
     sqlx::query("UPDATE parcels SET current_version = $2, updated_at = now() WHERE id = $1")
         .bind(v.parcel_id)
         .bind(v.version)
         .execute(&mut **tx)
         .await
-        .context("advancing current version")?;
+        .db_context("advancing current version")?;
     Ok(())
 }
 
 /// Apply optional metadata changes inside a transaction. `touch` bumps
-/// `updated_at` (a PATCH; a publish has already bumped it).
+/// `updated_at` (a PATCH; a publish has already bumped it). With nothing to
+/// change and nothing to touch (most new versions) no statement runs.
 pub async fn update_metadata_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
@@ -736,6 +846,9 @@ pub async fn update_metadata_tx(
     visibility: Option<Visibility>,
     touch: bool,
 ) -> Result<()> {
+    if title.is_none() && description.is_none() && visibility.is_none() && !touch {
+        return Ok(());
+    }
     sqlx::query(
         "UPDATE parcels SET
              title = COALESCE($2, title),
@@ -751,7 +864,7 @@ pub async fn update_metadata_tx(
     .bind(touch)
     .execute(&mut **tx)
     .await
-    .context("updating parcel metadata")?;
+    .db_context("updating parcel metadata")?;
     Ok(())
 }
 
@@ -766,7 +879,7 @@ pub async fn stored_bytes_tx(tx: &mut Transaction<'_, Postgres>, owner_id: Uuid)
     .bind(owner_id)
     .fetch_one(&mut **tx)
     .await
-    .context("computing stored bytes")
+    .db_context("computing stored bytes")
 }
 
 /// Serialize a user's publishes so two concurrent uploads can't both pass
@@ -778,16 +891,55 @@ pub async fn lock_owner_quota(tx: &mut Transaction<'_, Postgres>, owner_id: Uuid
         .bind(owner_id)
         .execute(&mut **tx)
         .await
-        .context("taking quota lock")?;
+        .db_context("taking quota lock")?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::escape_like;
+    use super::{escape_like, relaxable};
 
     #[test]
     fn like_patterns_are_escaped() {
         assert_eq!(escape_like("50%_off\\"), "50\\%\\_off\\\\");
+    }
+
+    #[test]
+    fn only_plain_multi_word_queries_relax() {
+        for q in [
+            "rust build",
+            "how do we handle failed payments",
+            "  faster\trust\nbuilds ",
+            // `or` only as a whole word.
+            "order form",
+            "for the records",
+            "orange ore",
+            // Mid-word dashes and apostrophes are text, not operators.
+            "plan-002 notes",
+            "O'Brien report",
+            "C:\\foo\\bar baz",
+        ] {
+            assert!(relaxable(q), "{q:?}");
+        }
+        for q in [
+            "",
+            "   ",
+            "single",
+            // One token: the lexeme count decides, and it never reaches two
+            // words here anyway.
+            "plan-002",
+            "e-mail",
+            "example.com",
+            "\"rate limit\" throttling",
+            "rate \"limit",
+            "rate limit -throttling",
+            "-draft plan",
+            "- plan",
+            "rate or limit",
+            "rate OR limit",
+            "rate Or limit",
+        ] {
+            assert!(!relaxable(q), "{q:?}");
+        }
     }
 }

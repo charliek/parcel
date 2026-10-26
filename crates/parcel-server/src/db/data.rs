@@ -5,12 +5,14 @@
 //! queue instead of deadlocking, and two writes can't both squeeze under the
 //! parcel's data limit.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use parcel_types::DATA_ITEM_OVERHEAD;
 use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::{AssertSqlSafe, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
+
+use super::error::DbContext;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct DataRow {
@@ -37,7 +39,7 @@ pub async fn summary(pool: &PgPool, parcel_id: &str) -> Result<(i64, Vec<Collect
         .bind(parcel_id)
         .fetch_optional(pool)
         .await
-        .context("loading data revision")?
+        .db_context("loading data revision")?
         .unwrap_or(0);
     let collections = sqlx::query_as::<_, CollectionRow>(
         "SELECT collection AS name, count(*) AS count,
@@ -49,7 +51,7 @@ pub async fn summary(pool: &PgPool, parcel_id: &str) -> Result<(i64, Vec<Collect
     .bind(DATA_ITEM_OVERHEAD)
     .fetch_all(pool)
     .await
-    .context("summarizing parcel data")?;
+    .db_context("summarizing parcel data")?;
     Ok((revision, collections))
 }
 
@@ -73,7 +75,7 @@ pub async fn list(
     .bind(limit)
     .fetch_all(pool)
     .await
-    .context("listing parcel data")
+    .db_context("listing parcel data")
 }
 
 pub async fn get(
@@ -91,7 +93,7 @@ pub async fn get(
     .bind(key)
     .fetch_optional(pool)
     .await
-    .context("loading parcel data item")
+    .db_context("loading parcel data item")
 }
 
 /// How a write changes the stored value.
@@ -124,7 +126,7 @@ pub async fn write(
     max_value_bytes: i64,
     max_parcel_bytes: i64,
 ) -> Result<Result<DataRow, WriteRefused>> {
-    let mut tx = pool.begin().await.context("beginning data write")?;
+    let mut tx = pool.begin().await.db_context("beginning data write")?;
     if !bump_rev(&mut tx, parcel_id).await? {
         return Ok(Err(WriteRefused::ParcelGone));
     }
@@ -141,7 +143,7 @@ pub async fn write(
             .bind(key)
             .fetch_optional(&mut *tx)
             .await
-            .context("loading data item to merge")?;
+            .db_context("loading data item to merge")?;
             let mut value = current.map(|j| j.0).unwrap_or(Value::Null);
             merge_patch(&mut value, patch);
             value
@@ -162,7 +164,7 @@ pub async fn write(
     .bind(DATA_ITEM_OVERHEAD)
     .fetch_one(&mut *tx)
     .await
-    .context("measuring parcel data")?;
+    .db_context("measuring parcel data")?;
     if others + size + DATA_ITEM_OVERHEAD > max_parcel_bytes {
         return Ok(Err(WriteRefused::OverLimit { usage: others }));
     }
@@ -181,8 +183,8 @@ pub async fn write(
     .bind(size)
     .fetch_one(&mut *tx)
     .await
-    .context("writing data item")?;
-    tx.commit().await.context("committing data write")?;
+    .db_context("writing data item")?;
+    tx.commit().await.db_context("committing data write")?;
     Ok(Ok(row))
 }
 
@@ -194,14 +196,14 @@ pub async fn delete(
     collection: &str,
     key: Option<&str>,
 ) -> Result<u64> {
-    let mut tx = pool.begin().await.context("beginning data delete")?;
+    let mut tx = pool.begin().await.db_context("beginning data delete")?;
     // Parcel row first, as in `write`: one lock order, so a delete and a
     // write can't deadlock.
     let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM parcels WHERE id = $1 FOR UPDATE")
         .bind(parcel_id)
         .fetch_optional(&mut *tx)
         .await
-        .context("locking parcel for data delete")?;
+        .db_context("locking parcel for data delete")?;
     if exists.is_none() {
         return Ok(0);
     }
@@ -214,12 +216,12 @@ pub async fn delete(
     .bind(key)
     .execute(&mut *tx)
     .await
-    .context("deleting parcel data")?
+    .db_context("deleting parcel data")?
     .rows_affected();
     if deleted > 0 {
         bump_rev(&mut tx, parcel_id).await?;
     }
-    tx.commit().await.context("committing data delete")?;
+    tx.commit().await.db_context("committing data delete")?;
     Ok(deleted)
 }
 
@@ -230,7 +232,7 @@ async fn bump_rev(tx: &mut Transaction<'_, Postgres>, parcel_id: &str) -> Result
         .bind(parcel_id)
         .execute(&mut **tx)
         .await
-        .context("bumping data revision")?
+        .db_context("bumping data revision")?
         .rows_affected();
     Ok(bumped > 0)
 }

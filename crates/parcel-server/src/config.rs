@@ -105,7 +105,8 @@ pub enum BlobBackend {
         emulator_host: Option<String>,
         /// Base64 service-account JSON. Absent on Cloud Run, where the
         /// runtime service account's token comes from the metadata server.
-        credentials_b64: Option<String>,
+        /// A [`Secret`], so a `Debug` of the config never prints the key.
+        credentials_b64: Option<Secret>,
     },
     /// Process memory. Tests only — nothing survives a restart.
     Memory,
@@ -415,7 +416,7 @@ impl Config {
                     bucket,
                     prefix: env.or("GCS_PREFIX", ""),
                     emulator_host: env.get("STORAGE_EMULATOR_HOST"),
-                    credentials_b64: env.get("GOOGLE_CREDENTIALS"),
+                    credentials_b64: env.get("GOOGLE_CREDENTIALS").map(Secret),
                 }
             }
             "memory" => BlobBackend::Memory,
@@ -903,6 +904,31 @@ mod tests {
         ])
         .unwrap_err();
         assert!(err.to_string().contains("must differ"), "{err}");
+    }
+
+    /// `GOOGLE_CREDENTIALS` is a key: a `Debug` of the config (a startup
+    /// log, a panic message) shows that one is set, never the value.
+    #[test]
+    fn google_credentials_never_print() {
+        let c = load(&[
+            ("BLOB_BACKEND", "gcs"),
+            ("GCS_BUCKET", "parcel-blobs"),
+            ("GOOGLE_CREDENTIALS", "Q0FOQVJZLWtleS1tYXRlcmlhbA=="),
+        ])
+        .unwrap();
+        let BlobBackend::Gcs {
+            credentials_b64, ..
+        } = &c.blob_backend
+        else {
+            panic!("gcs backend")
+        };
+        assert_eq!(
+            credentials_b64.as_ref().map(|s| s.0.as_str()),
+            Some("Q0FOQVJZLWtleS1tYXRlcmlhbA==")
+        );
+        let debug = format!("{c:?}");
+        assert!(!debug.contains("Q0FOQVJZ"), "{debug}");
+        assert!(debug.contains("Secret(<redacted>)"), "{debug}");
     }
 
     #[test]

@@ -1,9 +1,11 @@
 //! Users, and the provider identities they sign in with.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sqlx::{AssertSqlSafe, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+use super::error::DbContext;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct User {
@@ -24,7 +26,7 @@ pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<User>> {
     .bind(id)
     .fetch_optional(pool)
     .await
-    .context("finding user by id")
+    .db_context("finding user by id")
 }
 
 pub async fn find_by_identity(
@@ -40,7 +42,7 @@ pub async fn find_by_identity(
     .bind(subject)
     .fetch_optional(pool)
     .await
-    .context("finding user by identity")
+    .db_context("finding user by identity")
 }
 
 /// An interactive sign-in through `provider`, whose email the caller has
@@ -55,14 +57,14 @@ pub async fn sign_in(
     email: &str,
     name: &str,
 ) -> Result<User> {
-    let mut tx = pool.begin().await.context("beginning sign-in")?;
+    let mut tx = pool.begin().await.db_context("beginning sign-in")?;
     // Serialize sign-ins per email, so two first sign-ins (through two
     // providers, or the same one twice) can't both create a user.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(lower($1), 0))")
         .bind(email)
         .execute(&mut *tx)
         .await
-        .context("locking email for sign-in")?;
+        .db_context("locking email for sign-in")?;
     let known: Option<Uuid> = sqlx::query_scalar(
         "SELECT user_id FROM user_identities WHERE provider = $1 AND subject = $2 FOR UPDATE",
     )
@@ -70,7 +72,7 @@ pub async fn sign_in(
     .bind(subject)
     .fetch_optional(&mut *tx)
     .await
-    .context("finding identity")?;
+    .db_context("finding identity")?;
 
     let user_id = match known {
         Some(id) => id,
@@ -82,7 +84,7 @@ pub async fn sign_in(
             .bind(email)
             .fetch_optional(&mut *tx)
             .await
-            .context("finding user by email")?;
+            .db_context("finding user by email")?;
             let id = match same_email {
                 Some(id) => id,
                 None => sqlx::query_scalar(
@@ -92,7 +94,7 @@ pub async fn sign_in(
                 .bind(name)
                 .fetch_one(&mut *tx)
                 .await
-                .context("creating user")?,
+                .db_context("creating user")?,
             };
             sqlx::query_scalar::<_, Uuid>(
                 "INSERT INTO user_identities (provider, subject, user_id, email)
@@ -106,7 +108,7 @@ pub async fn sign_in(
             .bind(email)
             .fetch_one(&mut *tx)
             .await
-            .context("linking identity")?
+            .db_context("linking identity")?
         }
     };
 
@@ -119,7 +121,7 @@ pub async fn sign_in(
     .bind(email)
     .execute(&mut *tx)
     .await
-    .context("stamping identity")?;
+    .db_context("stamping identity")?;
     // Keep a name the provider didn't send rather than blanking it.
     let user = sqlx::query_as::<_, User>(AssertSqlSafe(format!(
         "UPDATE users SET email = $2, name = CASE WHEN $3 = '' THEN name ELSE $3 END,
@@ -131,12 +133,12 @@ pub async fn sign_in(
     .bind(name)
     .fetch_one(&mut *tx)
     .await
-    .context("updating user at sign-in")?;
+    .db_context("updating user at sign-in")?;
     // A new user gets their handle here, in the transaction that creates
     // them; one an older revision created gets theirs now (a no-op for
     // everyone else).
     super::handles::allocate(&mut *tx, user.id, &user.email).await?;
-    tx.commit().await.context("committing sign-in")?;
+    tx.commit().await.db_context("committing sign-in")?;
     Ok(user)
 }
 
@@ -151,7 +153,7 @@ pub async fn bump_session_epoch(pool: &PgPool, id: Uuid, epoch: i32) -> Result<b
     .bind(epoch)
     .execute(pool)
     .await
-    .context("bumping session epoch")?
+    .db_context("bumping session epoch")?
     .rows_affected();
     Ok(bumped > 0)
 }

@@ -10,7 +10,9 @@
 //! 3. In one transaction: lock, check limits and quota against the locked
 //!    state, insert the version and its file rows, advance `current_version`.
 //!    A create with a slug decides here, under the owner's lock, whether it
-//!    creates the parcel or versions the one that has the slug.
+//!    creates the parcel or versions the one that has the slug. A deadlock
+//!    or serialization failure reruns this step once (`db::retry`); steps
+//!    1–2 aren't repeated.
 //! 4. After the commit, index the new version's entry page for search in a
 //!    background task (`search::spawn_index`); publishing doesn't wait on it.
 //!
@@ -35,7 +37,8 @@ use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::db::{blobs, handles, parcels, parcels::FileRow, slugs as slugs_db};
+use crate::db::error::DbContext;
+use crate::db::{blobs, handles, parcels, parcels::FileRow, retry, slugs as slugs_db};
 use crate::error::{slug_error, slug_taken, tag_error, too_large, AppError};
 use crate::state::AppState;
 use crate::storage::blob_key;
@@ -439,6 +442,8 @@ async fn precheck_quota(state: &AppState, owner_id: Uuid, adding: i64) -> Result
 
 /// Commit a publish's transaction, then index the new version's entry page
 /// in the background (step 4), from these uploads when they carry it.
+/// Nothing after the commit can fail: a publish's transaction may be rerun
+/// on an error (`db::retry`), which must never follow a commit.
 async fn commit_and_index(
     state: &AppState,
     tx: Transaction<'_, Postgres>,
@@ -447,9 +452,7 @@ async fn commit_and_index(
     uploads: &[Upload],
     entry: &str,
 ) -> Result<(), AppError> {
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await.db_context("committing publish")?;
     let entry_upload = uploads
         .iter()
         .find(|u| u.path == entry)
@@ -589,92 +592,122 @@ pub async fn create(
     store_blobs(state, &prepared.uploads).await?;
 
     let files: Vec<FileRow> = manifest.values().cloned().collect();
-    // A 60-bit id collides essentially never; retry anyway rather than 500.
-    for attempt in 0..3 {
-        let id = new_parcel_id();
-        let mut tx = state
-            .db
-            .begin()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
-        parcels::lock_owner_quota(&mut tx, owner_id).await?;
-        if let Some(slug) = slug.as_deref() {
-            // Under the owner's lock, so two first publishes of one slug
-            // can't both create.
-            if let Some(existing) = slugs_db::find(&mut *tx, owner_id, slug).await? {
-                let (version, entry) =
-                    version_in_tx(state, &mut tx, &existing, owner_id, &prepared).await?;
-                commit_and_index(state, tx, &existing, version, &prepared.uploads, &entry).await?;
-                return Ok(Published {
-                    id: existing,
-                    version,
-                    created: false,
-                });
+    // Two bounded retries share this loop, each with its own count: a
+    // 60-bit id collides essentially never, but retry anyway rather than
+    // 500 (up to 3 ids); a deadlock or serialization failure reruns the
+    // transaction once (`db::retry`), whichever branch it was in, with the
+    // same id: only a collision spends one, so at most 3 ids are tried and
+    // 4 transactions run. Each attempt's transaction lives inside
+    // `attempt`, so it is dropped (aborted, its locks released) before the
+    // next one starts.
+    let mut id = new_parcel_id();
+    let mut collisions = 0;
+    let mut retried = false;
+    loop {
+        let attempt = async {
+            let mut tx = state.db.begin().await.db_context("beginning publish")?;
+            parcels::lock_owner_quota(&mut tx, owner_id).await?;
+            if let Some(slug) = slug.as_deref() {
+                // Under the owner's lock, so two first publishes of one slug
+                // can't both create.
+                if let Some(existing) = slugs_db::find(&mut *tx, owner_id, slug).await? {
+                    let (version, entry) =
+                        version_in_tx(state, &mut tx, &existing, owner_id, &prepared).await?;
+                    commit_and_index(state, tx, &existing, version, &prepared.uploads, &entry)
+                        .await?;
+                    return Ok(Created::Done(Published {
+                        id: existing,
+                        version,
+                        created: false,
+                    }));
+                }
+                if meta.base_version.is_some() {
+                    return Err(AppError::Conflict(format!(
+                        "no parcel has the slug {slug:?} yet, so there is no base_version to check"
+                    )));
+                }
             }
-            if meta.base_version.is_some() {
-                return Err(AppError::Conflict(format!(
-                    "no parcel has the slug {slug:?} yet, so there is no base_version to check"
-                )));
+            let computed;
+            let (new, new_tags) = match &checked_new {
+                Some(new) => new,
+                None => {
+                    computed = compute_new(prepared.entry.as_deref(), prepared.title.as_deref())?;
+                    &computed
+                }
+            };
+            let stored = parcels::stored_bytes_tx(&mut tx, owner_id).await?;
+            check_quota(limits, stored, new.total)?;
+            let inserted = parcels::insert_parcel(
+                &mut tx,
+                &parcels::NewParcel {
+                    id: &id,
+                    owner_id,
+                    title: &new.title,
+                    description: prepared.description.as_deref().unwrap_or_default(),
+                    visibility: meta.visibility.unwrap_or_default(),
+                    tags: new_tags,
+                    slug: slug.as_deref(),
+                },
+            )
+            .await;
+            if let Err(e) = inserted {
+                return match parcels::violated_constraint(&e) {
+                    Some(parcels::PARCEL_PKEY) => Ok(Created::IdTaken(e)),
+                    // Only a write that skipped the owner's lock could get here.
+                    Some(parcels::PARCEL_SLUG_INDEX) => Err(slug_taken()),
+                    _ => Err(AppError::Internal(e)),
+                };
             }
-        }
-        let computed;
-        let (new, new_tags) = match &checked_new {
-            Some(new) => new,
-            None => {
-                computed = compute_new(prepared.entry.as_deref(), prepared.title.as_deref())?;
-                &computed
+            if slug.is_some() {
+                // The clean URL needs the owner's handle.
+                handles::ensure(&mut *tx, owner_id).await?;
             }
-        };
-        let stored = parcels::stored_bytes_tx(&mut tx, owner_id).await?;
-        check_quota(limits, stored, new.total)?;
-        let inserted = parcels::insert_parcel(
-            &mut tx,
-            &parcels::NewParcel {
-                id: &id,
-                owner_id,
-                title: &new.title,
-                description: prepared.description.as_deref().unwrap_or_default(),
-                visibility: meta.visibility.unwrap_or_default(),
-                tags: new_tags,
-                slug: slug.as_deref(),
-            },
-        )
-        .await;
-        if let Err(e) = inserted {
-            match parcels::violated_constraint(&e) {
-                Some(parcels::PARCEL_PKEY) if attempt < 2 => continue,
-                // Only a write that skipped the owner's lock could get here.
-                Some(parcels::PARCEL_SLUG_INDEX) => return Err(slug_taken()),
-                _ => return Err(AppError::Internal(e)),
-            }
-        }
-        if slug.is_some() {
-            // The clean URL needs the owner's handle.
-            handles::ensure(&mut *tx, owner_id).await?;
-        }
-        parcels::insert_version(
-            &mut tx,
-            &parcels::NewVersion {
-                parcel_id: &id,
+            parcels::insert_version(
+                &mut tx,
+                &parcels::NewVersion {
+                    parcel_id: &id,
+                    version: 1,
+                    entry: &new.entry,
+                    label: prepared.label.as_deref(),
+                    created_via: "api",
+                    files: &files,
+                    source: prepared.source.as_ref(),
+                },
+            )
+            .await?;
+            commit_and_index(state, tx, &id, 1, &prepared.uploads, &new.entry).await?;
+            Ok(Created::Done(Published {
+                id: id.clone(),
                 version: 1,
-                entry: &new.entry,
-                label: prepared.label.as_deref(),
-                created_via: "api",
-                files: &files,
-                source: prepared.source.as_ref(),
+                created: true,
+            }))
+        };
+        match attempt.await {
+            Ok(Created::Done(published)) => return Ok(published),
+            Ok(Created::IdTaken(e)) => {
+                collisions += 1;
+                if collisions == 3 {
+                    return Err(AppError::Internal(e));
+                }
+                id = new_parcel_id();
+            }
+            Err(e) => match retry::retryable_app(&e) {
+                Some(sqlstate) if !retried => {
+                    retried = true;
+                    retry::pause("publish", sqlstate).await;
+                }
+                _ => return Err(e),
             },
-        )
-        .await?;
-        commit_and_index(state, tx, &id, 1, &prepared.uploads, &new.entry).await?;
-        return Ok(Published {
-            id,
-            version: 1,
-            created: true,
-        });
+        }
     }
-    Err(AppError::Internal(anyhow::anyhow!(
-        "could not allocate a parcel id"
-    )))
+}
+
+/// How one attempt of [`create`]'s transaction ended, short of an error.
+enum Created {
+    Done(Published),
+    /// The new id was already taken (the transaction is aborted); try
+    /// another.
+    IdTaken(anyhow::Error),
 }
 
 pub(crate) fn is_unique_violation(e: &anyhow::Error) -> bool {
@@ -791,19 +824,25 @@ pub async fn add_version(
     owner_id: Uuid,
     source: VersionSource,
 ) -> Result<i32, AppError> {
-    let prepared = prepare_version(state, parcel_id, source).await?;
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
-    // The owner's lock before the row lock (the one order; see the module
-    // docs). Taken for the caller: a non-owner only serializes with itself
-    // and is refused below.
-    parcels::lock_owner_quota(&mut tx, owner_id).await?;
-    let (version, entry) = version_in_tx(state, &mut tx, parcel_id, owner_id, &prepared).await?;
-    commit_and_index(state, tx, parcel_id, version, &prepared.uploads, &entry).await?;
-    Ok(version)
+    // Blobs written (and a restore's files read) here, once: a retry below
+    // reruns only the transaction.
+    let prepared = &prepare_version(state, parcel_id, source).await?;
+    retry::retry_once(
+        "new version",
+        || async move {
+            let mut tx = state.db.begin().await.db_context("beginning new version")?;
+            // The owner's lock before the row lock (the one order; see the
+            // module docs). Taken for the caller: a non-owner only serializes
+            // with itself and is refused below.
+            parcels::lock_owner_quota(&mut tx, owner_id).await?;
+            let (version, entry) =
+                version_in_tx(state, &mut tx, parcel_id, owner_id, prepared).await?;
+            commit_and_index(state, tx, parcel_id, version, &prepared.uploads, &entry).await?;
+            Ok(version)
+        },
+        retry::retryable_app,
+    )
+    .await
 }
 
 /// Apply a prepared version inside a transaction that already holds the

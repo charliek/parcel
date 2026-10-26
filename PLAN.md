@@ -25,8 +25,9 @@ call that is cheap to revisit.
 - Skill (`skills/parcel/SKILL.md`), embedded in the CLI with `include_str!` and
   installed by `parcel skill install` into `~/.claude/skills/parcel/` (which Claude
   Code, craze native and opencode all scan). Also a Claude plugin manifest.
-- Blob storage behind a `BlobStore` trait: filesystem (dev default), GCS (prod; JSON
-  API over reqwest, tested against `fake-gcs-server`), in-memory (tests).
+- Blob storage behind a `BlobStore` trait: filesystem (dev default), GCS (prod;
+  `stridelabs-gcp`'s JSON-API client since plan 002, tested against
+  `fake-gcs-server` and wiremock), in-memory (tests). See "Blob storage" below.
 - Deploy artifacts for Cloud Run + Neon + GCS (Dockerfile, service template, docs,
   workflows) — prepared, not executed. The goal for now is **fully working locally**.
 - Tests: Rust unit + integration (real Postgres, fail-loud), Python functional tests
@@ -90,6 +91,12 @@ search (v0.5)".
   files sent are added/replaced, files left out are kept, `remove: [...]` deletes.
   `mode=replace`: the new version is exactly the files sent. Optional
   `base_version` gives optimistic concurrency (409 on mismatch).
+- A publish's transaction (create, slug upsert, new version, restore), a
+  PATCH and a tag rename or delete rerun once on a deadlock (40P01) or
+  serialization failure (40001), after 10–50 ms, logged with the SQLSTATE
+  only (`db::retry`). Blobs are written before the transaction and not
+  again; the rerun re-reads everything under the locks, so a stale
+  `base_version` is still a 409.
 - Updating keeps the URL. Old versions remain viewable.
 - The entry page must be `.html`/`.htm` or Markdown (`.md`, rendered server-side
   into a styled HTML shell). **Assumption:** other files (css/js/json/images/fonts/
@@ -111,6 +118,48 @@ search (v0.5)".
 
 These mirror the published limits of Claude artifacts so skills written for one
 port to the other.
+
+### Blob storage
+
+The GCS backend (`storage/gcs.rs`) is a `BlobStore` adapter over
+`stridelabs-gcp`'s `GcsClient`; parcel keeps only the policy:
+
+- **Names:** `GCS_PREFIX` with its outer slashes trimmed (nothing else), `/`,
+  then the blob key, sent as GCS addresses it (`ObjectNamePolicy::Literal`), so
+  objects written before the library stay reachable under any prefix.
+- **Endpoint and credentials, chosen independently:** `STORAGE_EMULATOR_HOST`
+  (scheme defaulting to `http://`, trailing slashes dropped) picks the emulator,
+  otherwise the JSON API; `GOOGLE_CREDENTIALS` (strict base64 service-account
+  JSON; a missing `type` is taken as `service_account`, `token_uri` is required,
+  the scope is `devstorage.read_write`, no `x-goog-user-project`) picks the key,
+  otherwise the emulator goes unauthenticated and the JSON API uses the metadata
+  server (no `?scopes=`, 10 s timeout). A blank `GOOGLE_CREDENTIALS` is unset,
+  like every variable. A key that is set is checked at startup
+  (`ServiceAccountKey::validate`: it signs, and its `token_uri` is https or
+  loopback http with no userinfo, query or fragment), as is `GCS_BUCKET`'s name;
+  a bad one stops the server, with an error that never quotes the value. Never a
+  fallback to another identity, and no process-environment credential lookup.
+- **Two clients:** the writer (`put`, `exists`, `delete`) has 60 s per attempt, at
+  most 3 attempts, retrying only within 30 s of the first attempt's start; the
+  reader (`get`, viewing and indexing) 30 s, 2 attempts, within 10 s. Both retry
+  408/429/500/502/503/504, transient transport or token failures and attempts cut
+  off by their timeout, on Google's backoff (1 s doubling), never 401/403/404. A
+  retry starts only if its backoff ends within the deadline, and each deadline is
+  shorter than its client's timeout, so a timed-out attempt is never retried while
+  quick failures are. Worst cases: a viewer waits about 10 s of quick retries plus
+  one 30 s attempt, a write (or a GC delete, which holds its blob row's lock
+  meanwhile) about 30 s plus one 60 s attempt.
+- **Read cap:** a download stops at `max(max(PARCEL_MAX_ENTRY_BYTES,
+  PARCEL_MAX_FILE_BYTES), PARCEL_MAX_UPLOAD_BYTES, 64 MiB)` bytes. No blob is
+  larger than the limits in force when it was stored, so a stored blob becomes
+  unreadable only if its size exceeds 64 MiB *and* every current one of
+  `PARCEL_MAX_ENTRY_BYTES`, `PARCEL_MAX_FILE_BYTES` and `PARCEL_MAX_UPLOAD_BYTES`
+  (e.g. 100 MiB stored under 128 MiB limits, then all three lowered to 96 MiB).
+  Raising the limits again makes it readable.
+- **Errors** are the library's: an operation (`upload`, `download`, `exists`,
+  `delete`), a status and Google's plain `error.status` code; never an object
+  name, Google's free-text message, a bearer or key material, and no URL beyond a
+  token endpoint's origin (`scheme://host[:port]`).
 
 ### Auth
 
@@ -253,7 +302,7 @@ Types are in `crates/parcel-types/src/api.rs`.
 | GET | `/api/v1/info` | — | `ServerInfo` (with `features`: optional API features such as `tags`, `search`, `archive`, `slugs`) |
 | GET | `/api/v1/me` | required | `Me` (with `handle`) |
 | PATCH | `/api/v1/me` | required | `UpdateMeRequest` `{handle}` → `Me`; 400 malformed, 409 taken (by anyone, current or retired); the old handle stays yours and keeps resolving |
-| GET | `/api/v1/parcels?scope=&tag=&tag=&archived=&q=&limit=&offset=` | required | `ParcelList` of `ParcelListItem` (summary fields flattened, plus `match` snippet segments and `shared`); `scope` = `mine` (default) / `shared` / `all`, tags AND, `archived` = `exclude` (default) / `include` / `only`, `q` = substring or full text, ranked |
+| GET | `/api/v1/parcels?scope=&tag=&tag=&archived=&q=&limit=&offset=` | required | `ParcelList` of `ParcelListItem` (summary fields flattened, plus `match` snippet segments and `shared`); `scope` = `mine` (default) / `shared` / `all`, tags AND, `archived` = `exclude` (default) / `include` / `only`, `q` = substring or full text, ranked (all words; else any word, with `relaxed: true`) |
 | POST | `/api/v1/parcels` | required | multipart (`metadata` JSON part = `CreateParcelMetadata`, `file` parts whose *filename* is the published path) → 201 `PublishResult`; with a `slug` you already use (or a redirect of yours), 200 and a new version of that parcel (`created: false`; see "Handles, slugs and sources") |
 | GET | `/api/v1/parcels/by-slug?handle=&slug=` | viewers | `ParcelDetail` of the parcel `/@<handle>/<slug>` names (old handles and slugs too; `parcel.canonical_url` is the current one); every miss is the same 404; `handle` defaults to yours, 400 without one when signed out |
 | GET | `/api/v1/parcels/{id}` | viewers | `ParcelDetail` (with `access`, `owner_name`, `pages`) |
@@ -281,7 +330,7 @@ Types are in `crates/parcel-types/src/api.rs`.
 | GET | `/api/v1/parcels/{id}/shares` | owner | `ShareList` |
 | PUT/DELETE | `/api/v1/parcels/{id}/shares/{email}` | owner | `PutShareRequest` → `Share` / 204 |
 | GET | `/api/v1/shared?limit=&offset=` | required | `SharedParcelList` (shared with me by email; legacy, unchanged: archived included) |
-| GET | `/api/v1/tags?scope=&tag=&q=&archived=&prefix=&limit=&offset=` | required | `TagList` (facet counts over the parcels the same filters select; limit ≤ 1000) |
+| GET | `/api/v1/tags?scope=&tag=&q=&mode=&archived=&prefix=&limit=&offset=` | required | `TagList` (facet counts over the parcels the same filters select, `q` in `mode` `auto`/`exact`/`relaxed`; `relaxed` when the relaxed search ran; limit ≤ 1000) |
 | POST | `/api/v1/tags/rename` | required | `RenameTagRequest` → `TagsUpdated` (the caller's parcels; merges) |
 | POST | `/api/v1/tags/delete` | required | `DeleteTagRequest` → `TagsUpdated` (the caller's parcels) |
 | GET | anything else | — | SPA (`index.html` fallback) when `PARCEL_STATIC_DIR` is set |
@@ -303,15 +352,17 @@ works); a viewer URL takes `?page=<path>`.
 ## Tags, slugs, archive and search (v0.5)
 
 Finding and organizing parcels once there are many, and a stable name for
-the ones an agent republishes. Three additive migrations; the pieces that
-need more than a paragraph have their own sections ("Handles, slugs and
-sources", "Pages within a parcel").
+the ones an agent republishes. Three additive migrations (and a later
+guard on the search trigger, 0009); the pieces that need more than a
+paragraph have their own sections ("Handles, slugs and sources", "Pages
+within a parcel").
 
 | Migration | Adds |
 |---|---|
 | 0006 | `parcels.tags TEXT[]` (GIN), `archived_at`, `search_text`, `search_vec` (GIN), `search_attempts`; the triggers that keep the search columns right |
 | 0007 | `user_handles` + `parcel_allocate_handle()`, `parcels.slug` (partial unique index per owner), `parcel_slug_redirects`, `parcel_versions.source` (JSONB) |
 | 0008 | `version_files.page_title` |
+| 0009 | `parcels_search_vec()` keeps the vector when an UPDATE leaves title, description, tags and page text as they were |
 
 **Rollout safety.** A Cloud Run rollover runs the old and the new revision
 side by side, so every migration is additive (new columns nullable or
@@ -321,7 +372,7 @@ older revision can't know is done in the database: a trigger clears
 or restore from the old revision still invalidates the page text and
 un-archives. Handles are allocated by one SQL function, lazily for a user an
 older revision created. Clients feature-check: `ServerInfo.features` lists
-`tags`, `search`, `archive`, `slugs`, `pages`, and the CLI refuses a new
+`tags`, `search`, `archive`, `slugs`, `pages`, `search-relaxed`, and the CLI refuses a new
 parameter an old server would silently ignore.
 
 ### Tags
@@ -373,22 +424,49 @@ fresh plan). The legacy `/shared` endpoint lists archived parcels as before.
   working) plus `match` and, for someone else's parcel, `shared`.
   `ParcelSummary.url` stays `<app>/p/<id>` for good (an old CLI appends
   `/v/<n>` to it); `canonical_url` is the clean URL when there is a slug.
-- **Query semantics.** `q` matches by substring (ILIKE) on id, title,
-  description and slug, **or** `search_vec @@ websearch_to_tsquery('english',
-  q)`: every word must appear, stemmed, in the title, description, tags or
-  the entry page's text, and quotes, `or` and `-word` work as in a web
-  search. Order with `q`: `ts_rank_cd` (title over description and tags over
-  page text), then `updated_at`, then id; without, `updated_at`. A query that
-  parses to nothing (stop words, punctuation) falls back to the substring
-  match alone. Natural-language sentences therefore return nothing when one
-  word is absent from the parcel; agents search with two or three
-  distinctive words.
+- **Query semantics.** In short: every word must match; when nothing does,
+  parcels matching any of the words are returned, best first, and marked
+  relaxed; operators (quotes, `-word`, `or`) turn that off. Exactly: `q`
+  matches by substring (ILIKE) on id, title, description and slug, **or**
+  `search_vec @@ websearch_to_tsquery('english', q)` (every word, stemmed,
+  in the title, description, tags or the entry page's text; quotes, `or`
+  and `-word` work as in a web search). Order with `q`: `ts_rank_cd` (title
+  over description and tags over page text), then `updated_at`, then id;
+  without, `updated_at`. A query that parses to nothing (stop words,
+  punctuation) falls back to the substring match alone.
+- **Relaxed fallback (plan 002).** When that exact clause matches nothing
+  in the caller's scope and filters (one `EXISTS` probe,
+  `db::parcels::search_mode`) and the query is *relaxable* — at least two
+  whitespace-separated words, no `"`, no word starting with `-`, no word
+  `or` (Rust, `parcels::relaxable`), and at least two distinct lexemes
+  (`cardinality(tsvector_to_array(to_tsvector('english', q)))`, so
+  `plan-002` or `e-mail` alone never relaxes) — the list reruns with the
+  full-text branch's query replaced by an OR of the query's lexemes, built
+  in SQL with hand-written quoting (`quote_literal` would write `E'…'`,
+  which the tsquery parser rejects); the substring branches stay. Relaxed
+  order: how many of the lexemes a parcel has, then `ts_rank_cd` over the OR
+  query, then `updated_at`, id (plain `ts_rank_cd` over an OR would put a
+  one-word title match above a page with all but one word); snippets mark
+  the OR terms. `ParcelList.relaxed` is `true` then (absent otherwise, so
+  exact bodies are unchanged, and old clients ignore it). `GET /tags` takes
+  `mode=auto|exact|relaxed`: `auto` (default) runs the same probe (`prefix`
+  plays no part); the SPA passes the list's mode to every facet request,
+  the main one and each swap, so the sidebar counts what the list shows;
+  `TagList.relaxed` says which ran. The probe, page and total are separate
+  statements: under concurrent writes they agree on a best-effort basis.
+  The probe of a relaxable query that matches nothing scans the caller's
+  scope once more (measured in plan 002's artifacts). Feature
+  `search-relaxed`.
 - **The index.** `search_vec` is maintained by triggers (never by the app):
   title (weight A), description and tags (B) and page text (D), all with the
   `english` configuration the query uses. `parcels_a_version_changed` runs
   before `parcels_search_b_vec` (Postgres orders triggers by name) so a
   version change clears the text before the vector is built. Comment and
-  data revision bumps set none of the watched columns and skip both.
+  data revision bumps set none of the watched columns and skip both. Since
+  0009 the vector is rebuilt only when one of its four inputs changed (a
+  visibility PATCH, or a version bump with no stored text, keeps it), so a
+  change to `parcel_search_document` or the text-search configuration must
+  recompute existing rows explicitly, as 0006 did.
 - **Page text** is the current version's entry page only, ≤ 128 KiB, from a
   hand-written stripper (HTML: no script/style/template/noscript/svg, tags
   and comments dropped, entities decoded, breaks at blocks; Markdown: the

@@ -4,7 +4,7 @@ mod common;
 
 use std::sync::Arc;
 
-use parcel_server::db::parcels::{self, ListFilter};
+use parcel_server::db::parcels::{self, ListFilter, SearchMode};
 use parcel_server::state::AppState;
 use parcel_server::storage::{blob_key, BlobStore, MemoryBlobStore};
 use parcel_types::{ArchivedFilter, ListScope};
@@ -20,6 +20,13 @@ const DROP_USERS_SUB: &str = include_str!("../migrations/0005_drop_users_sub.sql
 const TAGS_ARCHIVE_SEARCH: &str = include_str!("../migrations/0006_tags_archive_search.sql");
 const HANDLES_SLUGS: &str = include_str!("../migrations/0007_handles_slugs.sql");
 const PAGE_TITLES: &str = include_str!("../migrations/0008_page_titles.sql");
+const SEARCH_VEC_GUARD: &str = include_str!("../migrations/0009_search_vec_guard.sql");
+/// Everything after 0006, in order.
+const AFTER_0006: [(&str, &str); 3] = [
+    (HANDLES_SLUGS, "0007"),
+    (PAGE_TITLES, "0008"),
+    (SEARCH_VEC_GUARD, "0009"),
+];
 
 async fn apply(pool: &PgPool, sql: &str) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(AssertSqlSafe(sql.to_string()))
@@ -190,7 +197,7 @@ async fn tags_and_search_reach_existing_parcels() {
         (Some("capybara"), false), // page text: not extracted yet
         (None, true),
     ] {
-        let (rows, total) = parcels::search(&pool, &mine(owner, query), 50, 0)
+        let (rows, total) = parcels::search(&pool, &mine(owner, query), SearchMode::Exact, 50, 0)
             .await
             .unwrap();
         assert_eq!(total, i64::from(found), "{query:?}");
@@ -207,9 +214,15 @@ async fn tags_and_search_reach_existing_parcels() {
         .await
         .unwrap();
     assert_eq!(report.indexed, 1);
-    let (rows, total) = parcels::search(&pool, &mine(owner, Some("capybara")), 50, 0)
-        .await
-        .unwrap();
+    let (rows, total) = parcels::search(
+        &pool,
+        &mine(owner, Some("capybara")),
+        SearchMode::Exact,
+        50,
+        0,
+    )
+    .await
+    .unwrap();
     assert_eq!(total, 1);
     let snippet = parcel_server::search::segments(rows[0].headline.as_deref().unwrap()).unwrap();
     assert!(
@@ -226,14 +239,23 @@ async fn tags_and_search_reach_existing_parcels() {
 /// the old page's words leave `search_vec` with it: the invalidating
 /// trigger runs before the one that rebuilds the vector, and the rebuild
 /// fires on a version change although the statement never names
-/// `search_text`.
+/// `search_text`. The same holds once 0009 guards the rebuild: clearing the
+/// text is a change to the document.
 #[tokio::test]
 async fn a_version_bump_from_an_old_revision_clears_the_page_text() {
+    version_bump_clears_the_page_text(&[]).await;
+    version_bump_clears_the_page_text(&AFTER_0006).await;
+}
+
+async fn version_bump_clears_the_page_text(later: &[(&str, &str)]) {
     let pool = common::schema_pool().await;
     apply_through_0005(&pool).await;
     let blobs = Arc::new(MemoryBlobStore::default());
     let (_, id) = legacy_parcel(&pool, &blobs).await;
     apply(&pool, TAGS_ARCHIVE_SEARCH).await.expect("0006");
+    for (sql, name) in later {
+        apply(&pool, sql).await.expect(name);
+    }
     apply(
         &pool,
         "UPDATE parcels SET search_text = 'the capybara section', search_attempts = 3",
@@ -422,11 +444,8 @@ async fn page_titles_start_empty_and_old_revisions_still_insert() {
     apply_through_0005(&pool).await;
     let blobs = Arc::new(MemoryBlobStore::default());
     let (_, id) = legacy_parcel(&pool, &blobs).await;
-    for (sql, name) in [
-        (TAGS_ARCHIVE_SEARCH, "0006"),
-        (HANDLES_SLUGS, "0007"),
-        (PAGE_TITLES, "0008"),
-    ] {
+    apply(&pool, TAGS_ARCHIVE_SEARCH).await.expect("0006");
+    for (sql, name) in AFTER_0006 {
         apply(&pool, sql).await.expect(name);
     }
     // What an older revision's merge publish writes.
@@ -456,4 +475,87 @@ async fn page_titles_start_empty_and_old_revisions_still_insert() {
             ("index.html", None)
         );
     }
+}
+
+/// 0009 meets existing parcels, and an older revision's writes run through
+/// the guarded function too: a comment-counter bump that names
+/// `current_version` without changing it keeps the vector (here a
+/// sentinel), a version bump over stored page text rebuilds it without the
+/// old page's words, and a bump with the text already gone keeps it.
+#[tokio::test]
+async fn the_search_vector_guard_meets_existing_parcels_and_old_revisions() {
+    let pool = common::schema_pool().await;
+    apply_through_0005(&pool).await;
+    let blobs = Arc::new(MemoryBlobStore::default());
+    let (owner, id) = legacy_parcel(&pool, &blobs).await;
+    apply(&pool, TAGS_ARCHIVE_SEARCH).await.expect("0006");
+    apply(
+        &pool,
+        "UPDATE parcels SET search_text = 'the capybara section'",
+    )
+    .await
+    .unwrap();
+    for (sql, name) in AFTER_0006 {
+        apply(&pool, sql).await.expect(name);
+    }
+    // Existing vectors are untouched by the migration, and still match.
+    let (rows, total) = parcels::search(
+        &pool,
+        &mine(owner, Some("capybara")),
+        SearchMode::Exact,
+        50,
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!((rows.len(), total), (1, 1));
+
+    let sentinel = "UPDATE parcels SET search_vec = 'sentinel'::tsvector";
+    let is_sentinel = || async {
+        sqlx::query_scalar::<_, bool>("SELECT search_vec = 'sentinel'::tsvector FROM parcels")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let bump = [
+        format!(
+            "INSERT INTO parcel_versions (parcel_id, version, entry, file_count, total_bytes)
+             SELECT parcel_id, version + 1, entry, file_count, total_bytes FROM parcel_versions
+             WHERE parcel_id = '{id}' ORDER BY version DESC LIMIT 1"
+        ),
+        format!(
+            "UPDATE parcels SET current_version = current_version + 1, updated_at = now()
+             WHERE id = '{id}'"
+        ),
+    ];
+
+    apply(&pool, sentinel).await.unwrap();
+    apply(
+        &pool,
+        "UPDATE parcels SET comments_rev = comments_rev + 1, current_version = current_version",
+    )
+    .await
+    .unwrap();
+    assert!(
+        is_sentinel().await,
+        "an unchanged document keeps its vector"
+    );
+
+    for sql in &bump {
+        apply(&pool, sql).await.unwrap();
+    }
+    assert!(!is_sentinel().await, "clearing the text rebuilds it");
+    for (query, found) in [("capybara", false), ("ocelot", true)] {
+        let (_, total) =
+            parcels::search(&pool, &mine(owner, Some(query)), SearchMode::Exact, 50, 0)
+                .await
+                .unwrap();
+        assert_eq!(total, i64::from(found), "{query}");
+    }
+
+    apply(&pool, sentinel).await.unwrap();
+    for sql in &bump {
+        apply(&pool, sql).await.unwrap();
+    }
+    assert!(is_sentinel().await, "no text to clear: nothing changed");
 }

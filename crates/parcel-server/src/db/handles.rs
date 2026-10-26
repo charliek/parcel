@@ -7,9 +7,11 @@
 //! sign-in ([`super::users::sign_in`]) and `/me` (via [`allocate`]), which
 //! covers a user an older revision created during a rollover.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sqlx::{PgExecutor, PgPool};
 use uuid::Uuid;
+
+use super::error::DbContext;
 
 /// The user's current handle, allocated first if they have none yet.
 pub async fn allocate<'e>(db: impl PgExecutor<'e>, user_id: Uuid, email: &str) -> Result<String> {
@@ -18,7 +20,7 @@ pub async fn allocate<'e>(db: impl PgExecutor<'e>, user_id: Uuid, email: &str) -
         .bind(email)
         .fetch_one(db)
         .await
-        .context("allocating handle")
+        .db_context("allocating handle")
 }
 
 /// [`allocate`] for a user known by id only.
@@ -27,7 +29,7 @@ pub async fn ensure<'e>(db: impl PgExecutor<'e>, user_id: Uuid) -> Result<String
         .bind(user_id)
         .fetch_one(db)
         .await
-        .context("allocating handle")
+        .db_context("allocating handle")
 }
 
 /// The handle a rename asked for is someone else's (current or retired).
@@ -51,14 +53,14 @@ pub async fn rename(
     // would-be handle) would each wait on the other's: a deadlock. It also
     // keeps the allocation when it turns out to be the handle asked for.
     allocate(pool, user_id, email).await?;
-    let mut tx = pool.begin().await.context("beginning handle rename")?;
+    let mut tx = pool.begin().await.db_context("beginning handle rename")?;
     // Serialize a user's renames on their row (`NO KEY`: inserts that
     // reference the user, like a publish, aren't held up).
     sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
         .bind(user_id)
         .execute(&mut *tx)
         .await
-        .context("locking user for handle rename")?;
+        .db_context("locking user for handle rename")?;
     // Allocated above, so this only reads it.
     let current = allocate(&mut *tx, user_id, email).await?;
     if current == new {
@@ -69,7 +71,7 @@ pub async fn rename(
             .bind(new)
             .fetch_optional(&mut *tx)
             .await
-            .context("checking handle")?;
+            .db_context("checking handle")?;
     if holder.is_some_and(|holder| holder != user_id) {
         return Ok(Err(HandleTaken));
     }
@@ -78,13 +80,13 @@ pub async fn rename(
         .bind(user_id)
         .execute(&mut *tx)
         .await
-        .context("retiring handle")?;
+        .db_context("retiring handle")?;
     let claimed = if holder.is_some() {
         sqlx::query("UPDATE user_handles SET is_current = true WHERE handle = $1")
             .bind(new)
             .execute(&mut *tx)
             .await
-            .context("reclaiming handle")?
+            .db_context("reclaiming handle")?
             .rows_affected()
     } else {
         // Someone may have claimed it since the check: then nothing is
@@ -97,12 +99,12 @@ pub async fn rename(
         .bind(user_id)
         .execute(&mut *tx)
         .await
-        .context("claiming handle")?
+        .db_context("claiming handle")?
         .rows_affected()
     };
     if claimed == 0 {
         return Ok(Err(HandleTaken));
     }
-    tx.commit().await.context("committing handle rename")?;
+    tx.commit().await.db_context("committing handle rename")?;
     Ok(Ok(Some(current)))
 }

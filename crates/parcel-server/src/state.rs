@@ -46,7 +46,7 @@ impl AppState {
             .connect_timeout(Duration::from_secs(10))
             .build()
             .context("building HTTP client")?;
-        let blobs = storage::from_config(&config.blob_backend, http.clone())?;
+        let blobs = storage::from_config(&config.blob_backend, http.clone(), &config.limits)?;
         Ok(Self::with_parts(config, db, http, blobs))
     }
 

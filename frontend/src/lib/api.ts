@@ -31,6 +31,7 @@ import type {
   ShareList,
   ShareRole,
   TagList,
+  TagsMode,
   TagsUpdated,
   TokenList,
   UpdateComment,
@@ -151,8 +152,11 @@ export interface ListFilters {
   archived?: ArchivedFilter;
 }
 
-/** What `GET /tags` filters by: the list's filters, and optionally a tag prefix. */
-export type TagFilters = ListFilters & { prefix?: string };
+/**
+ * What `GET /tags` filters by: the list's filters, optionally a tag prefix,
+ * and how `q` matches (left out: `auto`).
+ */
+export type TagFilters = ListFilters & { prefix?: string; mode?: TagsMode };
 
 /** Fetch a file through the files API and hand it to the browser as a download. */
 export async function downloadFile(id: string, version: number, path: string): Promise<void> {

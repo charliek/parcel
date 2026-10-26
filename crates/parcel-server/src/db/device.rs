@@ -1,9 +1,11 @@
 //! Pending CLI device logins.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sqlx::{AssertSqlSafe, PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+use super::error::DbContext;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct DeviceRow {
@@ -40,7 +42,7 @@ pub async fn insert(
     .bind(expires_at)
     .fetch_one(pool)
     .await
-    .context("inserting device authorization")
+    .db_context("inserting device authorization")
 }
 
 /// A pending, unexpired authorization by its user code (for the approval page).
@@ -55,7 +57,7 @@ pub async fn find_pending_by_user_code(
     .bind(user_code)
     .fetch_optional(pool)
     .await
-    .context("finding device authorization")
+    .db_context("finding device authorization")
 }
 
 /// Approve or deny a pending code. Returns false if it was not pending (or expired).
@@ -69,7 +71,7 @@ pub async fn decide(pool: &PgPool, user_code: &str, user_id: Uuid, approve: bool
     .bind(if approve { "approved" } else { "denied" })
     .execute(pool)
     .await
-    .context("deciding device authorization")?;
+    .db_context("deciding device authorization")?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -87,7 +89,7 @@ pub async fn poll(pool: &PgPool, device_code_hash: &str) -> Result<Option<Device
     .bind(device_code_hash)
     .fetch_optional(pool)
     .await
-    .context("polling device authorization")
+    .db_context("polling device authorization")
 }
 
 /// Atomically move an approved authorization to `redeemed`. Exactly one
@@ -100,7 +102,7 @@ pub async fn redeem<'e>(db: impl PgExecutor<'e>, id: Uuid) -> Result<bool> {
     .bind(id)
     .execute(db)
     .await
-    .context("redeeming device authorization")?;
+    .db_context("redeeming device authorization")?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -112,7 +114,7 @@ pub async fn count_pending(pool: &PgPool) -> Result<i64> {
     )
     .fetch_one(pool)
     .await
-    .context("counting pending device authorizations")
+    .db_context("counting pending device authorizations")
 }
 
 /// Drop authorizations that expired more than an hour ago.
@@ -122,6 +124,6 @@ pub async fn purge_expired(pool: &PgPool) -> Result<u64> {
     )
     .execute(pool)
     .await
-    .context("purging device authorizations")?;
+    .db_context("purging device authorizations")?;
     Ok(result.rows_affected())
 }

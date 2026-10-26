@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 import {
   deleteParcelViaApi,
   htmlPage,
@@ -192,4 +192,59 @@ test('a slug freed by deleting a parcel opens its next owner, not the deleted on
     await request.get(`/api/v1/parcels/by-slug?handle=${handle}&slug=${slug}`)
   ).json();
   ids.push(detail.parcel.id);
+});
+
+/** Upload `marker` as a new version from the viewer's menu. */
+async function uploadVersion(page: Page, marker: string) {
+  await viewerAction(page, 'Upload new version…');
+  const dialog = page.getByRole('dialog', { name: 'Upload a new version' });
+  await dialog
+    .getByTestId('file-input')
+    .setInputFiles([{ name: 'index.html', mimeType: 'text/html', buffer: htmlPage(marker) }]);
+  await dialog.getByRole('button', { name: 'Publish version' }).click();
+  await expect(dialog).toHaveCount(0);
+}
+
+test('uploading a version lands on the canonical address, also from a pinned one', async ({
+  page,
+  request,
+}) => {
+  const handle = await myHandle(request);
+  const marker = uniq('e2e-upload-nav');
+  const slug = `${uniqTag('nav')}/plan`;
+  const parcel = await slugged(request, marker, slug);
+  const canonical = new RegExp(`/@${handle}/${slug}$`);
+
+  // From the clean URL: back on it, showing the new version.
+  await page.goto(`/@${handle}/${slug}`);
+  await uploadVersion(page, `${marker} v2`);
+  await expect(page).toHaveURL(canonical);
+  await expect(parcelFrame(page).getByRole('heading', { name: `${marker} v2` })).toBeVisible();
+
+  // From a pinned old version, by either address: the current version's
+  // canonical address, not the pin.
+  for (const pinned of [`/@${handle}/${slug}?v=1`, `/p/${parcel.id}/v/1`]) {
+    await page.goto(pinned);
+    await expect(
+      parcelFrame(page).getByRole('heading', { name: marker, exact: true }),
+    ).toBeVisible();
+    const next = `${marker} ${uniq('v')}`;
+    await uploadVersion(page, next);
+    await expect(page).toHaveURL(canonical);
+    await expect(parcelFrame(page).getByRole('heading', { name: next })).toBeVisible();
+  }
+
+  // Without a slug the canonical address is /p/<id>, pinned or not.
+  const plain = await publishViaApi(request, {
+    metadata: { title: `${marker} plain` },
+    files: [{ path: 'index.html', body: htmlPage(`${marker} plain`) }],
+  });
+  ids.push(plain.parcel.id);
+  for (const start of [`/p/${plain.parcel.id}`, `/p/${plain.parcel.id}/v/1`]) {
+    await page.goto(start);
+    const next = `${marker} ${uniq('plain')}`;
+    await uploadVersion(page, next);
+    await expect(page).toHaveURL(new RegExp(`/p/${plain.parcel.id}$`));
+    await expect(parcelFrame(page).getByRole('heading', { name: next })).toBeVisible();
+  }
 });

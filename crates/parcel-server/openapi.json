@@ -952,6 +952,10 @@
             },
             "type": "array"
           },
+          "relaxed": {
+            "description": "Set (`true`) when no parcel matched every word of `q`, so the list holds\nthe parcels matching any of them instead, best first. Absent otherwise.",
+            "type": "boolean"
+          },
           "total": {
             "description": "Total number of matching parcels (for pagination).",
             "format": "int64",
@@ -1399,6 +1403,10 @@
       "TagList": {
         "description": "`GET /api/v1/tags`.",
         "properties": {
+          "relaxed": {
+            "description": "Set (`true`) when the parcels were counted with the relaxed search\n(any of `q`'s words, as `ParcelList.relaxed`). Absent otherwise.",
+            "type": "boolean"
+          },
           "tags": {
             "description": "Most used first, then by name.",
             "items": {
@@ -2064,11 +2072,11 @@
     },
     "/api/v1/parcels": {
       "get": {
-        "description": "List parcels: the caller's own by default, or those shared with them (`scope=shared`), or both (`scope=all`); most recently updated first, or by relevance with `q`. Filter by tags (`tag=a&tag=b`: all of them) and archive state. Items shared with the caller carry `shared`.",
+        "description": "List parcels: the caller's own by default, or those shared with them (`scope=shared`), or both (`scope=all`); most recently updated first, or by relevance with `q` (and `relaxed` when no parcel matched every word, so the list holds those matching any of them). Filter by tags (`tag=a&tag=b`: all of them) and archive state. Items shared with the caller carry `shared`.",
         "operationId": "list_parcels",
         "parameters": [
           {
-            "description": "Search: a case-insensitive substring of the id, title, description or slug,\nor full text (title, description, tags and the entry page's text;\nweb-search syntax: `\"exact phrase\"`, `-word`, `or`). Results are then\nordered by relevance, and carry `match` when the page text matched.",
+            "description": "Search: a case-insensitive substring of the id, title, description or slug,\nor full text (title, description, tags and the entry page's text;\nweb-search syntax: `\"exact phrase\"`, `-word`, `or`). Every word must\nmatch; when no parcel matches them all, parcels matching any of the\nwords are returned instead, those matching the most words first, and\nthe list is marked `relaxed`. A query with an operator (quotes,\n`-word`, `or`) or fewer than two distinct words never relaxes.\nResults are ordered by relevance, and carry `match` when the page\ntext matched.",
             "in": "query",
             "name": "q",
             "required": false,
@@ -4055,7 +4063,7 @@
     },
     "/api/v1/tags": {
       "get": {
-        "description": "The tags on the parcels the filters select, each with how many of those parcels carry it (facet counts): most used first, then by name. Takes the same `scope`, `tag`, `q` and `archived` filters as `GET /parcels`.",
+        "description": "The tags on the parcels the filters select, each with how many of those parcels carry it (facet counts): most used first, then by name. Takes the same `scope`, `tag`, `q` and `archived` filters as `GET /parcels`, and `mode` for how `q` matches; `relaxed` says the counts are over parcels matching any of `q`'s words.",
         "operationId": "list_tags",
         "parameters": [
           {
@@ -4093,6 +4101,21 @@
             "name": "q",
             "required": false,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "How `q` matches: `auto` (default) as `GET /parcels` decides for the same\nfilters (`prefix` plays no part), `exact` (every word) or `relaxed`\n(any word). Pass a list's mode (`relaxed` when it was marked so, else\n`exact`) to count what that list shows.",
+            "in": "query",
+            "name": "mode",
+            "required": false,
+            "schema": {
+              "description": "Which search `GET /api/v1/tags` counts the parcels of (`mode`).",
+              "enum": [
+                "auto",
+                "exact",
+                "relaxed"
+              ],
               "type": "string"
             }
           },

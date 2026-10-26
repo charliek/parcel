@@ -78,7 +78,14 @@ fn counts(list: &TagList) -> Vec<(&str, i64)> {
 async fn the_server_says_it_has_these_features() {
     let app = TestApp::new().await;
     let info: ServerInfo = json(app.get("/api/v1/info", None).await).await;
-    for feature in ["tags", "search", "archive", "slugs", "pages"] {
+    for feature in [
+        "tags",
+        "search",
+        "archive",
+        "slugs",
+        "pages",
+        "search-relaxed",
+    ] {
         assert!(info.features.iter().any(|f| f == feature), "{info:?}");
     }
 }

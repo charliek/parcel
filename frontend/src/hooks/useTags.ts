@@ -3,11 +3,11 @@ import { useRef } from 'react';
 import { api, type TagFilters } from '@/lib/api';
 import {
   type DashboardQuery,
-  listFilters,
+  facetFilters,
   mergeFacetCounts,
   swapFacetFilters,
 } from '@/lib/search-query';
-import type { TagCount } from '@/lib/types';
+import type { SearchMode, TagCount } from '@/lib/types';
 import { queryKeys } from './queryKeys';
 import { refreshSlugResolutions } from './useParcels';
 
@@ -28,17 +28,18 @@ export async function fetchAllTags(filters: TagFilters): Promise<TagCount[]> {
 }
 
 /** The query for {@link fetchAllTags}; the last counts stay up while new ones load. */
-function tagCountsQuery(filters: TagFilters) {
+function tagCountsQuery(filters: TagFilters, enabled = true) {
   return {
     queryKey: queryKeys.tags(filters),
     queryFn: () => fetchAllTags(filters),
     placeholderData: (previous: TagCount[] | undefined) => previous,
+    enabled,
   };
 }
 
 /** Tag counts for the parcels matching `filters` (the dashboard's facets, autocomplete). */
 export function useTagCounts(filters: TagFilters, enabled = true) {
-  return useQuery({ ...tagCountsQuery(filters), enabled });
+  return useQuery(tagCountsQuery(filters, enabled));
 }
 
 /** Every tag the caller uses on their own parcels, archived ones included. */
@@ -47,13 +48,19 @@ export const OWN_TAGS: TagFilters = { scope: 'mine', archived: 'include' };
 /**
  * The dashboard's facet counts: the main counts for the list's filters,
  * with the selected project's and kind's facets counted as a swap would
- * leave them (lib/search-query.ts). Undefined until all have loaded.
+ * leave them (lib/search-query.ts), all in the list's search `mode`
+ * (`null`: not known yet, so nothing is fetched). Undefined until all have
+ * loaded.
  */
-export function useFacetCounts(query: DashboardQuery): TagCount[] | undefined {
-  const main = useTagCounts(listFilters(query));
-  const swaps = swapFacetFilters(query);
+export function useFacetCounts(
+  query: DashboardQuery,
+  mode: SearchMode | undefined | null,
+): TagCount[] | undefined {
+  const enabled = mode !== null;
+  const main = useTagCounts(facetFilters(query, mode ?? undefined), enabled);
+  const swaps = swapFacetFilters(query, mode ?? undefined);
   const results = useQueries({
-    queries: swaps.map((swap) => tagCountsQuery(swap.filters)),
+    queries: swaps.map((swap) => tagCountsQuery(swap.filters, enabled)),
   });
   // While a new filter's counts load, the last complete set stays up (no
   // skeleton flashing in the sidebar at every click).

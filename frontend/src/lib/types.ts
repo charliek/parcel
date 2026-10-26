@@ -164,6 +164,11 @@ export interface ParcelList {
   parcels: ParcelListItem[];
   /** Total number of matching parcels (for pagination). */
   total: number;
+  /**
+   * `true` when no parcel matched every word of `q`, so the list holds the
+   * parcels matching any of them, best first. Absent otherwise.
+   */
+  relaxed?: boolean;
 }
 
 /** The `metadata` part of a create (`POST /api/v1/parcels`) multipart upload. */
@@ -242,7 +247,15 @@ export interface TagList {
   tags: TagCount[];
   /** How many distinct tags match (for paging). */
   total: number;
+  /** `true` when the parcels were counted with the relaxed search (any of `q`'s words). */
+  relaxed?: boolean;
 }
+
+/** How a search's words matched: all of them, or (the fallback) any. */
+export type SearchMode = 'exact' | 'relaxed';
+
+/** `GET /tags`' `mode`: a list's mode, or `auto` (decided as the list would be). */
+export type TagsMode = 'auto' | SearchMode;
 
 /** `POST /api/v1/tags/rename` and `/tags/delete`. */
 export interface TagsUpdated {

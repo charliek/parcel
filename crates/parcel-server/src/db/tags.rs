@@ -5,13 +5,16 @@
 //! `array_agg(DISTINCT … COLLATE "C" ORDER BY … COLLATE "C")`, the byte
 //! order Rust's `normalize_tags` produces, so a renamed or merged set is
 //! stored exactly as the app would have stored it. Neither touches
-//! `updated_at`: organizing isn't editing.
+//! `updated_at`: organizing isn't editing. A deadlock or serialization
+//! failure reruns the transaction once ([`retry_once`]).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::error::DbContext;
 use super::parcels::lock_owner_quota;
+use super::retry::{retry_once, retryable};
 
 /// Rewrite `from` → `to` (both normalized) on every parcel `owner_id` owns,
 /// merging where `to` is already there. A rename never adds a tag, so it
@@ -20,7 +23,16 @@ pub async fn rename(pool: &PgPool, owner_id: Uuid, from: &str, to: &str) -> Resu
     if from == to {
         return Ok(0);
     }
-    let mut tx = pool.begin().await.context("beginning tag rename")?;
+    retry_once(
+        "tag rename",
+        || rename_once(pool, owner_id, from, to),
+        retryable,
+    )
+    .await
+}
+
+async fn rename_once(pool: &PgPool, owner_id: Uuid, from: &str, to: &str) -> Result<i64> {
+    let mut tx = pool.begin().await.db_context("beginning tag rename")?;
     lock_owner_quota(&mut tx, owner_id).await?;
     let updated = sqlx::query(
         "UPDATE parcels p SET tags = (
@@ -34,16 +46,20 @@ pub async fn rename(pool: &PgPool, owner_id: Uuid, from: &str, to: &str) -> Resu
     .bind(to)
     .execute(&mut *tx)
     .await
-    .context("renaming tag")?
+    .db_context("renaming tag")?
     .rows_affected();
-    tx.commit().await.context("committing tag rename")?;
+    tx.commit().await.db_context("committing tag rename")?;
     Ok(count(updated))
 }
 
 /// Remove `tag` (normalized) from every parcel `owner_id` owns. Returns how
 /// many parcels changed.
 pub async fn delete(pool: &PgPool, owner_id: Uuid, tag: &str) -> Result<i64> {
-    let mut tx = pool.begin().await.context("beginning tag delete")?;
+    retry_once("tag delete", || delete_once(pool, owner_id, tag), retryable).await
+}
+
+async fn delete_once(pool: &PgPool, owner_id: Uuid, tag: &str) -> Result<i64> {
+    let mut tx = pool.begin().await.db_context("beginning tag delete")?;
     lock_owner_quota(&mut tx, owner_id).await?;
     let updated = sqlx::query(
         // Tags are stored sorted and distinct; removing one keeps them so.
@@ -54,9 +70,9 @@ pub async fn delete(pool: &PgPool, owner_id: Uuid, tag: &str) -> Result<i64> {
     .bind(tag)
     .execute(&mut *tx)
     .await
-    .context("deleting tag")?
+    .db_context("deleting tag")?
     .rows_affected();
-    tx.commit().await.context("committing tag delete")?;
+    tx.commit().await.db_context("committing tag delete")?;
     Ok(count(updated))
 }
 

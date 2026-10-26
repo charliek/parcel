@@ -56,6 +56,8 @@ list_tags and reuse its vocabulary instead of inventing near-duplicates; tag wha
 prototype or notes). Give plans a slug `<repo>/<plan-name>`: publishing again with that slug \
 adds a version to the same parcel instead of making a new one. Before writing something new, \
 look for earlier work with list_parcels (tags, query; which=all includes what others shared). \
+A query needs every word to match; when nothing does, list_parcels returns the parcels matching \
+any of the words, best first, with `relaxed: true` (quotes, -word or `or` turn that off). \
 Wherever a tool takes a `parcel`, an id, a URL or `@handle/slug` works. Share the \
 `canonical_url`.
 
@@ -294,6 +296,21 @@ fn structured<T: Serialize>(value: &T) -> Result<CallToolResult, ToolError> {
     ))
 }
 
+/// A page of search results (`list_parcels`, `list_tags`): `{items, total,
+/// has_more}`, plus `"relaxed": true` when no parcel matched every word of
+/// the query, so the page holds those matching any of them. Absent
+/// otherwise, as on the API, so an exact page is what it always was.
+fn search_page<T: Serialize>(page: Page<T>, relaxed: bool) -> Result<CallToolResult, ToolError> {
+    let mut value = serde_json::to_value(&page).map_err(ToolError::internal)?;
+    if relaxed {
+        value
+            .as_object_mut()
+            .ok_or_else(|| ToolError::internal("a page that isn't a JSON object"))?
+            .insert("relaxed".into(), true.into());
+    }
+    Ok(CallToolResult::structured(value))
+}
+
 /// A `parcel` argument resolved to an id, with the version and page its
 /// reference pinned (if any).
 struct Target {
@@ -507,7 +524,9 @@ impl ParcelMcp {
             other people shared with you (shared) or both (all), most recently updated first. \
             `query` searches titles, descriptions, tags and the page text (best match first, \
             with a `match` snippet when the page text matched); `tags` keeps parcels carrying \
-            all of them; archived ones are left out unless `archived` says otherwise. Items are \
+            all of them; archived ones are left out unless `archived` says otherwise. When no \
+            parcel matches every word of `query`, the page holds those matching any of them, \
+            most words first, and carries `relaxed: true`. Items are \
             parcels (`id`, `title`, `url`, `canonical_url`, `tags`, `slug`, …), with `shared` \
             ({owner_name, role}) on someone else's under which=all; which=shared items are \
             {parcel, owner_name, role, shared_at}. Paged: {items, total, has_more}.",
@@ -536,7 +555,7 @@ impl ParcelMcp {
                     .await
                     .map_err(tool_error)?;
                 if p.which != ListScope::Shared {
-                    return structured(&Page::new(list.parcels, list.total, offset));
+                    return search_page(Page::new(list.parcels, list.total, offset), list.relaxed);
                 }
                 // Shared items keep the shape this tool always gave them,
                 // plus the snippet when a query matched.
@@ -558,7 +577,7 @@ impl ParcelMcp {
                         })
                     })
                     .collect::<Result<Vec<_>, ToolError>>()?;
-                structured(&Page::new(items, list.total, offset))
+                search_page(Page::new(items, list.total, offset), list.relaxed)
             })
             .await
     }
@@ -568,8 +587,8 @@ impl ParcelMcp {
             default), each with how many of those parcels carry it, most used first. Call it \
             before tagging, and reuse these tags rather than inventing near-duplicates. `prefix` \
             narrows to a namespace (`project:`, `kind:`); `tags`, `query` and `archived` narrow \
-            the parcels counted, as in list_parcels. Paged: {items: [{tag, count}], total, \
-            has_more}.",
+            the parcels counted, as in list_parcels (`relaxed: true` when, as there, no parcel \
+            matched every word of `query`). Paged: {items: [{tag, count}], total, has_more}.",
         annotations(read_only_hint = true)
     )]
     async fn list_tags(
@@ -588,13 +607,14 @@ impl ParcelMcp {
                     q: p.query,
                     archived: p.archived,
                     prefix: p.prefix,
+                    mode: None,
                     limit: p.limit,
                     offset: Some(offset),
                 };
                 let list = tag_api::list(&self.state, &me, &q)
                     .await
                     .map_err(tool_error)?;
-                structured(&Page::new(list.tags, list.total, offset))
+                search_page(Page::new(list.tags, list.total, offset), list.relaxed)
             })
             .await
     }

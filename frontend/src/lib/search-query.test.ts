@@ -3,14 +3,19 @@ import {
   dashboardHref,
   dashboardSearch,
   EMPTY_QUERY,
+  facetFilters,
+  facetMode,
   isFiltered,
   listFilters,
   mergeFacetCounts,
   parseDashboardQuery,
+  RELAXED_NOTICE,
+  showsRelaxedNotice,
   splitLastWord,
   swapFacetFilters,
   toggleTag,
 } from './search-query';
+import type { ParcelList, ParcelListItem } from './types';
 
 const parse = (s: string) => parseDashboardQuery(new URLSearchParams(s));
 
@@ -156,5 +161,49 @@ describe('swap facets', () => {
       { tag: 'project:a', count: 2 },
       { tag: 'project:b', count: 5 },
     ]);
+  });
+});
+
+describe('relaxed search', () => {
+  const item = { id: 'abcdefghijkm' } as ParcelListItem;
+  const relaxed: ParcelList = { parcels: [item], total: 1, relaxed: true };
+  const exact: ParcelList = { parcels: [item], total: 1 };
+  const searching = { ...EMPTY_QUERY, q: 'faster rust builds' };
+
+  it('shows the notice only over a relaxed list for the current query, with results', () => {
+    expect(showsRelaxedNotice(relaxed, false)).toBe(true);
+    // The query changed: the old relaxed results stay up while the new ones
+    // load, without the notice.
+    expect(showsRelaxedNotice(relaxed, true)).toBe(false);
+    expect(showsRelaxedNotice(exact, false)).toBe(false);
+    expect(showsRelaxedNotice({ parcels: [], total: 0, relaxed: true }, false)).toBe(false);
+    expect(showsRelaxedNotice(undefined, false)).toBe(false);
+    expect(RELAXED_NOTICE).toBe('No exact matches; showing parcels that match any of the words.');
+  });
+
+  it('gives the facets the list’s mode, and waits until it is known', () => {
+    expect(facetMode(EMPTY_QUERY, relaxed, false)).toBeUndefined();
+    expect(facetMode(searching, relaxed, false)).toBe('relaxed');
+    expect(facetMode(searching, exact, false)).toBe('exact');
+    expect(facetMode(searching, relaxed, true)).toBeNull();
+    expect(facetMode(searching, undefined, false)).toBeNull();
+  });
+
+  it('sends that mode on the main and every swap request', () => {
+    const query = { ...searching, tags: ['project:a', 'kind:plan'] };
+    expect(facetFilters(query, 'relaxed')).toEqual({
+      scope: 'mine',
+      tag: ['project:a', 'kind:plan'],
+      q: 'faster rust builds',
+      archived: 'exclude',
+      mode: 'relaxed',
+    });
+    expect(swapFacetFilters(query, 'relaxed').map((swap) => swap.filters.mode)).toEqual([
+      'relaxed',
+      'relaxed',
+    ]);
+    // No mode (no query): the filters are the list's, so the cache entry is shared.
+    expect(facetFilters(EMPTY_QUERY)).toEqual(listFilters(EMPTY_QUERY));
+    expect(swapFacetFilters(query)[0].filters).not.toHaveProperty('mode');
   });
 });

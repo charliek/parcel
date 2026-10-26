@@ -5,12 +5,14 @@
 //! without refetching them. The bump comes first, so each change locks the
 //! parcel row before any comment row.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use parcel_types::{CommentAnchor, CommentStatus, CommentVia};
 use sqlx::types::Json;
 use sqlx::{AssertSqlSafe, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+use super::error::DbContext;
 
 /// Most comments (threads plus replies) one parcel may hold.
 pub const MAX_COMMENTS_PER_PARCEL: i64 = 2000;
@@ -75,7 +77,7 @@ pub async fn list(
     .bind(status)
     .fetch_all(pool)
     .await
-    .context("listing comments")
+    .db_context("listing comments")
 }
 
 /// One thread (by its top-level number) with its replies.
@@ -89,7 +91,7 @@ pub async fn thread(pool: &PgPool, parcel_id: &str, number: i32) -> Result<Vec<C
     .bind(number)
     .fetch_all(pool)
     .await
-    .context("loading comment thread")
+    .db_context("loading comment thread")
 }
 
 pub async fn get(pool: &PgPool, parcel_id: &str, number: i32) -> Result<Option<CommentRow>> {
@@ -100,7 +102,7 @@ pub async fn get(pool: &PgPool, parcel_id: &str, number: i32) -> Result<Option<C
     .bind(number)
     .fetch_optional(pool)
     .await
-    .context("loading comment")
+    .db_context("loading comment")
 }
 
 pub async fn count_open(pool: &PgPool, parcel_id: &str) -> Result<i64> {
@@ -111,7 +113,7 @@ pub async fn count_open(pool: &PgPool, parcel_id: &str) -> Result<i64> {
     .bind(parcel_id)
     .fetch_one(pool)
     .await
-    .context("counting open comments")
+    .db_context("counting open comments")
 }
 
 pub struct NewCommentRow<'a> {
@@ -137,7 +139,7 @@ pub enum InsertRefused {
 
 /// Add a comment; returns the number of its thread.
 pub async fn insert(pool: &PgPool, c: &NewCommentRow<'_>) -> Result<Result<i32, InsertRefused>> {
-    let mut tx = pool.begin().await.context("beginning comment insert")?;
+    let mut tx = pool.begin().await.db_context("beginning comment insert")?;
     // Taking the number also takes the parcel row lock, serializing inserts.
     let Some(number) = sqlx::query_scalar::<_, i32>(
         "UPDATE parcels SET comment_seq = comment_seq + 1, comments_rev = comments_rev + 1
@@ -146,7 +148,7 @@ pub async fn insert(pool: &PgPool, c: &NewCommentRow<'_>) -> Result<Result<i32, 
     .bind(c.parcel_id)
     .fetch_optional(&mut *tx)
     .await
-    .context("numbering comment")?
+    .db_context("numbering comment")?
     else {
         return Ok(Err(InsertRefused::ParcelGone));
     };
@@ -155,7 +157,7 @@ pub async fn insert(pool: &PgPool, c: &NewCommentRow<'_>) -> Result<Result<i32, 
         .bind(c.parcel_id)
         .fetch_one(&mut *tx)
         .await
-        .context("counting comments")?;
+        .db_context("counting comments")?;
     if existing >= MAX_COMMENTS_PER_PARCEL {
         return Ok(Err(InsertRefused::TooMany));
     }
@@ -170,7 +172,7 @@ pub async fn insert(pool: &PgPool, c: &NewCommentRow<'_>) -> Result<Result<i32, 
             .bind(parent)
             .fetch_optional(&mut *tx)
             .await
-            .context("loading parent comment")?;
+            .db_context("loading parent comment")?;
             match row {
                 None => return Ok(Err(InsertRefused::ThreadNotFound)),
                 Some((_, Some(_))) => return Ok(Err(InsertRefused::ReplyToReply)),
@@ -193,8 +195,8 @@ pub async fn insert(pool: &PgPool, c: &NewCommentRow<'_>) -> Result<Result<i32, 
     .bind(c.anchor.map(Json))
     .execute(&mut *tx)
     .await
-    .context("inserting comment")?;
-    tx.commit().await.context("committing comment")?;
+    .db_context("inserting comment")?;
+    tx.commit().await.db_context("committing comment")?;
     Ok(Ok(c.reply_to.unwrap_or(number)))
 }
 
@@ -202,12 +204,12 @@ pub async fn insert(pool: &PgPool, c: &NewCommentRow<'_>) -> Result<Result<i32, 
 /// its row lock before any comment row is touched. Inserts do the same, so
 /// every comment change locks in one order (parcel, then comments).
 async fn begin_change(pool: &PgPool, parcel_id: &str) -> Result<Transaction<'static, Postgres>> {
-    let mut tx = pool.begin().await.context("beginning comment change")?;
+    let mut tx = pool.begin().await.db_context("beginning comment change")?;
     sqlx::query("UPDATE parcels SET comments_rev = comments_rev + 1 WHERE id = $1")
         .bind(parcel_id)
         .execute(&mut *tx)
         .await
-        .context("bumping comments revision")?;
+        .db_context("bumping comments revision")?;
     Ok(tx)
 }
 
@@ -222,8 +224,8 @@ pub async fn update_body(pool: &PgPool, parcel_id: &str, number: i32, body: &str
     .bind(body)
     .execute(&mut *tx)
     .await
-    .context("editing comment")?;
-    tx.commit().await.context("committing comment edit")
+    .db_context("editing comment")?;
+    tx.commit().await.db_context("committing comment edit")
 }
 
 /// Resolve or reopen a thread. Leaves `resolved_at` alone when it already
@@ -248,8 +250,10 @@ pub async fn set_resolved(
     .bind(by)
     .execute(&mut *tx)
     .await
-    .context("resolving comment")?;
-    tx.commit().await.context("committing comment resolution")
+    .db_context("resolving comment")?;
+    tx.commit()
+        .await
+        .db_context("committing comment resolution")
 }
 
 /// Delete a comment (a thread takes its replies with it).
@@ -260,8 +264,8 @@ pub async fn delete(pool: &PgPool, parcel_id: &str, number: i32) -> Result<()> {
         .bind(number)
         .execute(&mut *tx)
         .await
-        .context("deleting comment")?;
-    tx.commit().await.context("committing comment delete")
+        .db_context("deleting comment")?;
+    tx.commit().await.db_context("committing comment delete")
 }
 
 /// `(current_version, updated_at, comments_rev, open threads)` for the
@@ -280,5 +284,5 @@ pub async fn activity(
     .bind(parcel_id)
     .fetch_optional(pool)
     .await
-    .context("loading parcel activity")
+    .db_context("loading parcel activity")
 }
