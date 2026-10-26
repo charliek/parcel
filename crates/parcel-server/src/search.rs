@@ -582,6 +582,9 @@ async fn counted(
 /// `entry` is the entry page's path and bytes when the upload carried it;
 /// otherwise (a merge that kept it, a restore) it is read from the store.
 pub fn spawn_index(state: AppState, id: String, version: i32, entry: Option<(String, Bytes)>) {
+    // One per committed version: tests count these to prove a retried
+    // publish dispatches once.
+    tracing::debug!(parcel = %id, version, "indexing a published version");
     let tasks = state.index_tasks.clone();
     tasks.spawn(async move {
         let result = match entry {

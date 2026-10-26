@@ -1,6 +1,7 @@
 //! In-memory blob store for tests.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -11,6 +12,7 @@ use super::{BlobStore, StorageError};
 #[derive(Default)]
 pub struct MemoryBlobStore {
     objects: Mutex<HashMap<String, Bytes>>,
+    puts: AtomicUsize,
 }
 
 impl MemoryBlobStore {
@@ -26,11 +28,18 @@ impl MemoryBlobStore {
     pub fn contains(&self, key: &str) -> bool {
         self.objects.lock().expect("lock").contains_key(key)
     }
+
+    /// Writes so far, overwrites included (tests prove a retried
+    /// transaction doesn't write its blobs again).
+    pub fn puts(&self) -> usize {
+        self.puts.load(Ordering::Relaxed)
+    }
 }
 
 #[async_trait]
 impl BlobStore for MemoryBlobStore {
     async fn put(&self, key: &str, bytes: Bytes, _content_type: &str) -> Result<(), StorageError> {
+        self.puts.fetch_add(1, Ordering::Relaxed);
         self.objects
             .lock()
             .expect("lock")

@@ -90,6 +90,12 @@ search (v0.5)".
   files sent are added/replaced, files left out are kept, `remove: [...]` deletes.
   `mode=replace`: the new version is exactly the files sent. Optional
   `base_version` gives optimistic concurrency (409 on mismatch).
+- A publish's transaction (create, slug upsert, new version, restore), a
+  PATCH and a tag rename or delete rerun once on a deadlock (40P01) or
+  serialization failure (40001), after 10–50 ms, logged with the SQLSTATE
+  only (`db::retry`). Blobs are written before the transaction and not
+  again; the rerun re-reads everything under the locks, so a stale
+  `base_version` is still a 409.
 - Updating keeps the URL. Old versions remain viewable.
 - The entry page must be `.html`/`.htm` or Markdown (`.md`, rendered server-side
   into a styled HTML shell). **Assumption:** other files (css/js/json/images/fonts/
@@ -303,15 +309,17 @@ works); a viewer URL takes `?page=<path>`.
 ## Tags, slugs, archive and search (v0.5)
 
 Finding and organizing parcels once there are many, and a stable name for
-the ones an agent republishes. Three additive migrations; the pieces that
-need more than a paragraph have their own sections ("Handles, slugs and
-sources", "Pages within a parcel").
+the ones an agent republishes. Three additive migrations (and a later
+guard on the search trigger, 0009); the pieces that need more than a
+paragraph have their own sections ("Handles, slugs and sources", "Pages
+within a parcel").
 
 | Migration | Adds |
 |---|---|
 | 0006 | `parcels.tags TEXT[]` (GIN), `archived_at`, `search_text`, `search_vec` (GIN), `search_attempts`; the triggers that keep the search columns right |
 | 0007 | `user_handles` + `parcel_allocate_handle()`, `parcels.slug` (partial unique index per owner), `parcel_slug_redirects`, `parcel_versions.source` (JSONB) |
 | 0008 | `version_files.page_title` |
+| 0009 | `parcels_search_vec()` keeps the vector when an UPDATE leaves title, description, tags and page text as they were |
 
 **Rollout safety.** A Cloud Run rollover runs the old and the new revision
 side by side, so every migration is additive (new columns nullable or
@@ -388,7 +396,11 @@ fresh plan). The legacy `/shared` endpoint lists archived parcels as before.
   `english` configuration the query uses. `parcels_a_version_changed` runs
   before `parcels_search_b_vec` (Postgres orders triggers by name) so a
   version change clears the text before the vector is built. Comment and
-  data revision bumps set none of the watched columns and skip both.
+  data revision bumps set none of the watched columns and skip both. Since
+  0009 the vector is rebuilt only when one of its four inputs changed (a
+  visibility PATCH, or a version bump with no stored text, keeps it), so a
+  change to `parcel_search_document` or the text-search configuration must
+  recompute existing rows explicitly, as 0006 did.
 - **Page text** is the current version's entry page only, ≤ 128 KiB, from a
   hand-written stripper (HTML: no script/style/template/noscript/svg, tags
   and comments dropped, entities decoded, breaks at blocks; Markdown: the

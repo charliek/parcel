@@ -1,6 +1,7 @@
 //! Full-text search over the real router and Postgres: what is indexed,
 //! how results rank, snippets, re-indexing on new versions and restores,
-//! the guarded write, the backfill, and value-free failure logs.
+//! the guarded write, the backfill, value-free failure logs, and when the
+//! search vector is rebuilt.
 
 mod common;
 
@@ -9,8 +10,9 @@ use common::*;
 use parcel_server::db::parcels::HEADLINE_OPTIONS;
 use parcel_server::search::{self, MAX_ATTEMPTS};
 use parcel_server::storage::{blob_key, BlobStore};
-use parcel_types::{ParcelList, ParcelListItem, PublishResult};
+use parcel_types::{ParcelList, ParcelListItem, PublishResult, Visibility};
 use serde_json::{json, Value};
+use sqlx::AssertSqlSafe;
 
 async fn post_files(
     app: &TestApp,
@@ -484,4 +486,204 @@ async fn indexing_failures_log_no_page_text() {
         .await
         .unwrap();
     assert!(attempts >= 1, "the failure was counted");
+}
+
+/// Mark `id`'s search vector with a sentinel no rebuild produces. An
+/// UPDATE naming only `search_vec` doesn't fire the trigger.
+async fn set_sentinel(app: &TestApp, id: &str) {
+    sqlx::query("UPDATE parcels SET search_vec = 'sentinel'::tsvector WHERE id = $1")
+        .bind(id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+}
+
+/// Whether `id`'s vector is still the sentinel, and whether it is the one
+/// its row's document builds.
+async fn vector_state(app: &TestApp, id: &str) -> (bool, bool) {
+    sqlx::query_as(
+        "SELECT search_vec = 'sentinel'::tsvector,
+                search_vec = parcel_search_document(title, description, tags, search_text)
+         FROM parcels WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap()
+}
+
+async fn assert_kept(app: &TestApp, id: &str, what: &str) {
+    assert_eq!(vector_state(app, id).await, (true, false), "{what}: kept");
+}
+
+async fn assert_rebuilt(app: &TestApp, id: &str, what: &str) {
+    assert_eq!(
+        vector_state(app, id).await,
+        (false, true),
+        "{what}: rebuilt"
+    );
+}
+
+/// What an older revision's publish does: a version row and a plain bump.
+async fn bump_version(app: &TestApp, id: &str) {
+    sqlx::raw_sql(AssertSqlSafe(format!(
+        "INSERT INTO parcel_versions (parcel_id, version, entry, file_count, total_bytes)
+         SELECT parcel_id, version + 1, entry, file_count, total_bytes FROM parcel_versions
+         WHERE parcel_id = '{id}' ORDER BY version DESC LIMIT 1;
+         UPDATE parcels SET current_version = current_version + 1 WHERE id = '{id}';"
+    )))
+    .execute(&app.pool)
+    .await
+    .unwrap();
+}
+
+/// The search trigger rebuilds the vector only when the document it is
+/// built from changed (migration 0009): writes that name a searched column
+/// without changing it, and writes that name none, leave a sentinel in
+/// place; every real change to the title, description, tags or page text
+/// replaces it with the right vector.
+#[tokio::test]
+async fn the_search_vector_is_rebuilt_only_when_its_document_changes() {
+    let app = TestApp::new().await;
+    let ada = person("ada");
+    let p = publish(
+        &app,
+        &ada.token,
+        json!({"title": "Guarded", "tags": ["kind:plan"]}),
+        &[("index.html", "<p>page words</p>")],
+    )
+    .await;
+    let id = p.parcel.id.as_str();
+    settle(&app).await;
+    assert_eq!(search_text(&app, id).await.as_deref(), Some("page words"));
+
+    set_sentinel(&app, id).await;
+    patched(&app, &ada, id, json!({"visibility": "internal"})).await;
+    assert_kept(&app, id, "a visibility-only PATCH").await;
+
+    // What a new version without metadata asks for: no statement at all
+    // (0009 alone would keep the vector, so count UPDATEs on parcels; a
+    // statement-level trigger fires even for one that matches no row).
+    sqlx::raw_sql(
+        "CREATE SEQUENCE parcel_updates;
+         CREATE FUNCTION count_update() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN PERFORM nextval('parcel_updates'); RETURN NULL; END $$;
+         CREATE TRIGGER count_update BEFORE UPDATE ON parcels
+             FOR EACH STATEMENT EXECUTE FUNCTION count_update();",
+    )
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let mut tx = app.pool.begin().await.unwrap();
+    parcel_server::db::parcels::update_metadata_tx(&mut tx, id, None, None, None, false)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let updates: bool = sqlx::query_scalar("SELECT is_called FROM parcel_updates")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert!(!updates, "an all-None metadata update runs no UPDATE");
+    sqlx::raw_sql("DROP TRIGGER count_update ON parcels")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    assert_kept(&app, id, "an all-None metadata update").await;
+
+    patched(&app, &ada, id, json!({"tags": ["kind:plan"]})).await;
+    assert_kept(&app, id, "the same tags again").await;
+    sqlx::query(
+        "UPDATE parcels SET title = title, description = description, tags = tags,
+             search_text = search_text WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    assert_kept(&app, id, "every searched column named, none changed").await;
+
+    patched(&app, &ada, id, json!({"title": "Renamed"})).await;
+    assert_rebuilt(&app, id, "a title PATCH").await;
+    set_sentinel(&app, id).await;
+    patched(&app, &ada, id, json!({"description": "described"})).await;
+    assert_rebuilt(&app, id, "a description PATCH").await;
+    set_sentinel(&app, id).await;
+    patched(&app, &ada, id, json!({"tags": ["kind:report"]})).await;
+    assert_rebuilt(&app, id, "a tag change").await;
+    set_sentinel(&app, id).await;
+    sqlx::query("UPDATE parcels SET search_text = 'other words' WHERE id = $1")
+        .bind(id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    assert_rebuilt(&app, id, "storing page text").await;
+
+    // A version bump clears the stored text, which changes the document.
+    set_sentinel(&app, id).await;
+    bump_version(&app, id).await;
+    assert_eq!(search_text(&app, id).await, None);
+    assert_rebuilt(&app, id, "a version bump over page text").await;
+    // With the text already gone, a bump changes nothing searched.
+    set_sentinel(&app, id).await;
+    bump_version(&app, id).await;
+    assert_kept(&app, id, "a version bump with no page text").await;
+}
+
+/// A new version and a slug upsert still apply the title, description and
+/// visibility they send (the publish path's metadata update is only
+/// skipped when it has nothing to apply), and the vector follows.
+#[tokio::test]
+async fn new_versions_and_upserts_apply_the_metadata_they_send() {
+    let app = TestApp::new().await;
+    let me = user_token();
+    let p = publish(
+        &app,
+        &me,
+        json!({"title": "One", "slug": "notes"}),
+        &[("index.html", "<p>first</p>")],
+    )
+    .await;
+    let id = p.parcel.id.as_str();
+
+    let v2 = new_version(
+        &app,
+        &me,
+        id,
+        json!({"title": "Second title", "description": "aardvark", "visibility": "internal"}),
+        &[("index.html", "<p>second</p>")],
+    )
+    .await;
+    assert_eq!(
+        (
+            v2.parcel.title.as_str(),
+            v2.parcel.description.as_str(),
+            v2.parcel.visibility
+        ),
+        ("Second title", "aardvark", Visibility::Internal)
+    );
+
+    let form = Form::new()
+        .metadata(json!({
+            "slug": "notes", "title": "Third title", "description": "bandicoot",
+            "visibility": "private",
+        }))
+        .file("index.html", "<p>third</p>");
+    let v3: PublishResult = expect_json(
+        app.post_multipart("/api/v1/parcels", Some(&me), &form)
+            .await,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(v3.parcel.id, id);
+    assert_eq!(
+        (
+            v3.parcel.title.as_str(),
+            v3.parcel.description.as_str(),
+            v3.parcel.visibility
+        ),
+        ("Third title", "bandicoot", Visibility::Private)
+    );
+    settle(&app).await;
+    assert_eq!(find(&app, &me, "bandicoot").await.total, 1);
+    assert_eq!(find(&app, &me, "aardvark").await.total, 0);
 }

@@ -11,6 +11,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::error::{DbContext, DbError};
+use super::retry::{retry_once, retryable};
 
 /// A parcel joined with its current version's entry and totals.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -477,8 +478,23 @@ pub enum PatchRefused {
 /// Apply a PATCH in one transaction: the owner's lock, then the parcel's
 /// row lock (the one lock order, so a concurrent publish or tag rename
 /// can't deadlock with it), then the tag edit computed against the locked
-/// row, so two concurrent edits never lose each other's tags.
+/// row, so two concurrent edits never lose each other's tags. A deadlock or
+/// serialization failure reruns it once ([`retry_once`]), from the locks.
 pub async fn apply_patch(
+    pool: &PgPool,
+    owner_id: Uuid,
+    id: &str,
+    patch: &Patch<'_>,
+) -> Result<Result<(), PatchRefused>> {
+    retry_once(
+        "parcel update",
+        || apply_patch_once(pool, owner_id, id, patch),
+        retryable,
+    )
+    .await
+}
+
+async fn apply_patch_once(
     pool: &PgPool,
     owner_id: Uuid,
     id: &str,
@@ -528,8 +544,9 @@ pub async fn apply_patch(
 
 /// Set the tags and/or the archive state, leaving `updated_at` alone.
 /// `archived: Some(true)` keeps an existing archive time. Only a tags change
-/// names `tags` in its `SET`: the search trigger (0006) rebuilds the search
-/// vector whenever the column is listed, changed or not.
+/// names `tags` in its `SET`: the search trigger (0006) fires whenever the
+/// column is listed, and though it rebuilds the vector only when a searched
+/// column actually changed (0009), an unchanged row isn't worth the update.
 pub async fn update_organization(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
@@ -725,7 +742,8 @@ pub async fn insert_version(tx: &mut Transaction<'_, Postgres>, v: &NewVersion<'
 }
 
 /// Apply optional metadata changes inside a transaction. `touch` bumps
-/// `updated_at` (a PATCH; a publish has already bumped it).
+/// `updated_at` (a PATCH; a publish has already bumped it). With nothing to
+/// change and nothing to touch (most new versions) no statement runs.
 pub async fn update_metadata_tx(
     tx: &mut Transaction<'_, Postgres>,
     id: &str,
@@ -734,6 +752,9 @@ pub async fn update_metadata_tx(
     visibility: Option<Visibility>,
     touch: bool,
 ) -> Result<()> {
+    if title.is_none() && description.is_none() && visibility.is_none() && !touch {
+        return Ok(());
+    }
     sqlx::query(
         "UPDATE parcels SET
              title = COALESCE($2, title),

@@ -19,6 +19,7 @@ pub mod device;
 pub mod error;
 pub mod handles;
 pub mod parcels;
+pub mod retry;
 pub mod search;
 pub mod shares;
 pub mod slugs;
