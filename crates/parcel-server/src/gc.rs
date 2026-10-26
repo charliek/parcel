@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::db::error::DbContext;
 use crate::db::{blobs, device};
 use crate::state::AppState;
 use crate::storage::blob_key;
@@ -29,10 +30,14 @@ pub struct GcReport {
 pub async fn run_once(state: &AppState, grace: Duration) -> Result<GcReport> {
     let mut report = GcReport::default();
     loop {
-        let mut tx = state.db.begin().await?;
+        let mut tx = state
+            .db
+            .begin()
+            .await
+            .db_context("beginning blob collection")?;
         let locked = blobs::lock_collectable(&mut tx, grace, BATCH).await?;
         if locked.is_empty() {
-            tx.rollback().await?;
+            tx.rollback().await.db_context("ending blob collection")?;
             break;
         }
         let shas = blobs::still_unreferenced(&mut tx, &locked).await?;
@@ -41,7 +46,7 @@ pub async fn run_once(state: &AppState, grace: Duration) -> Result<GcReport> {
             state.blob_cache.invalidate(sha).await;
         }
         report.blobs_deleted += blobs::delete_rows(&mut tx, &shas).await?;
-        tx.commit().await?;
+        tx.commit().await.db_context("committing blob collection")?;
         if (locked.len() as i64) < BATCH {
             break;
         }

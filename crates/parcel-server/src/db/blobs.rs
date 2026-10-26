@@ -1,8 +1,10 @@
 //! Content-addressed blob rows and garbage collection.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sqlx::PgPool;
 use std::time::Duration;
+
+use super::error::DbContext;
 
 /// The outcome of registering a blob a publish is about to reference.
 #[derive(Debug, sqlx::FromRow)]
@@ -29,7 +31,7 @@ pub async fn touch(pool: &PgPool, shas: &[String], sizes: &[i64]) -> Result<Vec<
     .bind(sizes)
     .fetch_all(pool)
     .await
-    .context("registering blobs")
+    .db_context("registering blobs")
 }
 
 /// Lock and return up to `limit` collectable blobs: unreferenced and
@@ -53,7 +55,7 @@ pub async fn lock_collectable(
     .bind(limit)
     .fetch_all(&mut **tx)
     .await
-    .context("selecting collectable blobs")
+    .db_context("selecting collectable blobs")
 }
 
 /// Of `shas` (already locked by [`lock_collectable`]), the ones still
@@ -73,7 +75,7 @@ pub async fn still_unreferenced(
     .bind(shas)
     .fetch_all(&mut **tx)
     .await
-    .context("rechecking blob references")
+    .db_context("rechecking blob references")
 }
 
 pub async fn delete_rows(
@@ -84,6 +86,6 @@ pub async fn delete_rows(
         .bind(shas)
         .execute(&mut **tx)
         .await
-        .context("deleting blob rows")?;
+        .db_context("deleting blob rows")?;
     Ok(result.rows_affected())
 }

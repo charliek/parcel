@@ -10,6 +10,8 @@ use sqlx::{AssertSqlSafe, PgExecutor, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::error::{DbContext, DbError};
+
 /// A parcel joined with its current version's entry and totals.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ParcelRow {
@@ -108,7 +110,7 @@ pub async fn get(pool: &PgPool, id: &str) -> Result<Option<ParcelRow>> {
         .bind(id)
         .fetch_optional(pool)
         .await
-        .context("loading parcel")
+        .db_context("loading parcel")
 }
 
 /// What a parcel list (or its tag counts) covers. Every scope, filter and
@@ -256,8 +258,8 @@ pub async fn search(
     )
     .fetch_one(pool);
     let (rows, (total,)) =
-        tokio::try_join!(async { rows.await.context("listing parcels") }, async {
-            total.await.context("counting parcels")
+        tokio::try_join!(async { rows.await.db_context("listing parcels") }, async {
+            total.await.db_context("counting parcels")
         },)?;
     Ok((rows, total))
 }
@@ -300,8 +302,8 @@ pub async fn tag_counts(
     .bind(pattern.as_deref())
     .fetch_one(pool);
     let (rows, (total,)) =
-        tokio::try_join!(async { rows.await.context("counting tags") }, async {
-            total.await.context("counting distinct tags")
+        tokio::try_join!(async { rows.await.db_context("counting tags") }, async {
+            total.await.db_context("counting distinct tags")
         },)?;
     Ok((rows, total))
 }
@@ -320,7 +322,7 @@ pub async fn list_versions(pool: &PgPool, parcel_id: &str) -> Result<Vec<Version
     .bind(parcel_id)
     .fetch_all(pool)
     .await
-    .context("listing versions")
+    .db_context("listing versions")
 }
 
 /// Generic over the executor so a publish can read inside its own
@@ -338,7 +340,7 @@ pub async fn get_version<'e>(
     .bind(version)
     .fetch_optional(db)
     .await
-    .context("loading version")
+    .db_context("loading version")
 }
 
 pub async fn version_files<'e>(
@@ -354,7 +356,7 @@ pub async fn version_files<'e>(
     .bind(version)
     .fetch_all(db)
     .await
-    .context("listing version files")
+    .db_context("listing version files")
 }
 
 pub async fn find_file(
@@ -372,7 +374,7 @@ pub async fn find_file(
     .bind(path)
     .fetch_optional(pool)
     .await
-    .context("finding file")
+    .db_context("finding file")
 }
 
 /// Everything the content server needs for one request, in one round trip.
@@ -407,7 +409,7 @@ pub async fn content_lookup(
     .bind(path)
     .fetch_optional(pool)
     .await
-    .context("content lookup")
+    .db_context("content lookup")
 }
 
 /// What a content grant needs re-checked: the parcel's visibility and
@@ -420,7 +422,7 @@ pub async fn grant_state(pool: &PgPool, id: &str) -> Result<Option<(Visibility, 
     .bind(id)
     .fetch_optional(pool)
     .await
-    .context("loading parcel grant state")?;
+    .db_context("loading parcel grant state")?;
     Ok(row.map(|(v, disabled)| (Visibility::parse(&v).unwrap_or_default(), disabled)))
 }
 
@@ -433,7 +435,7 @@ pub async fn version_entry(pool: &PgPool, parcel_id: &str, version: i32) -> Resu
     .bind(version)
     .fetch_optional(pool)
     .await
-    .context("loading version entry")
+    .db_context("loading version entry")
 }
 
 /// How a PATCH changes the tag set.
@@ -482,7 +484,7 @@ pub async fn apply_patch(
     id: &str,
     patch: &Patch<'_>,
 ) -> Result<Result<(), PatchRefused>> {
-    let mut tx = pool.begin().await.context("beginning parcel update")?;
+    let mut tx = pool.begin().await.db_context("beginning parcel update")?;
     lock_owner_quota(&mut tx, owner_id).await?;
     let Some(locked) = lock_for_update(&mut tx, id).await? else {
         return Ok(Err(PatchRefused::ParcelGone));
@@ -520,7 +522,7 @@ pub async fn apply_patch(
         )
         .await?;
     }
-    tx.commit().await.context("committing parcel update")?;
+    tx.commit().await.db_context("committing parcel update")?;
     Ok(Ok(()))
 }
 
@@ -540,7 +542,7 @@ pub async fn update_organization(
             .bind(tags)
             .execute(&mut **tx)
             .await
-            .context("updating parcel tags")?;
+            .db_context("updating parcel tags")?;
     }
     if let Some(archived) = archived {
         sqlx::query(
@@ -552,7 +554,7 @@ pub async fn update_organization(
         .bind(archived)
         .execute(&mut **tx)
         .await
-        .context("updating parcel archive state")?;
+        .db_context("updating parcel archive state")?;
     }
     Ok(())
 }
@@ -564,7 +566,7 @@ pub async fn delete(pool: &PgPool, id: &str) -> Result<bool> {
         .bind(id)
         .execute(pool)
         .await
-        .context("deleting parcel")?;
+        .db_context("deleting parcel")?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -580,7 +582,7 @@ pub async fn usage(pool: &PgPool, owner_id: Uuid) -> Result<Usage> {
     .bind(owner_id)
     .fetch_one(pool)
     .await
-    .context("computing usage")?;
+    .db_context("computing usage")?;
     Ok(Usage {
         parcel_count,
         version_count,
@@ -623,19 +625,15 @@ pub async fn insert_parcel(tx: &mut Transaction<'_, Postgres>, p: &NewParcel<'_>
     .bind(p.slug)
     .execute(&mut **tx)
     .await
-    .context("inserting parcel")?;
+    .db_context("inserting parcel")?;
     Ok(())
 }
 
 /// The name of the unique constraint `e` violated, if that is what it is.
 pub fn violated_constraint(e: &anyhow::Error) -> Option<&str> {
-    e.chain().find_map(|cause| {
-        cause
-            .downcast_ref::<sqlx::Error>()
-            .and_then(|s| s.as_database_error())
-            .filter(|d| d.is_unique_violation())
-            .map(|d| d.constraint().unwrap_or_default())
-    })
+    DbError::find(e)
+        .filter(|d| d.is_unique_violation())
+        .map(|d| d.constraint().unwrap_or_default())
 }
 
 /// A parcel's row, locked for the rest of the transaction.
@@ -659,7 +657,7 @@ pub async fn lock_for_update(
     .bind(id)
     .fetch_optional(&mut **tx)
     .await
-    .context("locking parcel")
+    .db_context("locking parcel")
 }
 
 pub struct NewVersion<'a> {
@@ -692,7 +690,7 @@ pub async fn insert_version(tx: &mut Transaction<'_, Postgres>, v: &NewVersion<'
     .bind(v.source.map(Json))
     .execute(&mut **tx)
     .await
-    .context("inserting version")?;
+    .db_context("inserting version")?;
 
     let paths: Vec<&str> = v.files.iter().map(|f| f.path.as_str()).collect();
     let shas: Vec<&str> = v.files.iter().map(|f| f.blob_sha256.as_str()).collect();
@@ -715,14 +713,14 @@ pub async fn insert_version(tx: &mut Transaction<'_, Postgres>, v: &NewVersion<'
     .bind(&titles)
     .execute(&mut **tx)
     .await
-    .context("inserting version files")?;
+    .db_context("inserting version files")?;
 
     sqlx::query("UPDATE parcels SET current_version = $2, updated_at = now() WHERE id = $1")
         .bind(v.parcel_id)
         .bind(v.version)
         .execute(&mut **tx)
         .await
-        .context("advancing current version")?;
+        .db_context("advancing current version")?;
     Ok(())
 }
 
@@ -751,7 +749,7 @@ pub async fn update_metadata_tx(
     .bind(touch)
     .execute(&mut **tx)
     .await
-    .context("updating parcel metadata")?;
+    .db_context("updating parcel metadata")?;
     Ok(())
 }
 
@@ -766,7 +764,7 @@ pub async fn stored_bytes_tx(tx: &mut Transaction<'_, Postgres>, owner_id: Uuid)
     .bind(owner_id)
     .fetch_one(&mut **tx)
     .await
-    .context("computing stored bytes")
+    .db_context("computing stored bytes")
 }
 
 /// Serialize a user's publishes so two concurrent uploads can't both pass
@@ -778,7 +776,7 @@ pub async fn lock_owner_quota(tx: &mut Transaction<'_, Postgres>, owner_id: Uuid
         .bind(owner_id)
         .execute(&mut **tx)
         .await
-        .context("taking quota lock")?;
+        .db_context("taking quota lock")?;
     Ok(())
 }
 

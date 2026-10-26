@@ -6,9 +6,11 @@
 //! that had it. Setting a slug deletes any redirect row for it; renaming or
 //! clearing one turns the old name into a redirect row.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sqlx::{PgExecutor, PgPool, Postgres, Transaction};
 use uuid::Uuid;
+
+use super::error::DbContext;
 
 /// The owner's parcel `slug` names: the one that has it, else the one a
 /// redirect row for it points at. `$owner` is the SQL for the owner's id;
@@ -41,7 +43,7 @@ pub async fn resolve(pool: &PgPool, handle: &str, slug: &str) -> Result<Option<S
     .bind(slug)
     .fetch_optional(pool)
     .await
-    .context("resolving slug")
+    .db_context("resolving slug")
 }
 
 /// [`resolve`] for an owner known by id: the parcel a publish to `slug`
@@ -57,7 +59,7 @@ pub async fn find<'e>(
         .bind(slug)
         .fetch_optional(db)
         .await
-        .context("finding parcel by slug")
+        .db_context("finding parcel by slug")
 }
 
 /// Whether another of the owner's parcels has `slug` as its current slug.
@@ -75,7 +77,7 @@ pub async fn taken_by_other(
     .bind(parcel_id)
     .fetch_one(&mut **tx)
     .await
-    .context("checking slug")
+    .db_context("checking slug")
 }
 
 /// Change a locked parcel's slug from `old` to `new` (either may be `None`),
@@ -100,14 +102,14 @@ pub async fn set(
             .bind(new)
             .execute(&mut **tx)
             .await
-            .context("taking over slug redirect")?;
+            .db_context("taking over slug redirect")?;
     }
     sqlx::query("UPDATE parcels SET slug = $2 WHERE id = $1")
         .bind(parcel_id)
         .bind(new)
         .execute(&mut **tx)
         .await
-        .context("setting slug")?;
+        .db_context("setting slug")?;
     if let Some(old) = old {
         sqlx::query(
             "INSERT INTO parcel_slug_redirects (owner_id, slug, parcel_id) VALUES ($1, $2, $3)
@@ -118,7 +120,7 @@ pub async fn set(
         .bind(parcel_id)
         .execute(&mut **tx)
         .await
-        .context("recording slug redirect")?;
+        .db_context("recording slug redirect")?;
     }
     Ok(())
 }

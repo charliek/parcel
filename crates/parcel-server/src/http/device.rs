@@ -22,6 +22,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::auth::AuthUser;
+use crate::db::error::DbContext;
 use crate::db::{device, users};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -177,7 +178,7 @@ async fn device_poll(
                 .db
                 .begin()
                 .await
-                .map_err(|e| AppError::Internal(e.into()))?;
+                .db_context("beginning device redeem")?;
             if !device::redeem(&mut *tx, row.id).await? {
                 // Another poll won the race and already took the token.
                 return Ok(status_only(DeviceStatus::Expired));
@@ -185,9 +186,7 @@ async fn device_poll(
             let created =
                 crate::http::tokens::mint(&mut *tx, user_id, &row.client_name, "device", None)
                     .await?;
-            tx.commit()
-                .await
-                .map_err(|e| AppError::Internal(e.into()))?;
+            tx.commit().await.db_context("committing device redeem")?;
             tracing::info!(user = %user_id, "CLI device login redeemed");
             Ok(Json(DevicePollResponse {
                 status: DeviceStatus::Approved,

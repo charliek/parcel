@@ -1,11 +1,12 @@
 //! Who a parcel is shared with, by email.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use parcel_types::{ShareRole, Visibility};
 use sqlx::{AssertSqlSafe, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::error::DbContext;
 use super::parcels::{ParcelRow, PARCEL_COLUMNS, PARCEL_FROM};
 
 /// Most people one parcel may be shared with.
@@ -35,7 +36,7 @@ pub async fn role_for(pool: &PgPool, parcel_id: &str, email: &str) -> Result<Opt
     .bind(email)
     .fetch_optional(pool)
     .await
-    .context("loading share")?;
+    .db_context("loading share")?;
     Ok(role.and_then(|r| ShareRole::parse(&r)))
 }
 
@@ -65,7 +66,7 @@ pub async fn member_check(
     .bind(user_id)
     .fetch_optional(pool)
     .await
-    .context("checking member access")?;
+    .db_context("checking member access")?;
     Ok(
         row.map(|(visibility, owner_id, role, disabled)| MemberCheck {
             visibility: Visibility::parse(&visibility).unwrap_or_default(),
@@ -88,7 +89,7 @@ pub async fn list(pool: &PgPool, parcel_id: &str) -> Result<Vec<ShareRow>> {
     .bind(parcel_id)
     .fetch_all(pool)
     .await
-    .context("listing shares")
+    .db_context("listing shares")
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -104,14 +105,14 @@ pub async fn put(
     email: &str,
     role: ShareRole,
 ) -> Result<Result<ShareRow, PutRefused>> {
-    let mut tx = pool.begin().await.context("beginning share")?;
+    let mut tx = pool.begin().await.db_context("beginning share")?;
     // The parcel row lock serializes shares, so two can't both squeeze
     // under the cap.
     let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM parcels WHERE id = $1 FOR UPDATE")
         .bind(parcel_id)
         .fetch_optional(&mut *tx)
         .await
-        .context("locking parcel for share")?;
+        .db_context("locking parcel for share")?;
     if exists.is_none() {
         return Ok(Err(PutRefused::ParcelGone));
     }
@@ -122,7 +123,7 @@ pub async fn put(
     .bind(email)
     .fetch_one(&mut *tx)
     .await
-    .context("counting shares")?;
+    .db_context("counting shares")?;
     if count >= MAX_SHARES_PER_PARCEL {
         return Ok(Err(PutRefused::TooMany));
     }
@@ -135,7 +136,7 @@ pub async fn put(
     .bind(role.as_str())
     .execute(&mut *tx)
     .await
-    .context("saving share")?;
+    .db_context("saving share")?;
     let row = sqlx::query_as::<_, ShareRow>(AssertSqlSafe(format!(
         "{SHARE_SELECT} WHERE s.parcel_id = $1 AND s.email = $2"
     )))
@@ -143,8 +144,8 @@ pub async fn put(
     .bind(email)
     .fetch_one(&mut *tx)
     .await
-    .context("loading share")?;
-    tx.commit().await.context("committing share")?;
+    .db_context("loading share")?;
+    tx.commit().await.db_context("committing share")?;
     Ok(Ok(row))
 }
 
@@ -155,7 +156,7 @@ pub async fn delete(pool: &PgPool, parcel_id: &str, email: &str) -> Result<bool>
         .bind(email)
         .execute(pool)
         .await
-        .context("deleting share")?
+        .db_context("deleting share")?
         .rows_affected();
     Ok(deleted > 0)
 }
@@ -194,7 +195,7 @@ pub async fn shared_with(
     .bind(offset)
     .fetch_all(pool)
     .await
-    .context("listing parcels shared with me")?;
+    .db_context("listing parcels shared with me")?;
     let total: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM parcel_shares s JOIN parcels p ON p.id = s.parcel_id
          WHERE s.email = lower($1) AND p.owner_id <> $2",
@@ -203,6 +204,6 @@ pub async fn shared_with(
     .bind(user_id)
     .fetch_one(pool)
     .await
-    .context("counting parcels shared with me")?;
+    .db_context("counting parcels shared with me")?;
     Ok((rows, total))
 }

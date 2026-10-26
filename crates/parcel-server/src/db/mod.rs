@@ -3,6 +3,9 @@
 //! Queries use sqlx's runtime API (no compile-time database), keeping `cargo
 //! build` and CI free of a live Postgres. Repository functions return
 //! `anyhow::Result`; handlers convert at the `AppError::Internal` boundary.
+//! That boundary logs the whole chain, so every sqlx error becomes a
+//! value-free [`error::DbError`] first: `.db_context(..)`, never
+//! `.context(..)` or a bare `?` (`search` is the one exception, see there).
 //!
 //! Some queries splice a shared `const` column list or `SELECT` in with
 //! `format!`, which sqlx 0.9 accepts only as `AssertSqlSafe(..)`. Each one
@@ -13,6 +16,7 @@ pub mod blobs;
 pub mod comments;
 pub mod data;
 pub mod device;
+pub mod error;
 pub mod handles;
 pub mod parcels;
 pub mod search;
@@ -28,6 +32,8 @@ use anyhow::{Context, Result};
 use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
 use stridelabs_postgres::{error_summary, PoolSettings, UrlRefusal};
+
+use self::error::DbContext;
 
 /// Why `DATABASE_URL` can't be used. Value-free by construction: every text
 /// here names a parameter, a field or a host label from stridelabs-postgres's
@@ -114,8 +120,7 @@ pub async fn ping(pool: &PgPool) -> Result<()> {
     )
     .await
     .context("database ping timed out")?
-    // The readiness log renders the whole chain: keep sqlx's text out of it.
-    .map_err(|e| anyhow::anyhow!("database ping failed: {}", error_summary(&e)))?;
+    .db_context("database ping failed")?;
     Ok(())
 }
 

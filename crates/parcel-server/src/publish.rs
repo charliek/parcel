@@ -35,6 +35,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
+use crate::db::error::DbContext;
 use crate::db::{blobs, handles, parcels, parcels::FileRow, slugs as slugs_db};
 use crate::error::{slug_error, slug_taken, tag_error, too_large, AppError};
 use crate::state::AppState;
@@ -447,9 +448,7 @@ async fn commit_and_index(
     uploads: &[Upload],
     entry: &str,
 ) -> Result<(), AppError> {
-    tx.commit()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    tx.commit().await.db_context("committing publish")?;
     let entry_upload = uploads
         .iter()
         .find(|u| u.path == entry)
@@ -592,11 +591,7 @@ pub async fn create(
     // A 60-bit id collides essentially never; retry anyway rather than 500.
     for attempt in 0..3 {
         let id = new_parcel_id();
-        let mut tx = state
-            .db
-            .begin()
-            .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let mut tx = state.db.begin().await.db_context("beginning publish")?;
         parcels::lock_owner_quota(&mut tx, owner_id).await?;
         if let Some(slug) = slug.as_deref() {
             // Under the owner's lock, so two first publishes of one slug
@@ -792,11 +787,7 @@ pub async fn add_version(
     source: VersionSource,
 ) -> Result<i32, AppError> {
     let prepared = prepare_version(state, parcel_id, source).await?;
-    let mut tx = state
-        .db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut tx = state.db.begin().await.db_context("beginning new version")?;
     // The owner's lock before the row lock (the one order; see the module
     // docs). Taken for the caller: a non-owner only serializes with itself
     // and is refused below.

@@ -1,10 +1,12 @@
 //! `pcl_…` API tokens. Only the SHA-256 of a token is ever stored.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use parcel_types::ApiToken;
 use sqlx::{AssertSqlSafe, PgExecutor, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+use super::error::DbContext;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct TokenRow {
@@ -57,7 +59,7 @@ pub async fn insert<'e>(db: impl PgExecutor<'e>, t: &NewToken<'_>) -> Result<Tok
     .bind(t.expires_at)
     .fetch_one(db)
     .await
-    .context("inserting token")
+    .db_context("inserting token")
 }
 
 /// A live (not revoked, not expired) token by hash.
@@ -70,7 +72,7 @@ pub async fn find_active_by_hash(pool: &PgPool, hash: &str) -> Result<Option<Tok
     .bind(hash)
     .fetch_optional(pool)
     .await
-    .context("finding token")
+    .db_context("finding token")
 }
 
 pub async fn list_active(pool: &PgPool, user_id: Uuid) -> Result<Vec<TokenRow>> {
@@ -83,7 +85,7 @@ pub async fn list_active(pool: &PgPool, user_id: Uuid) -> Result<Vec<TokenRow>> 
     .bind(user_id)
     .fetch_all(pool)
     .await
-    .context("listing tokens")
+    .db_context("listing tokens")
 }
 
 /// Revoke one of the user's tokens. Returns false if it wasn't theirs or was
@@ -97,7 +99,7 @@ pub async fn revoke(pool: &PgPool, user_id: Uuid, id: Uuid) -> Result<bool> {
     .bind(user_id)
     .execute(pool)
     .await
-    .context("revoking token")?;
+    .db_context("revoking token")?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -110,6 +112,6 @@ pub async fn touch_last_used(pool: &PgPool, id: Uuid) -> Result<()> {
     .bind(id)
     .execute(pool)
     .await
-    .context("touching token")?;
+    .db_context("touching token")?;
     Ok(())
 }
