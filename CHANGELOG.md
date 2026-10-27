@@ -1,6 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## v2026.10.27
+
+Search and database hardening, the shared GCS client, stridelabs-rust
+v0.11.0 and MCP log caps (plans 002 and 003). Migration 0009 is additive and
+no environment variable changes; an older CLI keeps working, and the server
+deploys before the CLI.
 
 ### Changed
 - **Deadlocks are retried once.** A publish, new version, restore, PATCH,
