@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.1
+
+The CLI and both plugins for the server's relaxed search (server
+`v2026.10.27`). Against an older server everything works as in v0.2.0.
+
+### CLI (`parcel`)
+- `parcel list -q` prints "No exact matches; showing parcels that match any
+  of the words." on stderr above a relaxed list; `--json` output is the
+  body, which carries `"relaxed": true`.
+
+### Claude Code plugins
+- `parcel` and `parcel-mcp`: the skills describe the search rule (every word
+  must match; when nothing does, parcels matching any of the words come back,
+  best first, marked relaxed; quotes, `-word` and `or` turn that off) and
+  what to do with a relaxed list.
+
 ## v2026.10.27
 
 Search and database hardening, the shared GCS client, stridelabs-rust
