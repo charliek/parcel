@@ -50,8 +50,13 @@
   PARCEL_MAX_UPLOAD_BYTES, 64 MiB)` bytes; GCS errors are the library's
   value-free ones, and the existence check's operation label is now `exists`
   (was `stat`).
-- The stridelabs-rust crates are pinned to merged commit `20d3967` (adds
-  `GcsClient::exists`) until a tag includes it.
+- MCP tool arguments and results (page HTML, file contents, comment text,
+  page data, queries) never reach the server log, at any `RUST_LOG`; parcel
+  logs only identifiers and outcomes. rmcp logs only errors. The server
+  refuses to start if logging can't be installed.
+- The stridelabs-rust crates are at v0.11.0, which includes the
+  empty-key-set fix: an empty JWKS is a failed fetch, so MCP answers 503
+  rather than 401.
 
 ## v0.2.0
 

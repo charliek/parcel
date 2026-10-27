@@ -184,6 +184,35 @@ shared with by email), `internal` (anyone signed in) and `public` (anyone with
 the link, no sign-in; can be turned off per server). The MVP had only
 private and public.
 
+### Log caps
+
+Some dependencies log user content at levels production doesn't run but an
+operator chasing a problem might set (`RUST_LOG=debug`). `log_cap_list()`
+(`lib.rs`) caps those targets whatever `RUST_LOG` says: stridelabs-observability's
+`TargetCaps`, a second filter beside the level filter that can only remove,
+where every cap covering a target applies and the strictest wins. `main.rs`
+installs them with `try_init_logging_with` and refuses to start if it can't.
+
+- **sqlx** (stridelabs-postgres's `LOG_CAPS`, all off): a raw `sqlx::Error`
+  quotes the value the server rejected; also server notices and URL values.
+- **`rmcp` at ERROR.** Below it rmcp logs each MCP request and result whole
+  (tool arguments, page HTML, file contents, comment text, page data, and
+  the serde error that quotes a malformed argument) and, at TRACE, every
+  transport message. Its ERROR lines are transport and task failures (a
+  task's panic message included; none on parcel's path carries input).
+- **`rmcp::transport::worker` and `rmcp::transport::streamable_http_server::tower`
+  off:** their ERROR lines can quote a client message, on session paths the
+  stateless transport doesn't take. Re-audit rmcp's log sites on each bump.
+
+The cost: rmcp's own diagnostics below ERROR are gone (drain timeouts,
+notification and response send failures, rejected requests, its per-request
+INFO lines), and a `tools/call` with malformed arguments leaves only the HTTP
+access line: rmcp answers it with an `isError` result before any tool runs,
+so there is no audit line or diagnostic either. Parcel's MCP auth decisions
+and tool outcomes (`stridelabs.mcp.tool`) still log. A value-free diagnostic
+for malformed arguments is future work. `tests/mcp_logs.rs` runs `/mcp` at
+`RUST_LOG=trace` with and without the caps.
+
 ## Environments and domains
 
 | Env | App | Content | Auth |

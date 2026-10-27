@@ -7,7 +7,8 @@ use common::*;
 use parcel_types::{
     CreatedToken, DevicePollResponse, DeviceStartResponse, DeviceStatus, TokenList,
 };
-use serde_json::json;
+use serde_json::{json, Value};
+use sqlx::AssertSqlSafe;
 
 #[tokio::test]
 async fn tokens_authenticate_and_revoke() {
@@ -242,4 +243,102 @@ async fn device_login_deny_and_unknown_codes() {
         StatusCode::NOT_FOUND,
     )
     .await;
+}
+
+/// Make the next `k` device-login inserts collide for real on `user_code`:
+/// the trigger swaps in the code of the login already started (read from
+/// its row), so Postgres raises on the table's own unique constraint.
+/// Every insert first records a hash of the code it tried.
+///
+/// Known quirk, left alone: the start endpoint counts *any* unique
+/// violation as a user-code collision, including one on the random 32-byte
+/// device-code hash (which can't collide in practice).
+async fn collide_user_codes(app: &TestApp, k: i64) -> Fingerprints {
+    let taken: String = sqlx::query_scalar("SELECT user_code FROM device_authorizations")
+        .fetch_one(&app.pool)
+        .await
+        .expect("the setup login's row");
+    let tried = Fingerprints::new(4);
+    let mut sql = tried.create_sql();
+    sql.push_str(&format!(
+        "CREATE FUNCTION collide_user_codes() RETURNS trigger LANGUAGE plpgsql AS $$
+         DECLARE n bigint;
+         BEGIN
+             {record}
+             IF n <= {k} THEN NEW.user_code := '{taken}'; END IF;
+             RETURN NEW;
+         END $$;
+         CREATE TRIGGER collide_user_codes BEFORE INSERT ON device_authorizations
+             FOR EACH ROW EXECUTE FUNCTION collide_user_codes();",
+        record = tried.record("NEW.user_code"),
+    ));
+    sqlx::raw_sql(AssertSqlSafe(sql))
+        .execute(&app.pool)
+        .await
+        .expect("arm the user-code collisions");
+    tried
+}
+
+async fn device_rows(app: &TestApp) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM device_authorizations")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap()
+}
+
+/// Two user-code collisions cost two codes, not the login: the third
+/// insert lands under a third code, which is the one returned.
+#[tokio::test]
+async fn a_device_start_survives_two_user_code_collisions() {
+    let app = TestApp::new().await;
+    start(&app).await;
+    let tried = collide_user_codes(&app, 2).await;
+
+    let started = start(&app).await;
+
+    let codes = tried.hashes(&app.pool).await;
+    assert_eq!(codes.len(), 3, "three inserts: {codes:?}");
+    assert_eq!(distinct(&codes), 3, "a fresh code per collision: {codes:?}");
+    // The response carries the row's code as stored.
+    assert_eq!(
+        text_hash(&app.pool, &started.user_code).await,
+        codes[2],
+        "the third code is the one returned"
+    );
+    assert_eq!(device_rows(&app).await, 2, "one new login");
+}
+
+/// The third collision is the generic 500 (the cause is only logged), after
+/// exactly three inserts and with no new login.
+#[tokio::test(flavor = "current_thread")]
+async fn a_third_user_code_collision_is_a_500() {
+    let app = TestApp::new().await;
+    start(&app).await;
+    let tried = collide_user_codes(&app, 3).await;
+    let logs = Captured::default();
+    let guard = logs.install();
+
+    let body: Value = expect_json(
+        app.post_json(
+            "/api/v1/cli/device",
+            None,
+            &json!({"client_name": "parcel CLI on test"}),
+        )
+        .await,
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .await;
+    drop(guard);
+
+    assert_eq!(body["error"]["message"], "internal server error");
+    assert!(!body.to_string().contains("collision"), "{body}");
+    let codes = tried.hashes(&app.pool).await;
+    assert_eq!(codes.len(), 3, "three inserts, no fourth: {codes:?}");
+    assert_eq!(distinct(&codes), 3, "a fresh code per collision: {codes:?}");
+    assert_eq!(device_rows(&app).await, 1, "no new login");
+    assert!(
+        logs.text().contains("user code collisions"),
+        "{}",
+        logs.text()
+    );
 }

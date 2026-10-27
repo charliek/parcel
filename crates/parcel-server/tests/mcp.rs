@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 use stridelabs_auth::test_support::{TestClaims, TestKey};
 use stridelabs_mcp::test_support::access_token;
 use stridelabs_mcp::ProtectedResource;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, ResponseTemplate};
 
 const RESOURCE: &str = "https://parcel.test/mcp";
 
@@ -184,6 +186,43 @@ async fn an_unseen_kid_is_unavailable_not_invalid() {
         .build();
     let unseen = TestKey::secondary().mint_with_kid("never-published", &claims);
     let (status, body, challenge) = post_mcp(&app, "parcel.test", Some(&unseen), list).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        !challenge.is_some_and(|c| c.contains("invalid_token")),
+        "a 503 asks for no new token"
+    );
+}
+
+/// A provider that serves a JWKS with no keys is a broken fetch, not a
+/// verdict on the token: `503`, not `401` (which would send the client back
+/// through sign-in for a fault that is the issuer's). Pins stridelabs-auth
+/// 0.11's "an empty set is a failed fetch" rule: against the 0.10 pin this
+/// was a `401 invalid_token`.
+#[tokio::test]
+async fn an_empty_jwks_is_unavailable_not_invalid() {
+    let app = mcp_app(|_| {}).await;
+    known_user(&app, "sub-e", "e@example.com").await;
+
+    // Mounted after the default JWKS, so it needs the higher priority (1 beats
+    // the default 5) to answer. The cache has fetched nothing yet.
+    Mock::given(method("GET"))
+        .and(path("/jwks.json"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(r#"{"keys": []}"#, "application/json"),
+        )
+        .with_priority(1)
+        .mount(&app.idp)
+        .await;
+
+    let claims = TestClaims::new(app.idp.uri(), RESOURCE)
+        .subject("sub-e")
+        .email("e@example.com")
+        .claim("scope", json!("parcel:read"))
+        .claim("client_id", json!("parcel-claude"))
+        .build();
+    let token = TestKey::secondary().mint_with_kid("never-published", &claims);
+    let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    let (status, body, challenge) = post_mcp(&app, "parcel.test", Some(&token), list).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert!(
         !challenge.is_some_and(|c| c.contains("invalid_token")),

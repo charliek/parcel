@@ -5,7 +5,8 @@
 //! schema raises the SQLSTATE under test for its first *k* calls. A
 //! sequence counts the calls, because a counter row would roll back with
 //! the very transaction the trigger fails. One smoke test then makes
-//! Postgres find a real deadlock.
+//! Postgres find a real deadlock. Id collisions are real too: a trigger
+//! swaps in an existing parcel's id, and Postgres raises on the key.
 //!
 //! Every test runs on a current-thread runtime: `Captured` subscribes for
 //! this thread only, and the retry and dispatch lines are counted.
@@ -363,69 +364,54 @@ async fn other_failures_are_not_retried() {
     }
 }
 
-/// Arm `create`'s two retries together: every parcel insert records a hash
-/// of the id it tried (in sequences, which outlive the aborted attempts)
-/// and the ones numbered in `collide_on` fail as an id collision on
-/// `parcels_pkey`; the first version insert fails with 40P01.
-async fn inject_mixed(app: &TestApp, collide_on: &[i64]) {
+/// Arm `create`'s two retries together. Every parcel insert records a hash
+/// of the id it tried, and the ones numbered in `collide_on` collide for
+/// real: the trigger swaps in the setup parcel's id, so Postgres itself
+/// raises on the primary key (a drift between `parcels::PARCEL_PKEY` and
+/// the schema fails these tests rather than passing them vacuously). The
+/// first `deadlocks` version inserts fail with 40P01.
+async fn inject_mixed(
+    app: &TestApp,
+    s: &Setup,
+    collide_on: &[i64],
+    deadlocks: i64,
+) -> Fingerprints {
+    let tried = Fingerprints::new(6);
     let collide = collide_on
         .iter()
         .map(i64::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    let mut sql = String::from("CREATE SEQUENCE insert_calls; CREATE SEQUENCE version_calls;");
-    for n in 1..=6 {
-        sql.push_str(&format!(
-            "CREATE SEQUENCE tried_{n} MINVALUE -9223372036854775808;"
-        ));
-    }
+    let version_calls = tried.sibling("versions");
+    let mut sql = tried.create_sql();
     sql.push_str(&format!(
-        "CREATE FUNCTION mixed_parcels() RETURNS trigger LANGUAGE plpgsql AS $$
-         DECLARE n bigint := nextval('insert_calls');
+        "CREATE SEQUENCE {version_calls};
+         CREATE FUNCTION mixed_parcels() RETURNS trigger LANGUAGE plpgsql AS $$
+         DECLARE n bigint;
          BEGIN
-             PERFORM setval(format('tried_%s', n)::regclass, hashtextextended(NEW.id, 0));
-             IF n IN ({collide}) THEN
-                 RAISE EXCEPTION 'taken' USING ERRCODE = '23505', CONSTRAINT = 'parcels_pkey';
-             END IF;
+             {record}
+             IF n IN ({collide}) THEN NEW.id := '{taken}'; END IF;
              RETURN NEW;
          END $$;
          CREATE TRIGGER mixed_parcels BEFORE INSERT ON parcels
              FOR EACH ROW EXECUTE FUNCTION mixed_parcels();
          CREATE FUNCTION mixed_versions() RETURNS trigger LANGUAGE plpgsql AS $$
          BEGIN
-             IF nextval('version_calls') = 1 THEN
+             IF nextval('{version_calls}') <= {deadlocks} THEN
                  RAISE EXCEPTION 'injected' USING ERRCODE = '40P01';
              END IF;
              RETURN NEW;
          END $$;
          CREATE TRIGGER mixed_versions BEFORE INSERT ON parcel_versions
-             FOR EACH ROW EXECUTE FUNCTION mixed_versions();"
+             FOR EACH ROW EXECUTE FUNCTION mixed_versions();",
+        record = tried.record("NEW.id"),
+        taken = s.id,
     ));
     sqlx::raw_sql(AssertSqlSafe(sql))
         .execute(&app.pool)
         .await
         .expect("arm the collisions and the deadlock");
-}
-
-/// The id hashes the parcel inserts tried, in order.
-async fn tried(app: &TestApp) -> Vec<i64> {
-    let calls: i64 = sqlx::query_scalar(
-        "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM insert_calls",
-    )
-    .fetch_one(&app.pool)
-    .await
-    .unwrap();
-    let mut ids = Vec::new();
-    for n in 1..=calls {
-        let sql = format!("SELECT last_value FROM tried_{n}");
-        ids.push(
-            sqlx::query_scalar(AssertSqlSafe(sql))
-                .fetch_one(&app.pool)
-                .await
-                .unwrap(),
-        );
-    }
-    ids
+    tried
 }
 
 /// A create's two retries keep their own budgets: a deadlock retries with
@@ -437,39 +423,149 @@ async fn tried(app: &TestApp) -> Vec<i64> {
 async fn a_create_spends_ids_only_on_collisions() {
     let app = TestApp::new().await;
     let s = setup(&app).await;
-    inject_mixed(&app, &[1, 3, 4]).await;
+    let tried = inject_mixed(&app, &s, &[1, 3, 4], 1).await;
     let logs = capture();
     expect_status(
         Op::Create.run(&app, &s).await,
         StatusCode::INTERNAL_SERVER_ERROR,
     )
     .await;
-    let ids = tried(&app).await;
+    let ids = tried.hashes(&app.pool).await;
     assert_eq!(ids.len(), 4, "four transactions: {ids:?}");
     assert_eq!(ids[1], ids[2], "the deadlock's retry keeps its id");
-    let distinct: std::collections::BTreeSet<_> = ids.iter().collect();
-    assert_eq!(distinct.len(), 3, "three ids: {ids:?}");
+    assert_eq!(distinct(&ids), 3, "three ids: {ids:?}");
     assert_eq!(logs.lines(RETRY_LINE).len(), 1);
     drop(logs);
 
     let app = TestApp::new().await;
     let s = setup(&app).await;
-    inject_mixed(&app, &[1]).await;
+    let tried = inject_mixed(&app, &s, &[1], 1).await;
     let logs = capture();
     let published: PublishResult =
         expect_json(Op::Create.run(&app, &s).await, StatusCode::CREATED).await;
-    let ids = tried(&app).await;
+    let ids = tried.hashes(&app.pool).await;
     assert_eq!(ids.len(), 3, "{ids:?}");
     assert_ne!(ids[0], ids[1]);
     assert_eq!(ids[1], ids[2], "the deadlock's retry keeps its id");
-    let hash: i64 = sqlx::query_scalar("SELECT hashtextextended($1, 0)")
-        .bind(&published.parcel.id)
-        .fetch_one(&app.pool)
-        .await
-        .unwrap();
-    assert_eq!(hash, ids[2], "published under the retried id");
+    assert_eq!(
+        text_hash(&app.pool, &published.parcel.id).await,
+        ids[2],
+        "published under the retried id"
+    );
     assert_eq!(logs.lines(RETRY_LINE).len(), 1);
     assert_eq!(logs.lines(DISPATCH_LINE).len(), 1);
+}
+
+/// Two id collisions in a row cost two ids, not the publish: the third
+/// insert succeeds under a third id, committing one parcel and one version,
+/// with the blobs (written before the transaction) written once and no
+/// deadlock retry spent.
+#[tokio::test(flavor = "current_thread")]
+async fn a_create_survives_two_id_collisions() {
+    let app = TestApp::new().await;
+    let s = setup(&app).await;
+    let before = snapshot(&app, &s).await;
+    let tried = inject_mixed(&app, &s, &[1, 2], 0).await;
+    let puts = app.blobs.puts();
+    let logs = capture();
+
+    let published: PublishResult =
+        expect_json(Op::Create.run(&app, &s).await, StatusCode::CREATED).await;
+
+    let ids = tried.hashes(&app.pool).await;
+    assert_eq!(ids.len(), 3, "three inserts: {ids:?}");
+    assert_eq!(distinct(&ids), 3, "a fresh id per collision: {ids:?}");
+    assert_eq!(
+        text_hash(&app.pool, &published.parcel.id).await,
+        ids[2],
+        "published under the third id"
+    );
+    assert_eq!(snapshot(&app, &s).await, Op::Create.applied(&before));
+    assert_eq!(app.blobs.puts() - puts, 1, "blob writes");
+    assert!(logs.lines(RETRY_LINE).is_empty());
+    assert_eq!(logs.lines(DISPATCH_LINE).len(), 1);
+}
+
+/// The third collision is the caller's 500: three distinct ids tried, no
+/// fourth insert, nothing committed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_third_id_collision_is_a_500() {
+    let app = TestApp::new().await;
+    let s = setup(&app).await;
+    let before = snapshot(&app, &s).await;
+    let tried = inject_mixed(&app, &s, &[1, 2, 3], 0).await;
+    let logs = capture();
+
+    let body: Value = expect_json(
+        Op::Create.run(&app, &s).await,
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .await;
+    assert_eq!(body["error"]["message"], "internal server error");
+
+    let ids = tried.hashes(&app.pool).await;
+    assert_eq!(ids.len(), 3, "three inserts, no fourth: {ids:?}");
+    assert_eq!(distinct(&ids), 3, "a fresh id per collision: {ids:?}");
+    assert_eq!(snapshot(&app, &s).await, before, "nothing committed");
+    assert!(logs.lines(RETRY_LINE).is_empty());
+    assert!(logs.lines(DISPATCH_LINE).is_empty());
+}
+
+/// A deadlock before any collision: the retry tries the same id again,
+/// collides for real, and only then spends a new one. Three inserts, the
+/// first two under one id, and the publish lands under the third.
+#[tokio::test(flavor = "current_thread")]
+async fn a_create_collides_after_a_deadlock() {
+    let app = TestApp::new().await;
+    let s = setup(&app).await;
+    let before = snapshot(&app, &s).await;
+    let tried = inject_mixed(&app, &s, &[2], 1).await;
+    let puts = app.blobs.puts();
+    let logs = capture();
+
+    let published: PublishResult =
+        expect_json(Op::Create.run(&app, &s).await, StatusCode::CREATED).await;
+
+    let ids = tried.hashes(&app.pool).await;
+    assert_eq!(ids.len(), 3, "three inserts: {ids:?}");
+    assert_eq!(ids[0], ids[1], "the deadlock's retry keeps its id");
+    assert_ne!(ids[1], ids[2], "the collision spends it");
+    assert_eq!(
+        text_hash(&app.pool, &published.parcel.id).await,
+        ids[2],
+        "published under the third id"
+    );
+    assert_eq!(snapshot(&app, &s).await, Op::Create.applied(&before));
+    assert_eq!(app.blobs.puts() - puts, 1, "blob writes");
+    assert_eq!(logs.lines(RETRY_LINE).len(), 1);
+    assert_eq!(logs.lines(DISPATCH_LINE).len(), 1);
+}
+
+/// A collision doesn't refill the deadlock budget: after a deadlock and a
+/// collision, a second deadlock is the caller's 500, with the same three
+/// inserts as above and nothing committed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_collision_does_not_reset_the_deadlock_retry() {
+    let app = TestApp::new().await;
+    let s = setup(&app).await;
+    let before = snapshot(&app, &s).await;
+    let tried = inject_mixed(&app, &s, &[2], 2).await;
+    let logs = capture();
+
+    let body: Value = expect_json(
+        Op::Create.run(&app, &s).await,
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .await;
+    assert_eq!(body["error"]["message"], "internal server error");
+
+    let ids = tried.hashes(&app.pool).await;
+    assert_eq!(ids.len(), 3, "three inserts: {ids:?}");
+    assert_eq!(ids[0], ids[1], "the deadlock's retry keeps its id");
+    assert_ne!(ids[1], ids[2], "the collision spends it");
+    assert_eq!(logs.lines(RETRY_LINE).len(), 1, "one deadlock retry");
+    assert_eq!(snapshot(&app, &s).await, before, "nothing committed");
+    assert!(logs.lines(DISPATCH_LINE).is_empty());
 }
 
 /// Poll until some backend waits on `pid` (a lock it holds), returning the
