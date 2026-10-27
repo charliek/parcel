@@ -125,23 +125,24 @@ utoipa-axum = "0.3"
 utoipa-swagger-ui = { version = "10", features = ["axum", "vendored"], optional = true }
 
 # StrideLabs shared crates (public git dep, lockstep-versioned). Every one
-# pins the same merged commit, which adds `GcsClient::exists` (parcel plan
-# 002); move back to a tag once one includes 20d3967.
-stridelabs-config = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "20d3967b709af7241677ea66df81ccda41f1ccf4" }
-stridelabs-observability = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "20d3967b709af7241677ea66df81ccda41f1ccf4" }
-stridelabs-http = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "20d3967b709af7241677ea66df81ccda41f1ccf4", features = ["openapi"] }
+# pins the same merged commit, 040034c: v0.11.0's content (it has
+# `GcsClient::exists` and the empty-key-set fix, an empty JWKS being a failed
+# fetch); move to `tag = "v0.11.0"` once it is cut.
+stridelabs-config = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "040034cfbc5054d82e31c174aacf68e8016d1362" }
+stridelabs-observability = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "040034cfbc5054d82e31c174aacf68e8016d1362" }
+stridelabs-http = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "040034cfbc5054d82e31c174aacf68e8016d1362", features = ["openapi"] }
 # `http`: the `AuthError -> AppError` bridge (`bearer_token` in auth/mod.rs).
-stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "20d3967b709af7241677ea66df81ccda41f1ccf4", features = ["axum", "http"] }
-stridelabs-mcp = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "20d3967b709af7241677ea66df81ccda41f1ccf4" }
+stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "040034cfbc5054d82e31c174aacf68e8016d1362", features = ["axum", "http"] }
+stridelabs-mcp = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "040034cfbc5054d82e31c174aacf68e8016d1362" }
 # DATABASE_URL checks before sqlx parses it, the lazy pool, Neon pooler
 # detection (migrations refuse it) and the sqlx log targets main.rs caps off.
 # It names no TLS feature: parcel's own sqlx `tls-rustls-aws-lc-rs` unifies in.
-stridelabs-postgres = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "20d3967b709af7241677ea66df81ccda41f1ccf4" }
+stridelabs-postgres = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "040034cfbc5054d82e31c174aacf68e8016d1362" }
 # The blob store's GCS client and its access tokens (storage/gcs.rs). It
 # builds no HTTP client: it takes parcel's reqwest (rustls on aws-lc-rs).
 # `service-account-key` signs a `GOOGLE_CREDENTIALS` key's RS256 assertion
 # through jsonwebtoken's `aws_lc_rs` backend, the one parcel already has.
-stridelabs-gcp = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "20d3967b709af7241677ea66df81ccda41f1ccf4", features = ["service-account-key"] }
+stridelabs-gcp = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "040034cfbc5054d82e31c174aacf68e8016d1362", features = ["service-account-key"] }
 # MCP server at /mcp (tools as an rmcp ServerHandler; stridelabs-mcp supplies
 # the auth boundary and the stateless transport). Same major as stridelabs-mcp,
 # whose API is rmcp's types. Never the `local` feature: it compiles the HTTP
@@ -156,6 +157,6 @@ tempfile = "3"
 # Capturing log output in tests (tests/search.rs: nothing a failed indexing
 # logs may carry page text).
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
-stridelabs-testing = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "20d3967b709af7241677ea66df81ccda41f1ccf4", features = ["postgres"] }
-stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "20d3967b709af7241677ea66df81ccda41f1ccf4", features = ["test-support"] }
-stridelabs-mcp = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "20d3967b709af7241677ea66df81ccda41f1ccf4", features = ["test-support"] }
+stridelabs-testing = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "040034cfbc5054d82e31c174aacf68e8016d1362", features = ["postgres"] }
+stridelabs-auth = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "040034cfbc5054d82e31c174aacf68e8016d1362", features = ["test-support"] }
+stridelabs-mcp = { git = "https://github.com/charliek/stridelabs-rust.git", rev = "040034cfbc5054d82e31c174aacf68e8016d1362", features = ["test-support"] }
