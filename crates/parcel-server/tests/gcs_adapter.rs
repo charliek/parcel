@@ -325,6 +325,35 @@ async fn the_metadata_request_is_unchanged() {
     );
 }
 
+/// A 0-byte file's upload states `Content-Length: 0`. parcel's reqwest
+/// speaks HTTP/1.1, where hyper sends no length for an empty body, and
+/// Google's front end answers such a `POST` with a 411 before any auth: an
+/// empty file in a publish was a 500 (fixed in stridelabs-gcp v0.11.1).
+#[tokio::test]
+async fn an_empty_file_states_its_length() {
+    let mocks = Mocks::start().await;
+    Mock::given(method("POST"))
+        .and(path(UPLOAD_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&mocks.api)
+        .await;
+    let store = mocks.store(false, None).unwrap();
+    store.put(KEY, Bytes::new(), "text/plain").await.unwrap();
+    let upload = requests(&mocks.api)
+        .await
+        .into_iter()
+        .find(|r| r.url.path() == UPLOAD_PATH)
+        .unwrap();
+    assert_eq!(
+        upload
+            .headers
+            .get("content-length")
+            .map(|v| v.to_str().unwrap()),
+        Some("0")
+    );
+}
+
 // --- (4) retries ---------------------------------------------------------------
 
 /// Each client's attempt cap, on a 1 ms schedule: a persistent 503 is tried
