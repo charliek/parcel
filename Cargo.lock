@@ -2834,7 +2834,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 [[package]]
 name = "stridelabs-auth"
 version = "0.11.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?rev=040034cfbc5054d82e31c174aacf68e8016d1362#040034cfbc5054d82e31c174aacf68e8016d1362"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.11.0#ece12943403d621eeae73d32dcd74156042086c6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2856,7 +2856,7 @@ dependencies = [
 [[package]]
 name = "stridelabs-config"
 version = "0.11.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?rev=040034cfbc5054d82e31c174aacf68e8016d1362#040034cfbc5054d82e31c174aacf68e8016d1362"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.11.0#ece12943403d621eeae73d32dcd74156042086c6"
 dependencies = [
  "serde",
  "serde_json",
@@ -2868,7 +2868,7 @@ dependencies = [
 [[package]]
 name = "stridelabs-gcp"
 version = "0.11.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?rev=040034cfbc5054d82e31c174aacf68e8016d1362#040034cfbc5054d82e31c174aacf68e8016d1362"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.11.0#ece12943403d621eeae73d32dcd74156042086c6"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2888,7 +2888,7 @@ dependencies = [
 [[package]]
 name = "stridelabs-http"
 version = "0.11.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?rev=040034cfbc5054d82e31c174aacf68e8016d1362#040034cfbc5054d82e31c174aacf68e8016d1362"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.11.0#ece12943403d621eeae73d32dcd74156042086c6"
 dependencies = [
  "anyhow",
  "axum",
@@ -2909,7 +2909,7 @@ dependencies = [
 [[package]]
 name = "stridelabs-mcp"
 version = "0.11.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?rev=040034cfbc5054d82e31c174aacf68e8016d1362#040034cfbc5054d82e31c174aacf68e8016d1362"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.11.0#ece12943403d621eeae73d32dcd74156042086c6"
 dependencies = [
  "axum",
  "futures",
@@ -2931,7 +2931,7 @@ dependencies = [
 [[package]]
 name = "stridelabs-observability"
 version = "0.11.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?rev=040034cfbc5054d82e31c174aacf68e8016d1362#040034cfbc5054d82e31c174aacf68e8016d1362"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.11.0#ece12943403d621eeae73d32dcd74156042086c6"
 dependencies = [
  "http",
  "rand",
@@ -2946,7 +2946,7 @@ dependencies = [
 [[package]]
 name = "stridelabs-postgres"
 version = "0.11.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?rev=040034cfbc5054d82e31c174aacf68e8016d1362#040034cfbc5054d82e31c174aacf68e8016d1362"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.11.0#ece12943403d621eeae73d32dcd74156042086c6"
 dependencies = [
  "percent-encoding",
  "sqlx",
@@ -2958,7 +2958,7 @@ dependencies = [
 [[package]]
 name = "stridelabs-testing"
 version = "0.11.0"
-source = "git+https://github.com/charliek/stridelabs-rust.git?rev=040034cfbc5054d82e31c174aacf68e8016d1362#040034cfbc5054d82e31c174aacf68e8016d1362"
+source = "git+https://github.com/charliek/stridelabs-rust.git?tag=v0.11.0#ece12943403d621eeae73d32dcd74156042086c6"
 dependencies = [
  "axum",
  "http",
