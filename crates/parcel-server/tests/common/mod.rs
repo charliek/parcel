@@ -509,6 +509,94 @@ pub async fn within_a_minute<F: std::future::Future>(what: &str, fut: F) -> F::O
         .unwrap_or_else(|_| panic!("{what}: the writers didn't finish (deadlock?)"))
 }
 
+/// What a trigger saw, in order: each call records a hash of a value in
+/// its own slot. Both live in sequences, because a sequence keeps its value
+/// when the statement or transaction that set it aborts; a counter row
+/// would roll back with the very insert the test made fail. The names are
+/// unique per arming, so no two armings share a slot.
+pub struct Fingerprints {
+    prefix: String,
+    slots: i64,
+}
+
+impl Fingerprints {
+    /// Room for `slots` calls; a call past them fails its trigger (loudly).
+    pub fn new(slots: i64) -> Self {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        Self {
+            prefix: format!("fp_{}", &id[..12]),
+            slots,
+        }
+    }
+
+    /// The DDL creating the sequences, to run before the trigger function.
+    pub fn create_sql(&self) -> String {
+        let p = &self.prefix;
+        let mut sql = format!("CREATE SEQUENCE {p}_calls;");
+        for n in 1..=self.slots {
+            sql.push_str(&format!(
+                "CREATE SEQUENCE {p}_{n} MINVALUE -9223372036854775808;"
+            ));
+        }
+        sql
+    }
+
+    /// PL/pgSQL statements recording `hashtextextended(<value>, 0)` in the
+    /// next slot, leaving the call's number (from 1) in the `bigint`
+    /// variable `n`, which the function declares.
+    pub fn record(&self, value: &str) -> String {
+        let p = &self.prefix;
+        format!(
+            "n := nextval('{p}_calls');
+             PERFORM setval(format('{p}_%s', n)::regclass, hashtextextended({value}, 0));"
+        )
+    }
+
+    /// A further sequence's name, unique to this arming like the slots.
+    pub fn sibling(&self, name: &str) -> String {
+        format!("{}_{name}", self.prefix)
+    }
+
+    /// The recorded hashes, one per call, in order.
+    pub async fn hashes(&self, pool: &PgPool) -> Vec<i64> {
+        let p = &self.prefix;
+        let calls: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM {p}_calls"
+        )))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let mut hashes = Vec::new();
+        for n in 1..=calls {
+            hashes.push(
+                sqlx::query_scalar(AssertSqlSafe(format!("SELECT last_value FROM {p}_{n}")))
+                    .fetch_one(pool)
+                    .await
+                    .unwrap(),
+            );
+        }
+        hashes
+    }
+}
+
+/// `hashtextextended(value, 0)`, to compare a returned value with
+/// [`Fingerprints::hashes`].
+pub async fn text_hash(pool: &PgPool, value: &str) -> i64 {
+    sqlx::query_scalar("SELECT hashtextextended($1, 0)")
+        .bind(value)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// How many distinct values `hashes` holds.
+pub fn distinct(hashes: &[i64]) -> usize {
+    hashes
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
 /// A multipart/form-data body, built by hand so tests control every byte.
 #[derive(Default, Clone)]
 pub struct Form {
