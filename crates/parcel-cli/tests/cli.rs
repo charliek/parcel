@@ -980,6 +980,36 @@ async fn delete_needs_yes_without_a_terminal() {
     assert_eq!(stdout(&out), format!("Deleted {ID}\n"));
 }
 
+/// A body-less POST states `Content-Length: 0`: over HTTP/1.1 Google's front
+/// end in front of production answers one without it with a 411, so
+/// `restore` failed there while every local test passed.
+#[tokio::test]
+async fn restore_states_an_empty_length() {
+    let server = MockServer::start().await;
+    let sandbox = Sandbox::new();
+    let restore = format!("/api/v1/parcels/{ID}/versions/1/restore");
+    Mock::given(method("POST"))
+        .and(path(&restore))
+        .respond_with(ResponseTemplate::new(201).set_body_json(publish_result(&server.uri(), 3)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = run(sandbox
+        .parcel(&server.uri())
+        .env("PARCEL_TOKEN", TOKEN)
+        .args(["restore", ID, "--version", "1"]));
+    assert_code(&out, 0);
+    let posts = requests_to(&server, "POST", &restore).await;
+    assert_eq!(
+        posts[0]
+            .headers
+            .get("content-length")
+            .map(|v| v.to_str().unwrap()),
+        Some("0")
+    );
+}
+
 // ---------------------------------------------------------------- comments
 
 fn person(name: &str, is_owner: bool, is_you: bool) -> Value {
