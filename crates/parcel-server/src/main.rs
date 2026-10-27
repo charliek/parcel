@@ -46,11 +46,15 @@ async fn main() -> anyhow::Result<()> {
 
     load_dotenv();
     let config = Config::from_env().context("loading configuration")?;
-    stridelabs_observability::init_logging_with(
+    // The caps keep user content (MCP arguments and results, values in
+    // database errors) out of the log, so a server that couldn't install
+    // them doesn't start.
+    stridelabs_observability::try_init_logging_with(
         config.log_format,
         "info,parcel_server=debug",
         &parcel_server::log_caps(),
-    );
+    )
+    .context("installing logging")?;
 
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => http::server::serve(config).await,
