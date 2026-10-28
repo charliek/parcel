@@ -1,6 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## v0.2.2
+
+A CLI fix for `parcel restore` against production. Nothing changes in the
+plugins.
 
 ### Fixed
 - `parcel restore` works against production: its body-less `POST` now
