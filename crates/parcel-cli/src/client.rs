@@ -169,9 +169,15 @@ impl Api {
         self.decode(response)
     }
 
-    /// POST with no body (e.g. restore).
+    /// POST with no body (e.g. restore). The length is stated by hand: hyper
+    /// sends none for an empty body, and over HTTP/1.1 Google's front end
+    /// (production's Cloud Run) answers a POST without one with a 411.
     pub fn post_empty<T: DeserializeOwned>(&self, url: Url) -> Result<Fetched<T>> {
-        let response = self.send(self.request(Method::POST, url).timeout(REQUEST_TIMEOUT))?;
+        let response = self.send(
+            self.request(Method::POST, url)
+                .header(reqwest::header::CONTENT_LENGTH, 0)
+                .timeout(REQUEST_TIMEOUT),
+        )?;
         self.decode(response)
     }
 
