@@ -3,13 +3,19 @@
 ## [Unreleased]
 
 ### Fixed
+- `parcel restore` works against production: its body-less `POST` now
+  states `Content-Length: 0`. Google's front end in front of Cloud Run
+  answered it with 411 Length Required, in every CLI release so far.
+
+## v2026.10.27.2
+
+stridelabs-rust v0.11.1. No migration and no environment variable changes.
+
+### Fixed
 - A publish containing a 0-byte file no longer fails with a 500 on GCS:
   the upload now states `Content-Length: 0`, which Google's front end
   requires on an HTTP/1.1 `POST` (it answered 411). stridelabs-rust is at
   v0.11.1, which carries the fix.
-- `parcel restore` works against production: its body-less `POST` now
-  states `Content-Length: 0`. Google's front end in front of Cloud Run
-  answered it with 411 Length Required, in every CLI release so far.
 
 ## v0.2.1
 
