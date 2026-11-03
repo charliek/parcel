@@ -1,0 +1,18 @@
+version: 1
+targets:
+  server:
+    kind: web-service
+    cloud_run: { service: parcel, container: parcel }
+    # Dockerfile: the frontend stage builds the SPA from frontend/bun.lock, the
+    # backend stage builds parcel-server from Cargo.lock.
+    ships: [Cargo.lock, frontend/bun.lock]
+  cli:
+    kind: cli
+    # v{date} tags are deploy tags, not CLI releases: a 1-3 digit major
+    # keeps v2026.10.27 out.
+    released: { tag_pattern: '^v\d{1,3}\.\d+\.\d+$', homebrew: parcel }
+    ships: [Cargo.lock]
+lockfiles:
+  # pyproject.toml: the test and docs dependency groups only (functional
+  # tests, docs site); the Dockerfile never copies it.
+  uv.lock: { role: test }
