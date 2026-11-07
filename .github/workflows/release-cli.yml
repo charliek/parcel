@@ -28,7 +28,7 @@ jobs:
   version-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Assert tag matches Cargo.toml and the plugin manifest
@@ -103,7 +103,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Create (or reuse) the GitHub Release
@@ -150,7 +150,7 @@ jobs:
           - { runner: ubuntu-24.04-arm, os: linux,  arch: arm64, target: aarch64-unknown-linux-gnu, deb: true }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -231,7 +231,7 @@ jobs:
     needs: finalize-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
