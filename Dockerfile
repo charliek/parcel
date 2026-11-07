@@ -5,7 +5,7 @@
 # compiled out (it is also runtime-gated off in production).
 
 # ---- frontend -------------------------------------------------------------
-FROM oven/bun:1.4.0 AS frontend
+FROM oven/bun:1.4.4 AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/bun.lock ./
 RUN bun install --frozen-lockfile
@@ -13,7 +13,7 @@ COPY frontend/ ./
 RUN bun run build
 
 # ---- backend --------------------------------------------------------------
-FROM rust:1.97.1-slim-bookworm AS backend
+FROM rust:1.99.0-slim-bookworm AS backend
 WORKDIR /app
 # aws-lc-sys (rustls's and jsonwebtoken's crypto) compiles AWS-LC with the gcc
 # this image ships, through its `cc` builder: no cmake, clang or Go needed.
@@ -32,7 +32,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # ---- runtime --------------------------------------------------------------
 # Same pinned distroless base as slauth-rs: glibc + libgcc, no shell, nonroot,
 # and the CA bundle (/etc/ssl/certs) that reqwest's platform verifier trusts.
-FROM gcr.io/distroless/cc-debian12@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS runtime
+FROM gcr.io/distroless/cc-debian12@sha256:e5d81ddde149641e2a9ba55be4545bc125c67de07508b03ba4c22e6eb0ded5aa AS runtime
 WORKDIR /app
 COPY --from=backend --chown=65532:65532 /usr/local/bin/parcel-server /usr/local/bin/parcel-server
 COPY --from=frontend --chown=65532:65532 /app/frontend/dist /app/static
