@@ -146,8 +146,9 @@ stridelabs-gcp = { git = "https://github.com/charliek/stridelabs-rust.git", tag 
 # MCP server at /mcp (tools as an rmcp ServerHandler; stridelabs-mcp supplies
 # the auth boundary and the stateless transport). Same major as stridelabs-mcp,
 # whose API is rmcp's types. Never the `local` feature: it compiles the HTTP
-# service out.
-rmcp = { version = "3.5", default-features = false, features = ["server", "macros"] }
+# service out. 3.9 is the floor cargo deny passes: RUSTSEC-2026-0461 (fixed in
+# 3.6), -0457 (3.7) and -0462 (3.9).
+rmcp = { version = "3.9", default-features = false, features = ["server", "macros"] }
 schemars = "1"
 
 [dev-dependencies]
