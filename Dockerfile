@@ -5,7 +5,7 @@
 # compiled out (it is also runtime-gated off in production).
 
 # ---- frontend -------------------------------------------------------------
-FROM oven/bun:1.4.0 AS frontend
+FROM oven/bun:1.4.4 AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/bun.lock ./
 RUN bun install --frozen-lockfile
@@ -30,9 +30,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/parcel-server /usr/local/bin/parcel-server
 
 # ---- runtime --------------------------------------------------------------
-# Same pinned distroless base as slauth-rs: glibc + libgcc, no shell, nonroot,
-# and the CA bundle (/etc/ssl/certs) that reqwest's platform verifier trusts.
-FROM gcr.io/distroless/cc-debian12@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS runtime
+# The distroless base slauth-rs uses (cc-debian12), pinned by the index digest
+# of its `:nonroot` tag: glibc + libgcc, no shell, nonroot, and the CA bundle
+# (/etc/ssl/certs) that reqwest's platform verifier trusts.
+FROM gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
 WORKDIR /app
 COPY --from=backend --chown=65532:65532 /usr/local/bin/parcel-server /usr/local/bin/parcel-server
 COPY --from=frontend --chown=65532:65532 /app/frontend/dist /app/static

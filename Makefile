@@ -65,7 +65,7 @@ test:  ## Rust unit + integration tests (REQUIRES `make up`; fails loudly, never
 
 .PHONY: spectral
 spectral:  ## Lint the committed OpenAPI document
-	bunx @stoplight/spectral-cli@6.16.2 lint crates/parcel-server/openapi.json --fail-severity=warn
+	bunx @stoplight/spectral-cli@6.17.0 lint crates/parcel-server/openapi.json --fail-severity=warn
 
 .PHONY: functional
 functional:  ## Python functional suite against the real binaries (REQUIRES `make up`)
